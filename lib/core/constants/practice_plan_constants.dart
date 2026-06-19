@@ -7,9 +7,18 @@
 // - Each day is broken into multiple [PracticeTask] entries with explicit
 //   id / title / description / estimatedMinutes / routePath / iconName.
 //
-// IMPORTANT: This file is referenced by [TodayPracticeController]. It must
-// not import anything from the `features/home` layer (constants live in
-// `core/`, domain types live in `features/home/domain/`).
+// Architectural note (T007):
+// - The plan is currently kept under `lib/core/constants/` because the
+//   constants are static content that the whole app may need to read.
+// - The constants reference home-domain types
+//   (`features/home/domain/built_in_practice_plan.dart`,
+//   `practice_task.dart`, `practice_task_icon.dart`,
+//   `practice_task_status.dart`), so this file does import from
+//   `features/home/domain/`. A stricter layered architecture could move
+//   the constants next to the domain types (or into a dedicated
+//   `features/home/data/` module); that is intentionally out of scope
+//   for T007 and can be revisited in a later task if layering becomes a
+//   concern.
 
 import 'package:ukulele_app/features/home/domain/built_in_practice_plan.dart';
 import 'package:ukulele_app/features/home/domain/practice_task.dart';

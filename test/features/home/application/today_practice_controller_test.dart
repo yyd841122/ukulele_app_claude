@@ -11,6 +11,8 @@ import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:ukulele_app/features/home/application/today_practice_controller.dart';
+import 'package:ukulele_app/features/home/domain/practice_task.dart';
+import 'package:ukulele_app/features/home/domain/practice_task_status.dart';
 import 'package:ukulele_app/shared/services/install_date_service.dart';
 
 void main() {
@@ -63,6 +65,45 @@ void main() {
       state = container.read(todayPracticeControllerProvider);
       expect(state.isTaskCompleted(firstTaskId), isFalse);
       expect(state.completedTaskCount, 0);
+    });
+
+    test('toggleTaskCompleted ignores unknown task ids', () {
+      final DateTime fixed = DateTime(2026, 6, 20, 9, 0);
+      final ProviderContainer container = ProviderContainer(
+        overrides: <Override>[
+          installDateServiceProvider.overrideWithValue(
+            _FakeInstallDateService(fixed),
+          ),
+          clockProvider.overrideWithValue(() => fixed),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final TodayPracticeController controller =
+          container.read(todayPracticeControllerProvider.notifier);
+
+      final TodayPracticeState before =
+          container.read(todayPracticeControllerProvider);
+      final List<String> beforeTaskIds =
+          before.plan.tasks.map((PracticeTask t) => t.id).toList();
+
+      // A typo / stale id must not mutate the state in any way.
+      controller.toggleTaskCompleted('unknown_task_id');
+
+      final TodayPracticeState after =
+          container.read(todayPracticeControllerProvider);
+      expect(after.completedTaskCount, 0);
+      expect(after.completedTaskIds, isNot(contains('unknown_task_id')));
+      expect(after.plan.dayIndex, before.plan.dayIndex);
+      expect(after.plan.title, before.plan.title);
+      expect(
+        after.plan.tasks.map((PracticeTask t) => t.id).toList(),
+        equals(beforeTaskIds),
+      );
+      for (final PracticeTask t in after.plan.tasks) {
+        // Every task keeps its pristine todo status — no spurious flips.
+        expect(t.status, PracticeTaskStatus.todo);
+      }
     });
 
     test('clock offset by 7 days rolls Day 1 -> Day 1', () {

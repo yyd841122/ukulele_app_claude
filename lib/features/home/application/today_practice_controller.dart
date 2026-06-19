@@ -106,9 +106,19 @@ class TodayPracticeController extends Notifier<TodayPracticeState> {
 
   /// Flips the completion state of [taskId] (idempotent toggle).
   ///
-  /// Unknown ids are ignored — this is a defensive choice so a typo in a
-  /// built-in constant cannot crash the UI.
+  /// Unknown ids are ignored: if [taskId] is not part of the current
+  /// plan, the state is left untouched. This is a defensive choice so a
+  /// typo in a built-in constant (or a stale id from an older app
+  /// version) cannot silently inflate [completedTaskCount] or mutate
+  /// the task list.
   void toggleTaskCompleted(String taskId) {
+    final bool isKnownTask = state.plan.tasks.any(
+      (PracticeTask t) => t.id == taskId,
+    );
+    if (!isKnownTask) {
+      return;
+    }
+
     final Set<String> next = Set<String>.from(state.completedTaskIds);
     if (next.contains(taskId)) {
       next.remove(taskId);

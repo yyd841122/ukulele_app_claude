@@ -262,9 +262,12 @@ class PracticeRecordsController extends _$PracticeRecordsController {
 <uses-permission android:name="android.permission.WAKE_LOCK" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 ```
 
-**核心承诺**：MVP 不申请 INTERNET 权限，从源头保证无联网行为。T004 默认 `flutter create` 生成的 `AndroidManifest.xml` 必须**在 T004/T005 检查并删除 `INTERNET` 权限**。
+**核心承诺**：MVP 不申请 INTERNET 权限，从源头保证无联网行为。T004/T005 必须检查 **main / debug / profile 三个** `AndroidManifest.xml`，如存在 `INTERNET` / `STORAGE` / `MEDIA` / `FOREGROUND_SERVICE` / `WAKE_LOCK` 等权限，**必须删除或说明来源并等待 Chief Architect 审核**。
+
+> ⚠️ **注意**：如果 Flutter `flutter create` 模板自动生成 `INTERNET` 权限（debug 构建默认有），也不能默认保留。**默认要求删除**，如确需仅调试态保留，必须在 ADR 中显式记录并经 Chief Architect 批准。
 
 ### 7.3 权限申请时机
 
@@ -274,9 +277,13 @@ class PracticeRecordsController extends _$PracticeRecordsController {
 
 ### 7.4 T004 / T005 检查清单
 
-- [ ] `flutter create --org com.yupi.ukulele --platforms=android ukulele_app` 生成后，立即检查 `android/app/src/main/AndroidManifest.xml`；
-- [ ] 删除任何 `INTERNET` / `WRITE_EXTERNAL_STORAGE` / `READ_EXTERNAL_STORAGE` / `READ_MEDIA_AUDIO` 权限；
+- [ ] `flutter create --org com.yupi.ukulele --platforms=android ukulele_app` 生成后，**必须**逐一检查以下三个 `AndroidManifest.xml`：
+  - `android/app/src/main/AndroidManifest.xml`
+  - `android/app/src/debug/AndroidManifest.xml`
+  - `android/app/src/profile/AndroidManifest.xml`
+- [ ] 删除任何 `INTERNET` / `WRITE_EXTERNAL_STORAGE` / `READ_EXTERNAL_STORAGE` / `READ_MEDIA_AUDIO` / `FOREGROUND_SERVICE` / `WAKE_LOCK` 权限；
 - [ ] 确认只保留 `RECORD_AUDIO` + 可选 `MODIFY_AUDIO_SETTINGS`；
+- [ ] 如 Flutter 模板默认生成了 `INTERNET` 权限（debug 常见），**不得默认保留**，按"默认要求删除"原则处理，必要时通过 ADR 申请仅调试态保留；
 - [ ] 修改 `applicationId = "com.yupi.ukulele"` 与 `namespace = "com.yupi.ukulele"`；
 - [ ] 修改 `minSdk = 23`、`targetSdk = 34`、`compileSdk = 35`（T005 确认）。
 
@@ -353,19 +360,23 @@ T003 明确禁止在 MVP 中引入以下技术。任何 Agent 不得擅自添加
 
 | 禁止项 | 原因 |
 |--------|------|
-| Firebase / Crashlytics / Analytics | 联网 SDK，违反无 INTERNET 原则 |
-| Sentry / Bugly / 任何 APM | 联网 SDK |
+| Firebase / Crashlytics / Analytics（`firebase_core` / `firebase_crashlytics` / `firebase_analytics` 等任意子包） | 联网 SDK，违反无 INTERNET 原则 |
+| Sentry / Bugly / 任何 APM（`sentry_flutter` / `bugly` 等） | 联网 SDK |
 | Google Analytics / 友盟 / 任何埋点 | 联网 SDK |
-| 任何 Cloud Sync SDK | MVP 不同步 |
-| 任何 AI SDK（OpenAI / Anthropic / 本地模型推理服务） | MVP 不做 AI |
-| 任何广告 SDK（AdMob / Pangle） | MVP 无广告 |
+| 任何 Cloud Sync SDK（`cloud_kit` / `aws Amplify` / `supabase_flutter` / `firebase_database` / `firebase_storage` 等） | MVP 不同步 |
+| 任何 AI SDK（OpenAI / Anthropic / `google_ml_kit` / `tflite_flutter` / 本地模型推理服务） | MVP 不做 AI |
+| 任何广告 SDK（AdMob / Pangle / `unity_ads` / `facebook_audience_network`） | MVP 无广告 |
 | `get_it` / `injectable` / `kiwi` | MVP 简化 DI |
 | `flutter_sound` 子包（如不需要） | 增加包大小，无收益 |
 | `sqflite` | 与 Drift 冲突 |
 | `provider` / `flutter_bloc` / `GetX` | 不符合状态管理选型 |
 | `audioplayers`（已选 just_audio） | 重复依赖 |
+| `firebase_auth` / `google_sign_in` / `sign_in_with_apple` | MVP 无登录态；任何 Auth 实现依赖均为预留扩展，禁止提前引入 |
+| `flutter_local_notifications` | MVP 无后台服务，无需通知 |
 
 **任何需要 INTERNET 权限的依赖自动禁止**。
+
+**与 §12 后期扩展点的关系**:§12 列出的 AuthService / SyncService / AIService 等预留抽象**也不得通过任何替代实现库**绕道引入(如 `firebase_auth` 当 AuthService 的替代实现),统一按 §12 硬约束执行。
 
 ---
 
@@ -403,7 +414,17 @@ T003 明确禁止在 MVP 中引入以下技术。任何 Agent 不得擅自添加
 
 ## 12. 后期预留扩展点
 
-> 这些抽象在 MVP 阶段**只预留接口，不实现具体云端/AI 集成**。
+> ⚠️ **硬约束（MVP 阶段不得提前实现）**：
+> 以下 `AuthService` / `SyncService` / `AIService` / `PitchEvaluationService` / `StrummingRecognitionService` / `ContentService` **只作为路线说明**，记录未来 V1+ 的扩展方向。
+>
+> **MVP 阶段（T004-T014）严禁**：
+> - 不得创建对应 Dart 文件；
+> - 不得实现 no-op / `throw UnsupportedError` 占位类；
+> - 不得加入相关依赖（如 firebase_auth / cloud_sync / ai_sdk 等）；
+> - 不得为了"预留扩展"提前写 `abstract class` 接口、空实现、或 `TODO` 注释代码；
+> - 除非后续任务（T015+）明确要求，否则不允许补齐。
+>
+> 上述抽象仅在本文档中以文字说明形式存在，**代码层一律不存在**，以防止后续 Agent 过度架构、写出永远跑不到的空类。
 
 ### 12.1 Auth Service 抽象
 

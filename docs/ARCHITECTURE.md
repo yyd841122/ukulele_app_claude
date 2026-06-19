@@ -16,7 +16,7 @@
 - **Clean-ish**：允许 MVP 阶段适度简化完整 Clean Architecture 的四层划分；
 - **不过度工程化**：不要求每个 Feature 都有完整的 presentation / application / domain / data 四层；按 feature 实际复杂度选用；
 - **本地优先**：所有数据本地存储，无任何联网依赖；
-- **MVP 不为未来预留过度接口**：仅预留 AuthService / SyncService / AIService 抽象，云端/AI 实现在 V1+ 阶段再做。
+- **MVP 不为未来预留过度接口**：V1+ 阶段的 AuthService / SyncService / AIService 等仅在本文档 §11 中以**文字说明**形式记录扩展方向，**代码层一律不创建**对应 Dart 文件、不写空实现接口、不加相关依赖（详见 §11 硬约束）。
 
 ---
 
@@ -356,6 +356,8 @@ Controller 请求数据
 
 **核心承诺**：MVP 不申请 INTERNET 权限，从源头杜绝任何联网行为。
 
+> ⚠️ T004/T005 必须检查 **main / debug / profile 三个** `AndroidManifest.xml`，如存在 `INTERNET` / `STORAGE` / `MEDIA` / `FOREGROUND_SERVICE` / `WAKE_LOCK` 等权限，**必须删除或说明来源并等待 Chief Architect 审核**。如 Flutter 模板默认生成 `INTERNET` 权限（debug 常见），**默认要求删除**，不得默认保留。
+
 ### 7.2 权限申请时机
 
 | 场景 | 申请时机 | 拒绝降级方案 |
@@ -370,8 +372,13 @@ Controller 请求数据
 ### 7.3 T004 / T005 检查清单
 
 - [ ] T004 `flutter create --org com.yupi.ukulele --platforms=android ukulele_app`；
-- [ ] 检查 `android/app/src/main/AndroidManifest.xml`，删除任何 INTERNET / STORAGE / MEDIA 权限；
+- [ ] **必须**逐一检查以下三个 `AndroidManifest.xml`：
+  - `android/app/src/main/AndroidManifest.xml`
+  - `android/app/src/debug/AndroidManifest.xml`
+  - `android/app/src/profile/AndroidManifest.xml`
+- [ ] 删除任何 `INTERNET` / `WRITE_EXTERNAL_STORAGE` / `READ_EXTERNAL_STORAGE` / `READ_MEDIA_AUDIO` / `FOREGROUND_SERVICE` / `WAKE_LOCK` 权限；
 - [ ] 只保留 `RECORD_AUDIO` + 可选 `MODIFY_AUDIO_SETTINGS`；
+- [ ] 如 Flutter 模板默认生成 `INTERNET` 权限（debug 常见），**默认要求删除**，不得默认保留；如确需仅调试态保留，必须经 Chief Architect 审批并写入 ADR；
 - [ ] 修改 `applicationId` 与 `namespace` 为 `com.yupi.ukulele`；
 - [ ] 修改 `minSdk = 23`；
 - [ ] T005 根据实际 SDK 写入 `targetSdk` / `compileSdk`。
@@ -430,7 +437,7 @@ Controller 请求数据
 | 不使用复杂状态机 | 避免 freezed_state_machine / fsm |
 | 不分层过度 | presentation / application / domain / data 四层可选 |
 | 不做抽象先行 | 先跑通再根据需要重构 |
-| 不预留云端实现 | AuthService / SyncService / AIService 仅抽象，不实现 |
+| 不预留云端实现 | AuthService / SyncService / AIService 等仅在 §11 中文字记录，代码层不写（详见 §11 硬约束） |
 | 不做 iOS 平台 | T004 不创建 ios/ 目录 |
 | 不做深色模式 UI | 但 ThemeData 设计预留切换能力 |
 | 不做平板 UI | MVP 仅适配手机 |
@@ -440,6 +447,18 @@ Controller 请求数据
 ---
 
 ## 11. 后期扩展点（仅文档，不实现）
+
+> ⚠️ **硬约束（MVP 阶段不得提前实现）**：
+> 以下 `AuthService` / `SyncService` / `PitchEvaluationService` / `StrummingRecognitionService` / `ContentService` **只作为路线说明**，记录未来 V1+ 的扩展方向。
+>
+> **MVP 阶段（T004-T014）严禁**：
+> - 不得创建对应 Dart 文件；
+> - 不得实现 no-op / `throw UnsupportedError` 占位类；
+> - 不得加入相关依赖（如 firebase_auth / cloud_sync / ai_sdk 等）；
+> - 不得为了"预留扩展"提前写 `abstract class` 接口、空实现、或 `TODO` 注释代码；
+> - 除非后续任务（T015+）明确要求，否则不允许补齐。
+>
+> 上述抽象**代码层一律不存在**，仅以文字说明形式留在本文档中，以防止后续 Agent 过度架构、写出永远跑不到的空类。
 
 ### 11.1 AuthService
 
@@ -452,7 +471,7 @@ abstract class AuthService {
 }
 ```
 
-MVP 阶段：返回 `null` / 抛 `UnsupportedError`。
+MVP 阶段：返回 `null` / 抛 `UnsupportedError`。**注意**：本段仅作为未来实现参考，**代码中不允许创建此 abstract class**。
 
 ### 11.2 SyncService
 
@@ -464,7 +483,7 @@ abstract class SyncService {
 }
 ```
 
-MVP 阶段：所有方法空实现（no-op）。
+MVP 阶段：所有方法空实现（no-op）。**注意**：本段仅作为未来实现参考，**代码中不允许创建此 abstract class**。
 
 ### 11.3 PitchEvaluationService
 
@@ -474,7 +493,7 @@ abstract class PitchEvaluationService {
 }
 ```
 
-MVP 阶段：抛 `UnsupportedError`。
+MVP 阶段：抛 `UnsupportedError`。**注意**：本段仅作为未来实现参考，**代码中不允许创建此 abstract class**。
 
 ### 11.4 StrummingRecognitionService
 
@@ -484,7 +503,7 @@ abstract class StrummingRecognitionService {
 }
 ```
 
-MVP 阶段：抛 `UnsupportedError`。
+MVP 阶段：抛 `UnsupportedError`。**注意**：本段仅作为未来实现参考，**代码中不允许创建此 abstract class**。
 
 ### 11.5 ContentService
 
@@ -495,7 +514,7 @@ abstract class ContentService {
 }
 ```
 
-MVP 阶段：抛 `UnsupportedError`。
+MVP 阶段：抛 `UnsupportedError`。**注意**：本段仅作为未来实现参考，**代码中不允许创建此 abstract class**。
 
 ---
 

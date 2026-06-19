@@ -232,26 +232,33 @@ enum SelfAssessment {
 
 ### 4.2 TunerState（调音器运行时状态）
 
-**不持久化**，仅作为 Riverpod state。
+**不持久化**,仅作为 Riverpod state。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `currentString` | TuningString? | 当前选中弦 |
 | `detectedFrequency` | double? | 当前检测频率（Hz） |
 | `deviationCents` | double? | 偏差（cents） |
-| `status` | TunerStatus | tooLow / low / accurate / high / tooHigh |
+| `status` | TunerStatus | unknown / tooLow / accurate / tooHigh |
+| `toleranceCents` | int | 容差（cents），从 `UserSetting.tuner.toleranceCents` 读取，默认 10；不作为 TunerState 持久化字段,而是计算 status 时实时读取 |
 | `isListening` | bool | 是否正在监听 |
 | `isDegraded` | bool | 是否降级（实验性调音器） |
 
 ```dart
 enum TunerStatus {
-  tooLow,    // 偏低 > 10 cents
-  low,       // 偏低 ≤ 10 cents
-  accurate,  // ±10 cents 以内
-  high,      // 偏高 ≤ 10 cents
-  tooHigh,   // 偏高 > 10 cents
+  unknown,    // 未检测到有效频率（无声 / 噪声过低 / 未开始监听 / 检测失败）
+  tooLow,     // 检测频率低于目标频率超过容差（deviationCents < -toleranceCents）
+  accurate,   // 在 ±toleranceCents 范围内（|deviationCents| ≤ toleranceCents）
+  tooHigh,    // 检测频率高于目标频率超过容差（deviationCents > toleranceCents）
 }
 ```
+
+**MVP 状态文案规则**：
+- MVP 只展示"偏低 / 接近准确 / 偏高"三类用户文案，对应 `tooLow` / `accurate` / `tooHigh`；
+- `unknown` 用于无声、噪声过低、未开始监听、检测失败等状态，UI 显示"未检测到音高，请拨弦"；
+- `toleranceCents` 默认 **10 cents**，由 `UserSetting.tuner.toleranceCents` 决定；
+- ±10 cents 是**体验目标**，不是专业精度承诺，UI 文案不应出现"精确调音"等绝对化表达；
+- T005 / T013 不再使用旧的五档枚举（`tooLow` / `low` / `accurate` / `high` / `tooHigh`），避免与 `accurate` 范围重叠。
 
 **MVP 决定**：调音记录**不保存**到数据库（T001 决策），仅实时显示。
 
@@ -314,6 +321,12 @@ enum TunerStatus {
 | `metronome.defaultBpm` | int | 80 | 节拍器默认 BPM |
 | `metronome.volume` | double | 1.0 | 节拍器音量 |
 | `tuner.toleranceCents` | int | 10 | 调音器容差 |
+
+**命名约定（必读，与 §13.2 一致）**：
+- `UserSettingData` 是 **Drift 生成的数据类**（key/value 行记录）；
+- `UserSetting` 是 **domain 值对象**，可在 freezed 或普通 class 中定义（视 T005 实际决定）；
+- Repository 负责 `UserSettingData` ↔ `UserSetting` 转换；
+- T005 / T013 实现时**不得**让 Drift 生成类与 domain 模型同名（同包同名会冲突）。
 
 **installDate 重要**：
 - 首次启动时写入；
@@ -428,8 +441,14 @@ MetronomeSetting（UserSetting 的子集）
 
 ### 13.1 PracticeRecordsTable
 
+> **命名约定（必读）**：
+> - `PracticeRecordData` 是 **Drift 生成的数据类**（由 `@DataClassName` 声明）；
+> - `PracticeRecord` 是 **domain / freezed 模型**（参见 §2.1），由 06-local-data-engineer 在 T005 / T013 编写 freezed 时定义；
+> - Repository 层负责 `PracticeRecordData` ↔ `PracticeRecord` 的双向转换，UI / Controller 只与 `PracticeRecord` 交互；
+> - T005 / T013 实现时**不得**让 Drift 生成类与 domain 模型同名（同包同名会冲突），必须保留 `Data` 后缀区分。
+
 ```dart
-@DataClassName('PracticeRecord')
+@DataClassName('PracticeRecordData')
 class PracticeRecords extends Table {
   TextColumn get id => text()();
   DateTimeColumn get practiceDate => dateTime()();
@@ -451,8 +470,14 @@ class PracticeRecords extends Table {
 
 ### 13.2 UserSettingsTable
 
+> **命名约定（必读）**：
+> - `UserSettingData` 是 **Drift 生成的数据类**（由 `@DataClassName` 声明）；
+> - `UserSetting` 是 **domain 模型或设置值对象**（参见 §7），由 freezed / 普通 class 实现；
+> - 同 `PracticeRecordData` 与 `PracticeRecord` 一样,Repository 负责转换,UI / Controller 只与 domain 模型交互；
+> - T005 / T013 实现时**不得**让 Drift 生成类与 domain 模型同名。
+
 ```dart
-@DataClassName('UserSetting')
+@DataClassName('UserSettingData')
 class UserSettings extends Table {
   TextColumn get key => text()();
   TextColumn get value => text()();

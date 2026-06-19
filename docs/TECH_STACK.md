@@ -219,7 +219,9 @@ lib/
 
 ## 7. 依赖管理
 
-### 7.1 pubspec.yaml 结构
+### 7.1 pubspec.yaml 结构示例（版本由 T005 最终确认）
+
+> 注意：以下仅展示依赖类别和结构，具体版本不得直接复制。T005 必须通过 Context7、pub.dev、Flutter 官方文档确认最新稳定兼容版本后再写入 pubspec.yaml。
 
 ```yaml
 name: ukulele_app
@@ -232,29 +234,29 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_riverpod: ^2.4.0
-  riverpod_annotation: ^2.3.0
-  go_router: ^14.0.0
-  drift: ^2.14.0
-  sqlite3_flutter_libs: ^0.5.0
-  path_provider: ^2.1.0
-  path: ^1.8.0
-  record: ^5.1.0
-  just_audio: ^0.6.21
-  permission_handler: ^11.1.0
-  freezed_annotation: ^2.4.0
-  json_annotation: ^4.8.0
-  intl: ^0.19.0
+  flutter_riverpod: <T005-confirmed-version>
+  riverpod_annotation: <T005-confirmed-version>
+  go_router: <T005-confirmed-version>
+  drift: <T005-confirmed-version>
+  sqlite3_flutter_libs: <T005-confirmed-version>
+  path_provider: <T005-confirmed-version>
+  path: <T005-confirmed-version>
+  record: <T005-confirmed-version>
+  just_audio: <T005-confirmed-version>
+  permission_handler: <T005-confirmed-version>
+  freezed_annotation: <T005-confirmed-version>
+  json_annotation: <T005-confirmed-version>
+  intl: <T005-confirmed-version>
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^3.0.0
-  build_runner: ^2.4.0
-  freezed: ^2.4.0
-  json_serializable: ^6.7.0
-  drift_dev: ^2.14.0
-  riverpod_generator: ^2.3.0
+  flutter_lints: <T005-confirmed-version>
+  build_runner: <T005-confirmed-version>
+  freezed: <T005-confirmed-version>
+  json_serializable: <T005-confirmed-version>
+  drift_dev: <T005-confirmed-version>
+  riverpod_generator: <T005-confirmed-version>
 
 flutter:
   uses-material-design: true

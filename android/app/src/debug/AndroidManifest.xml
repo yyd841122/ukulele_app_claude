@@ -1,0 +1,3 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- MVP: no INTERNET permission in debug build. Offline only. -->
+</manifest>

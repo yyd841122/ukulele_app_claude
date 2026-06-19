@@ -1,330 +1,423 @@
 # 技术栈文档 (TECH_STACK)
 
+> 本文档是 T003 阶段最终定稿的技术栈，作为 T004-T013 任务执行的直接参考。
+>
+> 上游依据：`docs/PRD.md`（T002 定稿）、`docs/MVP_SCOPE.md`、`research/T001_RESEARCH_SUMMARY.md`、`research/flutter_docs_notes.md`、`research/audio_tech_notes.md`、`research/compliance_policy_notes.md`。
+>
+> **重要**：本文档**不锁死具体版本号**，T004 不创建工程不写 pubspec.yaml，T005 阶段通过 `flutter --version`、Context7、pub.dev、本机 Android SDK 实际确认版本后再写入 pubspec.yaml，并在 ADR 中记录决策依据。
+>
+> 最后更新：2026-06-19 | 版本：1.0（T003）
+
+---
+
 ## 1. 技术选型总览
 
-| 层级 | 技术选型 | 版本（候选范围） | 用途 |
-|------|----------|------------------|------|
-| 框架 | Flutter | 3.x 候选 | 跨平台移动开发 |
-| 语言 | Dart | 3.x 候选 | Flutter 官方语言 |
-| 状态管理 | Riverpod | 2.x 候选 | 响应式状态管理 |
+### 1.1 主技术栈（候选范围，最终版本由 T005 确认）
+
+| 层级 | 技术选型 | 候选范围 | 用途 |
+|------|----------|----------|------|
+| 框架 | Flutter | 3.24+ 候选 | Android 跨平台移动开发 |
+| 语言 | Dart | 3.5+ 候选 | Flutter 官方语言 |
+| 平台 | Android only | minSdk 23 / targetSdk 34-35 / compileSdk ≥33 | MVP 主平台；iOS reserved |
+| 状态管理 | Riverpod | 3.x 候选（`flutter_riverpod` 3.3.2 主线） | 响应式状态管理 |
 | 本地数据库 | Drift | 2.x 候选 | SQLite ORM |
-| 路由 | go_router | 14.x 候选 | 声明式路由 |
-| 音频录制 | record | 5.x 候选 | 麦克风录音 |
-| 音频播放 | just_audio | 0.6.x 候选 | 音频播放 |
+| SQLite native | sqlite3_flutter_libs | 0.5.x 候选 | Flutter Android SQLite 绑定 |
+| 路由 | go_router | 14.x+ 候选 | 声明式路由 |
+| 音频录制 | record | 7.x 候选 | 麦克风录音（文件 + PCM 流） |
+| 音频播放 | just_audio | 0.10.x 候选 | 本地录音回放 |
+| 权限处理 | permission_handler | 11.x+ 候选 | 运行时权限 |
 | 数据类 | freezed | 3.x 候选 | 不可变数据类 |
 | JSON 序列化 | json_serializable | 6.x 候选 | JSON 编解码 |
-| 权限处理 | permission_handler | 11.x 候选 | 运行时权限 |
+| 国际化 | intl | 0.19.x 候选 | 日期格式化 |
+| 路径 | path_provider / path | 2.x / 1.x 候选 | App 私有目录 |
+| 代码生成 | build_runner | 2.x 候选（dev_dependency） | freezed / json / drift / riverpod 代码生成 |
 | 测试 | flutter_test | SDK | 单元/组件测试 |
 | 集成测试 | integration_test | SDK | E2E 测试（后期） |
 
-> **版本说明**：以上版本号为 T000 阶段的**候选范围**，**不是最终锁定版本**。最终版本在 T005 任务（添加核心依赖）时确认并写入 pubspec.yaml。
+> **T005 必须复核的版本差异**（基于 T001 研究）：
+> - Riverpod 候选从 T000 的 2.x → **3.x**；
+> - record 候选从 T000 的 5.x → **7.x**（要求 minSdk 23）；
+> - just_audio 候选从 T000 的 0.6.x → **0.10.x**；
+> - permission_handler 3.1+ 要求 `compileSdk ≥ 33`，建议 35。
+>
+> 所有上述版本调整在 T005 通过 Context7 + pub.dev 实际查询后再写入。
 
-## 1.1 版本策略
-
-为避免在研究阶段就锁死可能过期的依赖版本，本项目采用以下版本策略：
+### 1.2 版本策略
 
 | 阶段 | 版本处理方式 |
 |------|--------------|
-| T000（已完成） | 仅给出候选范围，不写入 pubspec.yaml |
-| T001 / T003 | 通过 Context7、pub.dev、官方文档确认**最新稳定版本**与兼容性 |
-| T005 | 添加依赖时**最终写入** pubspec.yaml，并在 ADR 中记录决策依据 |
-| T005 之后 | 升级需走 ADR 流程，不允许私自变更 |
+| T003（当前） | 仅给出候选范围，不写入 pubspec.yaml |
+| T004 | 不添加任何业务依赖，仅创建空壳 Flutter 工程 |
+| T005 | 通过 `flutter --version` + Context7 + pub.dev + 本机 Android SDK 最终确认版本，写入 pubspec.yaml，并在 `docs/ADR/` 下新建 ADR-XXX 记录每个版本决策依据（ADR 流程） |
+| T005 之后 | 升级必须走 ADR 流程，不允许私自变更 |
 
 **禁止行为**：
-- T003 之前在 pubspec.yaml 中写入具体版本号
-- 把候选范围误认为已锁定版本
-- 在未通过 Context7/pub.dev 验证前承诺兼容版本
+- T003 在 pubspec.yaml 中写入具体版本号（pubspec.yaml 在 T004 阶段还不存在）；
+- 把候选范围误认为已锁定版本；
+- 在未通过 Context7/pub.dev 验证前承诺兼容版本；
+- 锁死 `record 7.x` / `just_audio 0.10.x` 等具体小版本（必须由 T005 写）。
 
-## 2. 框架选择理由
+---
+
+## 2. 框架选择
 
 ### 2.1 为什么选择 Flutter
 
 | 优势 | 说明 |
 |------|------|
-| 跨平台 | 一套代码支持 Android/iOS，减少开发成本 |
+| 跨平台 | 一套代码支持 Android / iOS（iOS reserved），减少未来扩展成本 |
 | 性能 | 编译为原生 ARM 代码，性能接近原生 |
-| 开发效率 | Hot Reload 提升迭代速度 |
-| 生态 | 丰富的 Package 生态，满足音频、数据库等需求 |
-| 社区 | Flutter 社区活跃，文档完善 |
+| 生态 | Riverpod / Drift / go_router / record / just_audio / permission_handler 全部活跃维护 |
+| 工具链 | `flutter --version`、`flutter doctor`、`flutter pub` 工具链稳定 |
 
-Flutter 是当前最适合 MVP 阶段多平台支持的技术选型。
+### 2.2 为什么不选 Kotlin 原生 / React Native / Web
 
-### 2.2 为什么不选 Kotlin 原生
+- **Kotlin 原生**：MVP 阶段 iOS 预留，Flutter 单一代码库成本更低；
+- **React Native**：Dart 静态类型 + Flutter 渲染性能优于 RN runtime；
+- **Web / PWA / Capacitor**：音频延迟、离线能力、麦克风 API 稳定性不足。
 
-| 劣势 | Flutter 对比 |
-|------|--------------|
-| Android only | Flutter 一套代码覆盖 Android + iOS |
-| iOS 需要 Swift | 无 |
-| 开发成本 x2 | Flutter 单一代码库 |
-| 生态 | Kotlin 移动生态不如 Flutter 丰富 |
+---
 
-**结论**：Kotlin 原生适合纯 Android 应用，但本项目有 iOS 预留，Flutter 成本更低。
+## 3. 状态管理：Riverpod
 
-### 2.3 为什么不选 React Native / Expo
+### 3.1 决策
 
-| 劣势 | Flutter 对比 |
-|------|--------------|
-| JavaScript 运行时 | Dart 静态类型，更安全 |
-| 性能 | Flutter 渲染性能优于 RN |
-| 包大小 | RN runtime 约 10MB，Flutter 约 4MB |
-| 原生模块 | Flutter FFI 更直接 |
-| 长期维护 | RN 版本升级破坏性较大 |
+**MVP 使用 Riverpod 3.x 风格。**
 
-**结论**：RN 适合已有 React 团队的场景，本项目是全新启动，Flutter 更合适。
+- 推荐启用 `@riverpod` 代码生成（`flutter_riverpod` + `riverpod_annotation` + `riverpod_generator` + `build_runner`）；
+- 允许简单 feature 先手写 Notifier，避免过度复杂；
+- 不使用已废弃的 `StateNotifier`（已被 `AsyncNotifier` 取代）；
+- MVP 不引入 get_it / injectable 等 DI 框架，避免过度设计。
 
-### 2.4 为什么不选 Web / PWA / Capacitor
+### 3.2 T005 添加的依赖（占位，T005 写入具体版本）
 
-| 劣势 | Flutter 对比 |
-|------|--------------|
-| 麦克风 API | Web 麦克风 API 不如原生稳定 |
-| 性能 | Web 音频延迟高于原生 |
-| 用户体验 | App Store / Google Play 分发更专业 |
-| 离线能力 | 原生离线更可靠 |
-| 硬件访问 | 麦克风、音频延迟控制更精确 |
-
-**结论**：Web 方案在音频场景下延迟和稳定性不足，本项目核心场景是音频，MVP 选择原生体验。
-
-## 3. 状态管理选型
-
-### 3.1 为什么选择 Riverpod
-
-| 优势 | 说明 |
+| 依赖 | 用途 |
 |------|------|
-| 编译时安全 | 编译期检查 provider 依赖 |
-| 测试友好 | 不依赖 BuildContext |
-| 懒加载 | 性能优化 |
-| 生态成熟 | Flutter 官方推荐之一 |
+| flutter_riverpod | Riverpod runtime |
+| riverpod_annotation | `@riverpod` 注解 |
+| riverpod_generator | 代码生成（dev_dependency） |
+| build_runner | 代码生成入口（dev_dependency） |
 
-### 3.2 备选方案
+### 3.3 推荐写法（Riverpod 3.x）
 
-| 备选 | 不选原因 |
-|------|----------|
-| Provider | 不支持编译时检查 |
-| setState | 不适合复杂状态 |
-| Bloc | 过度设计，MVP 简化 |
-| GetX | 魔法过多，不够显式 |
+```dart
+// 手写 Notifier（简单 feature）
+class MetronomeBpmNotifier extends Notifier<int> {
+  @override
+  int build() => 80;
+  void setBpm(int bpm) => state = bpm;
+}
 
-## 4. 数据库选型
+final metronomeBpmProvider =
+    NotifierProvider<MetronomeBpmNotifier, int>(MetronomeBpmNotifier.new);
+```
 
-### 4.1 为什么选择 Drift
+```dart
+// @riverpod 注解（复杂 feature）
+@riverpod
+class PracticeRecordsController extends _$PracticeRecordsController {
+  @override
+  Future<List<PracticeRecord>> build() async {
+    final repo = ref.read(practiceRecordRepositoryProvider);
+    return repo.getAll();
+  }
+}
+```
 
-| 优势 | 说明 |
+---
+
+## 4. 数据库：Drift
+
+### 4.1 决策
+
+- MVP 使用 **Drift + sqlite3_flutter_libs**；
+- `schemaVersion = 1`；
+- MVP 不需要迁移脚本，但**必须预留 `MigrationStrategy`**，未来 schemaVersion 升级有入口；
+- **不混用 sqflite**（避免 SQLite 实例不一致）；
+- 推荐 `FlutterQueryExecutor.shared`（默认设置，简化路径管理）；
+- 后续如需 `stepByStep` 迁移或 `make-migrations` 命令，由对应任务评估。
+
+### 4.2 T005 添加的依赖（占位）
+
+| 依赖 | 用途 |
 |------|------|
-| Type Safety | Dart 类型安全 |
-| SQL 表达力 | 复杂查询优于 NoSQL |
-| 迁移支持 | 版本升级友好 |
-| 生态完整 | drift_dev + drift 配套 |
+| drift | SQLite ORM |
+| sqlite3_flutter_libs | Flutter Android SQLite native 绑定 |
+| drift_dev | Drift 代码生成（dev_dependency） |
 
-### 4.2 备选方案
+---
 
-| 备选 | 不选原因 |
-|------|----------|
-| Hive | NoSQL，不适合结构化练习记录 |
-| sqflite | 手动写 SQL，工作量大 |
-| Isar | 文档和生态不如 Drift |
-| ObjectBox | 商业授权有风险 |
+## 5. 路由：go_router
 
-## 5. 音频技术选型
+### 5.1 决策
 
-### 5.1 录音：record
+- MVP 使用 `MaterialApp.router(routerConfig: _router)` 模式；
+- **不使用 `ShellRoute`**（无底部 Tab / 抽屉需求）；
+- **不使用登录 redirect**（MVP 无登录态）；
+- 提供 `errorBuilder` 或统一 `NotFoundPage`；
+- MVP 不做深链接、不做 Web URL Strategy；
+- 路由深度 ≤ 2 层。
 
-```yaml
-dependencies:
-  record: ^5.1.0
+### 5.2 MVP 路由表（简略概览）
+
+> **完整路由表与目录映射以 `docs/ARCHITECTURE.md` §6 为准**，本节仅作为概览参考。任何路由新增 / 修改必须同步更新 ARCHITECTURE.md，避免两份文档不一致。
+
+| 路径 | 页面 | 说明 |
+|------|------|------|
+| `/` | HomePage | 首页 / 今日练习 |
+| `/tuner` | TunerPage | 调音器 |
+| `/single-note` | SingleNotePracticePage | 单音练习 |
+| `/chords` | ChordLibraryPage | 和弦库 |
+| `/chords/:chordId` | ChordDetailPage | 和弦详情 / 指法图 |
+| `/metronome` | MetronomePage | 节拍器 |
+| `/recording` | RecordingPage | 录音 |
+| `/records` | PracticeRecordsPage | 练习记录列表 |
+| `/records/:recordId` | PracticeRecordDetailPage | 练习记录详情（含回放） |
+| `/settings` | SettingsPage | 设置 |
+| `/settings/about` | AboutPage | 关于 |
+| `/settings/privacy` | PrivacyNoticePage | 隐私说明 |
+| `/settings/content` | ContentNoticePage | 内容声明 |
+
+---
+
+## 6. 音频技术选型
+
+### 6.1 决策矩阵
+
+| 功能 | 推荐 | 备选 | MVP 决策 |
+|------|------|------|----------|
+| 录音 | record 7.x | flutter_sound | **record** |
+| 回放 | just_audio 0.10.x | audioplayers | **just_audio** |
+| 麦克风权限 | permission_handler 11.x+ | 原生 API | **permission_handler** |
+| 调音器（T009 Spike） | record PCM 流 + Dart 自相关 | Android 原生 / FFI | **首选 PCM 流 + 自相关**，失败后评估 Android 原生 |
+
+### 6.2 音频边界
+
+**MVP 允许**：
+- 调音器所需的基础频率检测（手动选弦 + 单帧/短窗 PCM + 与目标频率比较 + 方向提示）；
+- 录音（最长 5 分钟，AAC m4a / 44100Hz / 单声道）；
+- 本地回放（播放/暂停/停止）；
+- 手动自评（好/一般/需改进）。
+
+**MVP 禁止**：
+- AI 自动音高评分；
+- AI 节奏分析；
+- AI 和弦识别；
+- AI 扒谱；
+- 多弦同时检测；
+- 专业级调音精度承诺；
+- 后台录音 / 后台播放；
+- 录音导出 / 分享 / 上传。
+
+### 6.3 调音器算法路径（与 `audio_tech_notes.md` 一致）
+
+| 路径 | 方案 | MVP 推荐度 |
+|------|------|-----------|
+| **路径 B** | record PCM 流 + Dart 自相关 | **高（首选）** |
+| 路径 A | 纯 Dart FFT 插件（如 `fftea` / `pitch_detector`） | 中（备选） |
+| 路径 C | Android 原生 TarsosDSP / FFI | 低（T009 失败才评估） |
+
+- T009 调音器 Spike 之前**不写音高算法代码**；
+- T003 仅在文档中预留 `features/tuner/data/pitch_algorithm.dart` 位置。
+
+---
+
+## 7. Android 平台配置
+
+### 7.1 SDK 版本（PRD §11.2 与 T001 决策一致）
+
+| 配置项 | MVP 规格 | 说明 |
+|--------|----------|------|
+| `minSdk` | **23**（Android 6.0） | record 7.x 要求；T001 评估覆盖率损失 < 1% |
+| `targetSdk` | 34（推荐 35） | Google Play 当前要求；T005 实际确认 |
+| `compileSdk` | ≥ 33（建议 35） | permission_handler 3.1+ 要求 ≥ 33 |
+
+**minSdk 决策原因**：
+- T001 发现 `record` 7.x 要求 Android minSdk 23；
+- 优先保证录音、PCM 音频流、调音器稳定；
+- minSdk 23 覆盖率数字待 T001B_FIRECRAWL_RECHECK 复核，不阻塞 T003/T004/T005；
+- T005 实际验证后如发现可降低，由 Chief Architect 评估。
+
+### 7.2 AndroidManifest 权限
+
+**MVP 必选**：
+
+```xml
+<uses-permission android:name="android.permission.RECORD_AUDIO" />
 ```
 
-- 支持 WAV/MP4 格式
-- 支持录音回调
-- 支持权限处理
-- 跨平台 Android/iOS
+**MVP 可选**（蓝牙耳机路由支持）：
 
-### 5.2 播放：just_audio
-
-```yaml
-dependencies:
-  just_audio: ^0.6.21
+```xml
+<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 ```
 
-- 支持本地/网络音频
-- 支持播放控制（播放/暂停/停止/跳转）
-- 支持循环播放
-- 支持 Android 后台播放
+**MVP 明确禁止**（不写入 AndroidManifest.xml）：
 
-### 5.3 调音器技术验证（候选路径）
-
-MVP 调音器是技术 Spike + 简化功能。本节给出**三种候选路径**，**不承诺**任何单一方案一定可行。
-
-| 路径 | 方案 | 优势 | 风险 |
-|------|------|------|------|
-| 路径 A：Flutter/Dart 插件方案 | 使用 Dart 实现的 FFT / 音高检测插件（如 fft、pitch_detector 等） | 纯 Dart，无需写原生代码 | 性能与精度依赖包质量，部分包维护状态不稳定 |
-| 路径 B：record 音频流 + Dart 轻量算法 | 通过 record 拿到 PCM 流，Dart 端做自相关或简化 FFT | 不依赖额外插件，可控性高 | 纯 Dart FFT 在低端机可能 CPU 偏高，**不承诺一定可行** |
-| 路径 C：Android 原生音频处理方案（备选） | 通过平台通道或 FFI 接入 Android 原生音频处理 / 原生 FFT 库 | 性能稳定，精度可控 | 跨平台能力受限，需要写 Kotlin 桥接 |
-
-**说明**：
-- 不承诺"纯 Dart FFT 一定可行"，必须经过 T009 Spike 验证。
-- 如 Flutter/Dart 方案不稳定，后续再评估 Android 原生插件 / FFI / 平台通道。
-- 此处"原生 ftt 插件"措辞为**文档历史错误**，正确表述应为：**原生音频处理插件 / FFI / 平台通道**。
-
-**验证项**（T009 任务）：
-
-| 验证项 | MVP Spike 目标 |
-|--------|----------------|
-| 麦克风权限 | 能申请 |
-| 音频输入 | 能获取可用音频输入 |
-| 单音频率 / 音名 | 能对 G/C/E/A 单音给出稳定频率或最近音名 |
-| 反馈时间 | 2 秒内给出可理解反馈 |
-| 偏差提示 | 能提示偏高 / 偏低 / 接近准确 |
-| 稳定性 | 不崩溃、不明显卡顿 |
-| 精度（建议指标） | ±10 cents（MVP 体验目标，不承诺专业级） |
-| 降级 | 若精度无法稳定达到，降级为"实验性调音器"，**不阻塞整体 MVP** |
-
-**禁止行为**：
-- 把"实验性调音器"上升为"专业级调音器"
-- 不做 AI 自动评分（详见 MVP_SCOPE 2.2.1）
-
-## 6. 架构模式
-
-### 6.1 Feature-First + Clean-ish Architecture
-
-```
-lib/
-  main.dart
-  app/
-  core/
-    constants/
-    theme/
-    utils/
-    extensions/
-  shared/
-    widgets/
-    services/
-  features/
-    home/
-      presentation/
-      application/
-      domain/
-      data/
-    tuner/
-    practice/
-    metronome/
-    recording/
-    settings/
+```xml
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+<uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+<uses-permission android:name="android.permission.WAKE_LOCK" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 ```
 
-**原则**：
-- Feature-first：按功能模块组织代码，不是按层组织
-- Clean-ish：允许 MVP 阶段适度简化 domain/data 层
-- 避免过度工程化：不需要每个 feature 都有完整的四层
-- Riverpod provider 集中在 feature 内，不搞全局 provider
+**核心承诺**：MVP 不申请 INTERNET 权限，从源头保证无联网行为。T004 默认 `flutter create` 生成的 `AndroidManifest.xml` 必须**在 T004/T005 检查并删除 `INTERNET` 权限**。
 
-## 7. 依赖管理
+### 7.3 权限申请时机
 
-### 7.1 pubspec.yaml 结构示例（版本由 T005 最终确认）
+- **不在 App 启动时申请**麦克风权限；
+- 用户首次点击"开始调音"或"开始录音"时才申请；
+- 拒绝后提供友好降级文案（"实验性调音器" / 调音参考表）。
 
-> 注意：以下仅展示依赖类别和结构，具体版本不得直接复制。T005 必须通过 Context7、pub.dev、Flutter 官方文档确认最新稳定兼容版本后再写入 pubspec.yaml。
+### 7.4 T004 / T005 检查清单
+
+- [ ] `flutter create --org com.yupi.ukulele --platforms=android ukulele_app` 生成后，立即检查 `android/app/src/main/AndroidManifest.xml`；
+- [ ] 删除任何 `INTERNET` / `WRITE_EXTERNAL_STORAGE` / `READ_EXTERNAL_STORAGE` / `READ_MEDIA_AUDIO` 权限；
+- [ ] 确认只保留 `RECORD_AUDIO` + 可选 `MODIFY_AUDIO_SETTINGS`；
+- [ ] 修改 `applicationId = "com.yupi.ukulele"` 与 `namespace = "com.yupi.ukulele"`；
+- [ ] 修改 `minSdk = 23`、`targetSdk = 34`、`compileSdk = 35`（T005 确认）。
+
+---
+
+## 8. iOS 预留
+
+| 项目 | MVP 状态 | 说明 |
+|------|----------|------|
+| `ios/` 目录 | **T004 不创建** | 未来进入 iOS 阶段时再 `flutter create --platforms=ios .` |
+| iOS Info.plist | T004 不写 | 未来需补充 `NSMicrophoneUsageDescription` |
+| iOS Podfile | T004 不写 | 未来补充 |
+| iOS 签名证书 | 不配置 | 商业化前评估 |
+| iOS CI | 不配置 | 商业化前评估 |
+
+**iOS reserved 是产品和架构预留，不是工程目录预留。**
+
+---
+
+## 9. pubspec.yaml 结构（仅结构示意，T005 最终确认版本）
+
+> 以下只展示依赖类别和结构，具体版本号由 T005 通过 Context7 + pub.dev + Flutter 官方文档确认最新稳定兼容版本后再写入。**禁止直接复制此处的版本占位符**。
 
 ```yaml
 name: ukulele_app
+description: 尤克里里练习 App（Android MVP）
 publish_to: 'none'
 version: 0.1.0+1
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+  sdk: ">=3.5.0 <4.0.0"   # T005 按 Flutter 最新稳定 SDK 调整到合适 caret 范围
+  flutter: ">=3.24.0"    # T005 按 Flutter 最新稳定版调整
 
 dependencies:
   flutter:
     sdk: flutter
-  flutter_riverpod: <T005-confirmed-version>
-  riverpod_annotation: <T005-confirmed-version>
-  go_router: <T005-confirmed-version>
-  drift: <T005-confirmed-version>
-  sqlite3_flutter_libs: <T005-confirmed-version>
-  path_provider: <T005-confirmed-version>
-  path: <T005-confirmed-version>
-  record: <T005-confirmed-version>
-  just_audio: <T005-confirmed-version>
-  permission_handler: <T005-confirmed-version>
-  freezed_annotation: <T005-confirmed-version>
-  json_annotation: <T005-confirmed-version>
-  intl: <T005-confirmed-version>
+  flutter_riverpod:    <T005-confirmed>
+  riverpod_annotation: <T005-confirmed>
+  go_router:           <T005-confirmed>
+  drift:               <T005-confirmed>
+  sqlite3_flutter_libs:<T005-confirmed>
+  path_provider:       <T005-confirmed>
+  path:                <T005-confirmed>
+  record:              <T005-confirmed>
+  just_audio:          <T005-confirmed>
+  permission_handler:  <T005-confirmed>
+  freezed_annotation:  <T005-confirmed>
+  json_annotation:     <T005-confirmed>
+  intl:                <T005-confirmed>
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: <T005-confirmed-version>
-  build_runner: <T005-confirmed-version>
-  freezed: <T005-confirmed-version>
-  json_serializable: <T005-confirmed-version>
-  drift_dev: <T005-confirmed-version>
-  riverpod_generator: <T005-confirmed-version>
+  flutter_lints:        <T005-confirmed>
+  build_runner:         <T005-confirmed>
+  freezed:              <T005-confirmed>
+  json_serializable:    <T005-confirmed>
+  drift_dev:            <T005-confirmed>
+  riverpod_generator:   <T005-confirmed>
 
 flutter:
   uses-material-design: true
   assets:
     - assets/chord_diagrams/
     - assets/exercises/
+    - assets/audio/
 ```
 
-## 8. 平台配置
+---
 
-### 8.1 Android
+## 10. 禁止技术（硬规则）
 
-| 配置项 | 值 | 说明 |
-|--------|-----|------|
-| minSdkVersion | 21 | Android 5.0 |
-| targetSdkVersion | 34 | Android 14 |
-| compileSdkVersion | 34 | 最新稳定 |
-| 麦克风权限 | RECORD_AUDIO | 录音/调音用 |
+T003 明确禁止在 MVP 中引入以下技术。任何 Agent 不得擅自添加：
 
-**AndroidManifest.xml 必要权限**：
+| 禁止项 | 原因 |
+|--------|------|
+| Firebase / Crashlytics / Analytics | 联网 SDK，违反无 INTERNET 原则 |
+| Sentry / Bugly / 任何 APM | 联网 SDK |
+| Google Analytics / 友盟 / 任何埋点 | 联网 SDK |
+| 任何 Cloud Sync SDK | MVP 不同步 |
+| 任何 AI SDK（OpenAI / Anthropic / 本地模型推理服务） | MVP 不做 AI |
+| 任何广告 SDK（AdMob / Pangle） | MVP 无广告 |
+| `get_it` / `injectable` / `kiwi` | MVP 简化 DI |
+| `flutter_sound` 子包（如不需要） | 增加包大小，无收益 |
+| `sqflite` | 与 Drift 冲突 |
+| `provider` / `flutter_bloc` / `GetX` | 不符合状态管理选型 |
+| `audioplayers`（已选 just_audio） | 重复依赖 |
 
-```xml
-<uses-permission android:name="android.permission.RECORD_AUDIO"/>
-<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
-<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
-```
+**任何需要 INTERNET 权限的依赖自动禁止**。
 
-### 8.2 iOS 预留
+---
 
-| 配置项 | 值 | 说明 |
-|--------|-----|------|
-| 麦克风权限 | NSMicrophoneUsageDescription | 待 iOS 开发时配置 |
-| 部署目标 | iOS 12.0 | 预留 |
+## 11. 测试策略
 
-## 9. 测试策略
+### 11.1 单元测试（flutter_test）
 
-### 9.1 单元测试
+- Riverpod Provider / Notifier 测试；
+- 数据模型 freezed 序列化测试；
+- Repository CRUD 测试（Drift in-memory）；
+- 调音器频率换算、cents 计算工具函数测试。
 
-- Riverpod Provider 测试
-- 数据模型序列化测试
-- 业务逻辑测试
+### 11.2 Widget 测试（flutter_test）
 
-### 9.2 Widget 测试
+- 调音器页面弦切换、状态显示；
+- 节拍器 BPM 调节、启动 / 暂停 / 停止；
+- 自评三档选择；
+- 练习记录列表 / 详情页渲染。
 
-- 独立 Widget 渲染测试
-- 用户交互测试
+### 11.3 集成测试（integration_test，后期）
 
-### 9.3 集成测试（后期）
+- 完整流程：调音 → 单音 → 节拍 → 录音 → 自评 → 保存 → 查看历史；
+- 飞行模式全功能可用；
+- 录音文件丢失场景。
 
-- 完整用户流程 E2E
-- 离线场景验证
+### 11.4 音频功能手动验证清单
 
-## 10. 后期预留扩展点
+- [ ] 麦克风权限被拒绝时，调音器降级为"实验性调音器"，仍显示 GCEA 频率表；
+- [ ] 录音到 4:30 提示"还剩 30 秒"，到 5:00 自动停止；
+- [ ] 录音文件路径写入数据库，回放按钮可正常播放；
+- [ ] 删除练习记录时关联录音文件一并删除；
+- [ ] 录音文件被外部删除时，回放按钮自动隐藏。
 
-### 10.1 Auth Service 抽象
+---
+
+## 12. 后期预留扩展点
+
+> 这些抽象在 MVP 阶段**只预留接口，不实现具体云端/AI 集成**。
+
+### 12.1 Auth Service 抽象
 
 ```dart
-// 当前：直接用 local storage
-// 后期：注入 AuthService 实现
 abstract class AuthService {
   Future<User?> getCurrentUser();
   Future<User> signInAnonymously();
-  Future<void> signInWithApple();
-  Future<void> signInWithGoogle();
+  Future<void> signOut();
 }
 ```
 
-### 10.2 Sync Service 抽象
+MVP 实现：返回 `null` / 抛 `UnsupportedError`。
+
+### 12.2 Sync Service 抽象
 
 ```dart
 abstract class SyncService {
@@ -334,14 +427,41 @@ abstract class SyncService {
 }
 ```
 
-### 10.3 AI Service 抽象
+MVP 实现：空操作（no-op）。
+
+### 12.3 AI Service 抽象
 
 ```dart
-abstract class AIService {
-  Future<PitchEvaluation> evaluatePitch(AudioData audio);
-  Future<RhythmEvaluation> evaluateRhythm(AudioData audio);
-  Future<ChordEvaluation> evaluateChord(AudioData audio);
+abstract class PitchEvaluationService {
+  Future<PitchResult> evaluate(String audioPath);
 }
 ```
 
-这些抽象接口在 MVP 阶段使用 LocalStorage/LocalService 实现，后期再替换为真实后端/AI 服务。
+MVP 实现：抛 `UnsupportedError` 或返回占位结果。
+
+---
+
+## 13. 决策记录（ADR 摘要）
+
+| ADR | 决策 | 决策依据 |
+|-----|------|----------|
+| ADR-001 | MVP Android only，iOS reserved | PRD §11.1，T002 D-01 |
+| ADR-002 | minSdkVersion = 23 | PRD §11.2，T001 record 7.x 要求 |
+| ADR-003 | Riverpod 3.x 风格 + 启用 @riverpod 代码生成 | T001 flutter_docs_notes.md §Riverpod |
+| ADR-004 | Drift + sqlite3_flutter_libs，schemaVersion = 1 | T001 flutter_docs_notes.md §Drift |
+| ADR-005 | go_router 14.x+，不使用 ShellRoute / redirect | T001 flutter_docs_notes.md §go_router |
+| ADR-006 | record 7.x + just_audio 0.10.x | T001 audio_tech_notes.md |
+| ADR-007 | 调音器首选路径 B（record PCM + Dart 自相关） | T001 audio_tech_notes.md §3 |
+| ADR-008 | MVP 不申请 INTERNET 权限 | PRD §11.4，T002 D-30 |
+| ADR-009 | practiceType 改为 primaryPracticeType + practiceTagsJson | PRD §10.1 + T003 数据模型重构 |
+| ADR-010 | T005 通过 Context7 + pub.dev 写入版本号 | T003 版本策略 |
+
+---
+
+## 14. 文档版本
+
+| 版本 | 日期 | 修改内容 | 审批 |
+|------|------|----------|------|
+| 0.1 | 2026-06-19 | T000 初始候选范围 | T000 |
+| 0.2 | T001 | 增加 T001 研究结论，调整候选范围 | T001 |
+| 1.0 | 2026-06-19 | T003 定稿：版本范围同步 T001 研究、明确 ADR、新增禁止技术、minSdk 23、AndroidManifest 权限明确 | T003 |

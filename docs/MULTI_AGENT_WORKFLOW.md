@@ -1,5 +1,71 @@
 # 多 Agent 协作流程 (MULTI_AGENT_WORKFLOW)
 
+## 0. 执行模式分级
+
+本项目协作模式分三级，**当前处于 Level 1 → Level 2 过渡阶段**。
+
+### 0.1 Level 1：人工调度（当前主模式）
+
+| 步骤 | 角色 | 动作 |
+|------|------|------|
+| 1 | ChatGPT（首席架构师） | 拆任务、出具完整 Prompt |
+| 2 | 用户 | 复制 Prompt 给 Claude / MiniMax |
+| 3 | Agent | 执行任务，输出结果 |
+| 4 | 用户 | 把执行报告发回 ChatGPT |
+| 5 | ChatGPT | 审核报告，决定通过 / 打回 |
+
+**特征**：
+- 全程人工中转
+- ChatGPT 决定任务拆分
+- Agent 不直接通信
+
+### 0.2 Level 2：半自动协作（当前过渡目标）
+
+| 步骤 | 角色 | 动作 |
+|------|------|------|
+| 1 | Chief Architect / ChatGPT | 分配任务 |
+| 2 | Agent | 读取对应 Agent md 文档 |
+| 3 | Agent | 按 Task Spec 执行（输入/输出/验收标准固定） |
+| 4 | Agent | 输出 Task Report（统一格式） |
+| 5 | QA Reviewer / Compliance Reviewer | 介入审核 |
+| 6 | Chief Architect | 最终审核 |
+
+**特征**：
+- 每个 Agent 使用对应 md 文档作为身份与流程依据
+- 每个任务有固定输入 / 输出 / 验收标准
+- 每次输出 Task Report
+- QA / Compliance 介入审核
+- 审核门禁明确（详见 agents/00-chief-architect.md）
+
+### 0.3 Level 3：自动化调度（后期再考虑）
+
+| 工具 / 方案 | 状态 |
+|-------------|------|
+| claude-octopus / codex-octopus | 调研中，暂不实现 |
+| MCP（Model Context Protocol） | 调研中，暂不实现 |
+| 本地 task runner | 调研中，暂不实现 |
+| GitHub Issues 驱动 | 调研中，暂不实现 |
+
+**说明**：Level 3 在 MVP 阶段**不急于实现**。先稳固 Level 1 / Level 2，避免过早自动化导致流程失控。
+
+### 0.4 当前阶段判定
+
+- **当前**：Level 1 → Level 2 过渡阶段
+- **目标**：稳定进入 Level 2，所有 Agent 都有明确 md 文档、任务有 Task Report、QA / Compliance 审核介入
+- **不做**：Level 3 自动化调度在 MVP 阶段实现
+
+### 0.5 与第 5 节审核流程的映射
+
+| 模式 | 对应审核流程 | 说明 |
+|------|--------------|------|
+| Level 1 | 5.1 Chief Architect 审核（人工） | ChatGPT 主脑代行 Chief Architect 审核职责 |
+| Level 2 | 5.1 + 5.2 + 5.3 全套审核 | Chief Architect + QA Reviewer + Compliance Reviewer 三方介入 |
+| Level 3 | 自动化审核（暂未实现） | 由 task runner / 自动化脚本替代人工审核 |
+
+**当前阶段（Level 1 → Level 2 过渡）**：默认走 5.1 + 5.2 + 5.3，但执行频率和严格度由 ChatGPT 主脑按情况灵活控制。
+
+---
+
 ## 1. Agent 角色总览
 
 | Agent | Role | 职责 |

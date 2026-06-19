@@ -6,11 +6,11 @@
 
 | Task ID | 名称 | Agent | 状态 | 编码 |
 |---------|------|-------|------|------|
-| T000 | 初始化项目文档和 Agent 体系 | 00-chief-architect | 进行中 | ❌ |
-| T001 | 研究竞品和文档 | 01-product-manager | 待开始 | ❌ |
+| T000 | 初始化项目文档和 Agent 体系 | 00-chief-architect | 已完成 | ❌ |
+| T001 | 研究竞品和文档 | 01-product-manager + 02-flutter-architect + 04-audio-engineer + 08-compliance-reviewer | 待开始 | ❌ |
 | T002 | 最终确定 MVP PRD | 01-product-manager | 待开始 | ❌ |
 | T003 | 最终确定技术架构 | 02-flutter-architect | 待开始 | ❌ |
-| T004 | 创建 Flutter 项目 | 02-flutter-architect | 待开始 | ❌ |
+| T004 | 创建 Flutter 项目 | 02-flutter-architect | 待开始 | ✅ 工程初始化 |
 | T005 | 添加核心依赖 | 02-flutter-architect | 待开始 | ✅ |
 | T006 | 构建导航和 App Shell | 02-flutter-architect | 待开始 | ✅ |
 | T007 | 构建首页和今日练习 | 03-mobile-ui-engineer | 待开始 | ✅ |
@@ -59,23 +59,33 @@
 
 **Task ID**: T001_RESEARCH_COMPETITORS_AND_DOCS
 
-**目标**: 收集竞品分析、技术文档，为后续开发提供参考
+**目标**: 收集竞品分析、技术文档、音频方案、合规政策，为后续开发提供参考
 
-**建议执行 Agent**: 01-product-manager + 02-flutter-architect
+**建议执行 Agent**: 01-product-manager + 02-flutter-architect + 04-audio-engineer + 08-compliance-reviewer
 
 **输入文档**:
 - PRD.md
+- docs/MVP_SCOPE.md
+- docs/TECH_STACK.md
+- docs/AUDIO_RECOGNITION_PLAN.md
+- docs/COMPLIANCE.md
 - research/FIRECRAWL_RESEARCH_PLAN.md
 - research/CONTEXT7_DOCS_PLAN.md
 
 **输出文件**:
-- research/competitor_analysis.md
-- research/flutter_docs_notes.md
+- research/competitor_analysis.md（产品竞品分析）
+- research/flutter_docs_notes.md（Flutter / Riverpod / Drift / go_router 关键文档摘录）
+- research/audio_tech_notes.md（record / just_audio / 调音器 / 音高检测初步技术结论）
+- research/compliance_policy_notes.md（麦克风 / 录音 / 版权 / 用户内容政策风险）
+- research/T001_RESEARCH_SUMMARY.md（T001 研究结论汇总，支持 T002/T003 决策）
 
 **验收标准**:
-- [ ] 竞品分析完成
-- [ ] Flutter 关键文档已查阅
-- [ ] 技术方案有参考
+- [ ] 产品竞品分析完成（至少 3 个竞品）
+- [ ] Flutter / Riverpod / Drift / go_router 关键文档已通过 Context7 确认
+- [ ] record / just_audio / 调音器 / 音高检测方案已有初步技术结论
+- [ ] 麦克风、录音、版权、用户内容政策风险已整理
+- [ ] 研究结论能支持 T002（PRD）和 T003（技术架构）
+- [ ] Chief Architect 审核通过
 
 **编码**: ❌ 否
 
@@ -137,7 +147,7 @@
 
 **Task ID**: T004_CREATE_FLUTTER_PROJECT_SHELL
 
-**目标**: 创建可运行的 Flutter 项目空壳
+**目标**: 创建可运行的 Flutter 项目空壳（工程初始化）
 
 **建议执行 Agent**: 02-flutter-architect
 
@@ -152,8 +162,12 @@
 - [ ] flutter create 成功
 - [ ] 项目可打开
 - [ ] Android 构建配置正确
+- [ ] 仅创建空壳，**不添加任何业务代码**
+- [ ] pubspec.yaml 仅保留默认依赖，**不预先写入** MVP 业务依赖（业务依赖在 T005 写入）
 
-**编码**: ✅ 是
+**编码**: ✅ 是（工程初始化）
+
+> **说明**："工程初始化"指 `flutter create` 创建项目骨架（`pubspec.yaml` / `lib/main.dart` / `android/` 等默认结构），**不包含**业务路由、业务页面、业务依赖。这部分工作分别由 T005 / T006 / T007+ 等后续任务完成。
 
 ---
 

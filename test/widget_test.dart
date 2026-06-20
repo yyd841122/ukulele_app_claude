@@ -1,4 +1,5 @@
-// T013.3 widget smoke test.
+// T013.3_FIX_PENDING_RESULT_AND_INSTALL_DATE_BOUNDARY widget smoke
+// test.
 //
 // Verifies that the UkuleleApp boots, the home page renders the
 // "today's practice" copy, Day 1 is the active day, and at
@@ -6,8 +7,12 @@
 // production `path_provider` (which is unavailable in a unit
 // test environment). The install-date service is overridden to
 // a `DriftInstallDateService` pointing at a fresh in-memory
-// database, and the `appDatabaseProvider` is overridden to the
-// SAME database so the test exercises the Drift path end-to-end.
+// `UserSettingsRepository` (which itself wraps a fresh
+// in-memory `AppDatabase`), and the `appDatabaseProvider` is
+// overridden to the SAME database so the test exercises the
+// Drift path end-to-end.
+//
+// The in-memory database is closed via `addTearDown(db.close)`.
 
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
@@ -20,6 +25,7 @@ import 'package:ukulele_app/app/app.dart';
 import 'package:ukulele_app/data/database/app_database.dart';
 import 'package:ukulele_app/data/database/app_database_provider.dart';
 import 'package:ukulele_app/features/home/application/today_practice_controller.dart';
+import 'package:ukulele_app/shared/repositories/drift_user_settings_repository.dart';
 import 'package:ukulele_app/shared/services/drift_install_date_service.dart';
 import 'package:ukulele_app/shared/services/install_date_service.dart';
 
@@ -33,14 +39,14 @@ void main() {
 
   testWidgets('App boots and home page renders', (WidgetTester tester) async {
     // Fresh in-memory DB; the same DB is wired into
-    // `appDatabaseProvider` (so the default Drift
+    // `appDatabaseProvider` (so the default
     // `completedTasksRepositoryProvider` and the test's
-    // `DriftInstallDateService` share it).
+    // `UserSettingsRepository` share it).
     final AppDatabase db = AppDatabase.forTesting(NativeDatabase.memory());
     addTearDown(db.close);
     final DateTime fixed = DateTime(2026, 6, 20, 9, 0);
     final InstallDateService installService = DriftInstallDateService(
-      database: db,
+      repository: DriftUserSettingsRepository(database: db),
       clock: () => fixed,
     );
     await tester.pumpWidget(

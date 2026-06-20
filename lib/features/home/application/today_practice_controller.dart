@@ -1,25 +1,44 @@
 // Riverpod controller for the home / "today's practice" page.
 //
-// T013.3 scope:
+// T013.3_FIX_PENDING_RESULT_AND_INSTALL_DATE_BOUNDARY scope:
+// - `toggleTaskCompleted` now returns [ToggleTaskResult] (not
+//   `bool`). The UI can route SnackBars by intent:
+//     * `success` — write committed; no UI message.
+//     * `ignored` — click was legitimately dropped (unknown id,
+//        in-flight for this id, provider unmounted, or the local
+//        day rolled over mid-write); no UI message.
+//     * `failure` — Repository write threw; UI shows a retry
+//        SnackBar.
+// - `TodayPracticeState.pendingTaskIds` exposes the in-flight
+//   set to the widget tree. The Checkbox on each task card
+//   reads `isPending` and renders as disabled when its id is in
+//   the set, so the user cannot fire a second click while the
+//   first is still in flight.
+// - `completedAt` is sourced from
+//   `ref.read(clockProvider)().toUtc()`. No direct `DateTime.now()`
+//   calls remain — tests can pin the stamp by overriding the
+//   clock.
+// - `state.installDate` is always local-midnight. The
+//   `InstallDateService` returns a UTC instant; we project to
+//   local time first, then strip to local-midnight, so the
+//   `calculatePracticeDayIndex` call sees consistent local dates
+//   on both sides.
+// - Cross-day safety: after the await, if the local day rolled
+//   over (the clock advanced past midnight while the write was
+//   in flight), we DO NOT merge yesterday's result into today's
+//   state. Result is `ignored`.
+// - Lifecycle: no `catch (Object)` swallow. After every await
+//   we check `ref.mounted`; if the Provider was disposed mid-
+//   write we leave the state alone and return `ignored`.
+//
+// T013.3 baseline scope (still in effect):
 // - Converted from a synchronous `Notifier<TodayPracticeState>`
-//   to `AsyncNotifier<TodayPracticeState>`. The state is built by
-//   awaiting two persistence reads:
+//   to `AsyncNotifier<TodayPracticeState>`. The state is built
+//   by awaiting two persistence reads:
 //     1. The persisted install date (Drift /
 //        `InstallDateService`).
 //     2. The completed-task set for today (Drift /
 //        `CompletedTasksRepository`).
-//   This means the UI must handle the `AsyncValue` envelope
-//   instead of seeing a "fake empty" snapshot during the load
-//   window.
-// - `toggleTaskCompleted` is now `Future<bool>`. It awaits the
-//   persistence write BEFORE updating the in-memory state, so:
-//     * On success it returns `true` and the UI sees the new
-//       completion state.
-//     * On failure it returns `false` and leaves the state
-//       unchanged.
-//   Concurrent clicks on the same `taskId` while a write is in
-//   flight are dropped (return `false`) — see `_pendingTaskIds`.
-//   Concurrent clicks on DIFFERENT taskIds proceed independently.
 // - The provider stays hand-written (no `@riverpod` codegen) per
 //   the project convention.
 
@@ -28,25 +47,26 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:ukulele_app/core/constants/practice_plan_constants.dart';
 import 'package:ukulele_app/core/utils/practice_day_calculator.dart';
-import 'package:ukulele_app/data/database/app_database_provider.dart';
 import 'package:ukulele_app/features/home/data/completed_tasks_repository.dart';
 import 'package:ukulele_app/features/home/data/completed_tasks_repository_provider.dart';
 import 'package:ukulele_app/features/home/domain/built_in_practice_plan.dart';
 import 'package:ukulele_app/features/home/domain/practice_task.dart';
 import 'package:ukulele_app/features/home/domain/practice_task_status.dart';
+import 'package:ukulele_app/shared/repositories/user_settings_repository_provider.dart';
 import 'package:ukulele_app/shared/services/drift_install_date_service.dart';
 import 'package:ukulele_app/shared/services/install_date_service.dart';
 
 /// Provider for the [InstallDateService] used by the home controller.
 ///
 /// T013.3 default is the Drift-backed implementation, wired to the
-/// shared [appDatabaseProvider]. Tests can override this with
+/// shared `userSettingsRepositoryProvider` (which itself wires the
+/// `appDatabaseProvider`). Tests can override this with
 /// [InMemoryInstallDateService] (or any other implementation) to
 /// pin install date / isolate from the DB.
 final Provider<InstallDateService> installDateServiceProvider =
     Provider<InstallDateService>((Ref ref) {
   return DriftInstallDateService(
-    database: ref.watch(appDatabaseProvider),
+    repository: ref.watch(userSettingsRepositoryProvider),
   );
 });
 
@@ -58,6 +78,35 @@ final Provider<InstallDateService> installDateServiceProvider =
 final Provider<DateTime Function()> clockProvider =
     Provider<DateTime Function()>((Ref ref) => DateTime.now);
 
+/// Outcome of a single call to [TodayPracticeController.toggleTaskCompleted].
+///
+/// The enum is the single source of truth for "what should the UI
+/// do next" — it replaces the previous `bool` return, which could
+/// not distinguish a successful toggle from a legitimately dropped
+/// click.
+enum ToggleTaskResult {
+  /// The Repository write committed and the in-memory state now
+  /// reflects the new completion flag.
+  success,
+
+  /// The click was dropped on purpose. Reasons include:
+  /// - The controller was still loading / in an error state.
+  /// - The taskId is not part of today's plan.
+  /// - Another write for the same taskId was already in flight.
+  /// - The Provider was disposed between the start of the
+  ///   call and its completion.
+  /// - The local day rolled over while the write was in flight
+  ///   (we will not merge yesterday's toggle into today's state).
+  ///
+  /// `ignored` is NOT a failure. The UI MUST NOT show a
+  /// "保存失败" SnackBar in response to this outcome.
+  ignored,
+
+  /// The Repository write threw. The in-memory state is
+  /// unchanged. The UI MAY show a "保存失败，请重试" SnackBar.
+  failure,
+}
+
 /// Immutable state for the home page.
 @immutable
 class TodayPracticeState {
@@ -67,14 +116,17 @@ class TodayPracticeState {
     required this.dayIndex,
     required this.plan,
     required this.completedTaskIds,
+    this.pendingTaskIds = const <String>{},
   });
 
   /// The "today" used to compute [dayIndex] (already normalised
-  /// to local-midnight by the calculator).
+  /// to local-midnight by the controller).
   final DateTime today;
 
-  /// The install date used to compute [dayIndex] (already
-  /// normalised to local-midnight by the calculator).
+  /// The install date used to compute [dayIndex]. Always
+  /// normalised to local-midnight by the controller — the
+  /// underlying [InstallDateService] returns a UTC instant, the
+  /// controller projects to local and strips the time-of-day.
   final DateTime installDate;
 
   /// 1-based day in the 7-day cycle. Always in 1..7.
@@ -86,6 +138,13 @@ class TodayPracticeState {
 
   /// Set of task ids that are currently marked done.
   final Set<String> completedTaskIds;
+
+  /// Set of task ids whose toggle write is currently in flight.
+  ///
+  /// The widget tree disables the Checkbox for any task whose id
+  /// is in this set, so a user cannot fire a second click while
+  /// the first is still saving.
+  final Set<String> pendingTaskIds;
 
   /// Number of tasks marked done.
   int get completedTaskCount => completedTaskIds.length;
@@ -104,12 +163,18 @@ class TodayPracticeState {
   /// done.
   bool isTaskCompleted(String taskId) => completedTaskIds.contains(taskId);
 
+  /// Returns `true` iff a toggle write for the given id is
+  /// currently in flight. The UI uses this to disable the
+  /// Checkbox.
+  bool isTaskPending(String taskId) => pendingTaskIds.contains(taskId);
+
   TodayPracticeState copyWith({
     DateTime? today,
     DateTime? installDate,
     int? dayIndex,
     BuiltInPracticePlan? plan,
     Set<String>? completedTaskIds,
+    Set<String>? pendingTaskIds,
   }) {
     return TodayPracticeState(
       today: today ?? this.today,
@@ -117,6 +182,7 @@ class TodayPracticeState {
       dayIndex: dayIndex ?? this.dayIndex,
       plan: plan ?? this.plan,
       completedTaskIds: completedTaskIds ?? this.completedTaskIds,
+      pendingTaskIds: pendingTaskIds ?? this.pendingTaskIds,
     );
   }
 }
@@ -128,26 +194,18 @@ class TodayPracticeState {
 /// in flight the provider exposes an `AsyncLoading`. The UI
 /// MUST handle the `AsyncValue` envelope.
 class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
-  // Tracks task ids whose toggle write is currently in flight.
-  //
-  // Set, not bool, because the spec requires different taskIds to
-  // be processed independently: task A's pending write MUST NOT
-  // block task B's pending write. A single `bool _busy` would
-  // over-block.
-  final Set<String> _pendingTaskIds = <String>{};
-
   @override
   Future<TodayPracticeState> build() async {
     final InstallDateService service = ref.read(installDateServiceProvider);
     final CompletedTasksRepository repo =
         ref.read(completedTasksRepositoryProvider);
-    final DateTime installDate = await service.getInstallDate();
+    final DateTime installInstant = await service.getInstallDate();
     final DateTime now = ref.read(clockProvider)();
-    final DateTime today = DateTime(now.year, now.month, now.day);
+    final DateTime today = _localMidnight(now);
     final Set<String> completedIds = await repo.getCompletedTaskIds(today);
 
     final int dayIndex = calculatePracticeDayIndex(
-      installDate: installDate,
+      installDate: installInstant,
       today: now,
     );
 
@@ -164,11 +222,12 @@ class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
 
     return TodayPracticeState(
       today: today,
-      installDate: DateTime(
-        installDate.year,
-        installDate.month,
-        installDate.day,
-      ),
+      // The service returns a UTC instant. Project to local time
+      // BEFORE stripping the time-of-day, otherwise an install at
+      // 23:30 local can leak into the previous local day (the
+      // calculator would see 15:30 UTC of the day before in
+      // CST-equivalent offsets).
+      installDate: _localMidnight(installInstant.toLocal()),
       dayIndex: dayIndex,
       plan: BuiltInPracticePlan(
         dayIndex: rawPlan.dayIndex,
@@ -183,48 +242,49 @@ class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
   /// Toggles the completion state of [taskId] and persists the
   /// change.
   ///
-  /// Returns:
-  /// - `true` if the persistence write succeeded and the in-memory
-  ///   state now reflects the new completion flag.
-  /// - `false` if the persistence write failed (state is left
-  ///   unchanged) OR if a write for [taskId] is already in flight
-  ///   (concurrent click is dropped — UI should briefly disable
-  ///   the checkbox).
+  /// Returns a [ToggleTaskResult] describing the outcome — see
+  /// that type for the exact mapping from cause to result.
   ///
-  /// Unknown ids are ignored: a typo or a stale id from an older
-  /// app version cannot silently inflate the completion count.
-  Future<bool> toggleTaskCompleted(String taskId) async {
-    final AsyncValue<TodayPracticeState> snapshot = state;
-    final TodayPracticeState? snapshotValue = snapshot.value;
+  /// No direct `DateTime.now()` calls: the `completedAt` stamp
+  /// is sourced from `ref.read(clockProvider)`. The Provider
+  /// lifecycle is guarded with `ref.mounted` after every await.
+  Future<ToggleTaskResult> toggleTaskCompleted(String taskId) async {
+    final TodayPracticeState? snapshotValue = state.value;
     if (snapshotValue == null) {
       // Still loading or in error — refuse the write so the UI
       // does not silently mutate a half-initialised state.
-      return false;
+      return ToggleTaskResult.ignored;
     }
     final bool isKnownTask = snapshotValue.plan.tasks.any(
       (PracticeTask t) => t.id == taskId,
     );
     if (!isKnownTask) {
-      return false;
+      return ToggleTaskResult.ignored;
     }
-    if (_pendingTaskIds.contains(taskId)) {
+    if (snapshotValue.pendingTaskIds.contains(taskId)) {
       // Another write for this id is still pending. Drop the
       // duplicate click; the in-flight write will resolve the
       // UI state on its own.
-      return false;
+      return ToggleTaskResult.ignored;
     }
-    _pendingTaskIds.add(taskId);
+
+    // Mark the id pending BEFORE the await so the UI can
+    // immediately disable the Checkbox. Reading the LATEST state
+    // (not the snapshot) ensures a concurrent toggle on a
+    // DIFFERENT id is preserved.
+    _publishPendingAdd(taskId);
 
     final bool wasCompleted = snapshotValue.completedTaskIds.contains(taskId);
     final bool nowCompleted = !wasCompleted;
     final CompletedTasksRepository repo =
         ref.read(completedTasksRepositoryProvider);
+
     try {
       if (nowCompleted) {
         await repo.markCompleted(
           date: snapshotValue.today,
           taskId: taskId,
-          completedAt: DateTime.now().toUtc(),
+          completedAt: ref.read(clockProvider)().toUtc(),
         );
       } else {
         await repo.unmarkCompleted(
@@ -233,43 +293,54 @@ class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
         );
       }
     } catch (_) {
-      // Persistence failed. Do not mutate state.
-      _pendingTaskIds.remove(taskId);
-      return false;
+      // Persistence failed. Clear the pending flag, leave the
+      // completion set alone, surface a retry cue.
+      if (ref.mounted) {
+        _publishPendingRemove(taskId);
+      }
+      return ToggleTaskResult.failure;
     }
 
-    // Re-read state.value (NOT the snapshot captured at
-    // function entry): another concurrent toggle on a DIFFERENT
-    // task may have already updated the in-memory completion set
-    // while we were awaiting the DB write. Overwriting
-    // `state.value` with a set that only knows about *this* task
-    // would clobber that progress.
-    final TodayPracticeState? latest;
-    try {
-      latest = state.value;
-    } on Object {
-      // The provider was disposed between our await and here.
-      // The ref is unmounted and `state` throws
-      // `UnmountedRefException`. Nothing safe to write back to.
-      _pendingTaskIds.remove(taskId);
-      return false;
+    // Re-read state.value (NOT the snapshot captured at function
+    // entry): another concurrent toggle on a DIFFERENT task may
+    // have already updated the in-memory completion set while we
+    // were awaiting the DB write. Overwriting `state.value` with
+    // a set that only knows about *this* task would clobber that
+    // progress.
+    if (!ref.mounted) {
+      // Provider was disposed between our await and here.
+      return ToggleTaskResult.ignored;
     }
+    final TodayPracticeState? latest = state.value;
     if (latest == null) {
       // The AsyncValue is in a loading/error state — refuse the
       // in-memory update.
-      _pendingTaskIds.remove(taskId);
-      return false;
+      _publishPendingRemove(taskId);
+      return ToggleTaskResult.ignored;
     }
-    final Set<String> next = Set<String>.from(latest.completedTaskIds);
+    // Cross-day guard: if the local "today" advanced while the
+    // write was in flight, do NOT merge yesterday's toggle into
+    // today's state. The user is now looking at a different day
+    // and the persisted row keyed by yesterday's `localDate` is
+    // semantically the right place for this write — we just
+    // should not touch today's in-memory view.
+    if (latest.today != snapshotValue.today) {
+      _publishPendingRemove(taskId);
+      return ToggleTaskResult.ignored;
+    }
+
+    final Set<String> nextCompleted = Set<String>.from(latest.completedTaskIds);
     if (nowCompleted) {
-      next.add(taskId);
+      nextCompleted.add(taskId);
     } else {
-      next.remove(taskId);
+      nextCompleted.remove(taskId);
     }
+    final Set<String> nextPending = Set<String>.from(latest.pendingTaskIds)
+      ..remove(taskId);
     final List<PracticeTask> nextTasks = latest.plan.tasks
         .map(
           (PracticeTask t) => t.copyWith(
-            status: next.contains(t.id)
+            status: nextCompleted.contains(t.id)
                 ? PracticeTaskStatus.done
                 : PracticeTaskStatus.todo,
           ),
@@ -277,7 +348,8 @@ class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
         .toList(growable: false);
     state = AsyncData<TodayPracticeState>(
       latest.copyWith(
-        completedTaskIds: Set<String>.unmodifiable(next),
+        completedTaskIds: Set<String>.unmodifiable(nextCompleted),
+        pendingTaskIds: Set<String>.unmodifiable(nextPending),
         plan: BuiltInPracticePlan(
           dayIndex: latest.plan.dayIndex,
           title: latest.plan.title,
@@ -286,8 +358,7 @@ class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
         ),
       ),
     );
-    _pendingTaskIds.remove(taskId);
-    return true;
+    return ToggleTaskResult.success;
   }
 
   /// Test-only helper that clears the in-flight write guard. Do
@@ -295,7 +366,46 @@ class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
   /// reset state between scenarios.
   @visibleForTesting
   void resetPendingForTesting() {
-    _pendingTaskIds.clear();
+    if (state.value == null) return;
+    state = AsyncData<TodayPracticeState>(
+      state.value!.copyWith(pendingTaskIds: const <String>{}),
+    );
+  }
+
+  // --- Internal helpers ---
+
+  /// Returns the local-midnight representation of [d]. Strips the
+  /// time-of-day component to keep `today` consistent with what
+  /// the calculator expects.
+  static DateTime _localMidnight(DateTime d) {
+    return DateTime(d.year, d.month, d.day);
+  }
+
+  /// Adds [taskId] to `pendingTaskIds` and publishes the new
+  /// state. The current value must be non-null when this is
+  /// called.
+  void _publishPendingAdd(String taskId) {
+    final TodayPracticeState? current = state.value;
+    if (current == null) return;
+    final Set<String> next = Set<String>.from(current.pendingTaskIds)
+      ..add(taskId);
+    state = AsyncData<TodayPracticeState>(
+      current.copyWith(pendingTaskIds: Set<String>.unmodifiable(next)),
+    );
+  }
+
+  /// Removes [taskId] from `pendingTaskIds` and publishes the new
+  /// state. The current value must be non-null when this is
+  /// called.
+  void _publishPendingRemove(String taskId) {
+    final TodayPracticeState? current = state.value;
+    if (current == null) return;
+    if (!current.pendingTaskIds.contains(taskId)) return;
+    final Set<String> next = Set<String>.from(current.pendingTaskIds)
+      ..remove(taskId);
+    state = AsyncData<TodayPracticeState>(
+      current.copyWith(pendingTaskIds: Set<String>.unmodifiable(next)),
+    );
   }
 }
 

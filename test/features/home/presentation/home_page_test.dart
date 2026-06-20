@@ -1,14 +1,23 @@
-// Widget tests for [HomePage] (T013.3).
+// Widget tests for [HomePage]
+// (T013.3_FIX_PENDING_RESULT_AND_INSTALL_DATE_BOUNDARY).
 //
 // T013.3 contract under test:
 // - The page renders a loading spinner while the controller is
 //   still building.
 // - A failure in the build path renders the error view with a
-//   retry button. Pressing retry re-runs `build()` (the test
-//   re-fixes the underlying service before the second attempt).
+//   retry button. Pressing retry re-runs `build()`.
 // - On data, the header, task cards and quick actions render as
 //   before — i.e. layout outside the AsyncValue envelope is
 //   unchanged.
+// - Duplicate concurrent clicks (same taskId) MUST NOT show a
+//   "保存失败，请重试" SnackBar — the second click is `ignored`,
+//   not a failure.
+// - A Repository write exception (e.g. read-only repo) MUST show
+//   the SnackBar AND clear the pending flag (i.e. the Checkbox
+//   re-enables) once the failure surfaces.
+// - The Checkbox is rendered as DISABLED while a write is
+//   pending (so a second click on the same taskId cannot even
+//   fire).
 
 import 'dart:async';
 
@@ -29,17 +38,12 @@ import 'package:ukulele_app/shared/services/install_date_service.dart';
 
 void main() {
   setUpAll(() async {
-    // The home page renders a localised date; the intl package
-    // requires an explicit locale-data initialisation in unit
-    // tests.
     await initializeDateFormatting('zh_CN');
   });
 
   group('HomePage AsyncValue rendering', () {
     testWidgets('shows loading spinner while build is in flight',
         (WidgetTester tester) async {
-      // Slow install-date service: we never resolve it in this
-      // test, so the controller stays in AsyncLoading.
       final AppDatabase db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
       final ProviderContainer container = ProviderContainer(
@@ -52,15 +56,12 @@ void main() {
         ],
       );
       addTearDown(container.dispose);
-      // We do NOT await `.future` — the controller should remain
-      // in loading.
       await tester.pumpWidget(
         UncontrolledProviderScope(
           container: container,
           child: const MaterialApp(home: HomePage()),
         ),
       );
-      // Allow the initial frame to land.
       await tester.pump();
       expect(find.byType(CircularProgressIndicator), findsOneWidget);
       expect(find.text('正在加载今日练习…'), findsOneWidget);
@@ -86,19 +87,13 @@ void main() {
           child: const MaterialApp(home: HomePage()),
         ),
       );
-      // Allow the error to surface.
       await tester.pumpAndSettle();
       expect(find.text('加载今日练习失败，请重试。'), findsOneWidget);
       expect(find.text('重试'), findsOneWidget);
 
-      // Flip the service to succeed and tap retry.
       service.failNext = false;
       await tester.tap(find.text('重试'));
-      // Re-pump to let the retry resolve and the page re-render
-      // with the data state.
       await tester.pumpAndSettle();
-      // The data state is now showing: header + task cards are
-      // present.
       expect(find.text('今日练习'), findsOneWidget);
       expect(find.text('Day 1'), findsOneWidget);
     });
@@ -131,16 +126,8 @@ void main() {
       expect(find.byType(Checkbox), findsNWidgets(3));
     });
 
-    testWidgets('toggle returns false -> SnackBar 保存失败，请重试 is shown',
+    testWidgets('repository write failure -> SnackBar 保存失败，请重试 is shown',
         (WidgetTester tester) async {
-      // We pin a controller that always returns false on
-      // toggleTaskCompleted. We use a custom controller binding
-      // by overriding the notifier via a small wrapper. Because
-      // AsyncNotifier construction is fixed by the
-      // `AsyncNotifierProvider` constructor, we instead override
-      // the install-date service so the controller's build
-      // succeeds but the `completedTasksRepositoryProvider` can
-      // be made to throw.
       final AppDatabase db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
       final DateTime fixed = DateTime(2026, 6, 20, 9, 0);
@@ -164,13 +151,141 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      // Tap the first checkbox.
       await tester.tap(find.byType(Checkbox).first);
-      // The toggle fails (read-only repo), so a SnackBar is
-      // shown.
-      await tester.pump(); // schedule the SnackBar
+      await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       expect(find.text('保存失败，请重试'), findsOneWidget);
+      // After the failure the pending flag is cleared, so the
+      // Checkbox must be re-enabled (i.e. onChanged != null) so
+      // the user can retry. We assert by tapping it again and
+      // observing the SnackBar a second time.
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(Checkbox).first);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('保存失败，请重试'), findsOneWidget);
+    });
+
+    testWidgets('duplicate toggle does NOT show a failure SnackBar',
+        (WidgetTester tester) async {
+      final AppDatabase db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final DateTime fixed = DateTime(2026, 6, 20, 9, 0);
+      final ProviderContainer container = ProviderContainer(
+        overrides: <Override>[
+          appDatabaseProvider.overrideWithValue(db),
+          clockProvider.overrideWithValue(() => fixed),
+          installDateServiceProvider.overrideWithValue(
+            _FakeInstallDateService(fixed),
+          ),
+          completedTasksRepositoryProvider.overrideWithValue(
+            _GatedCompletedTasksRepository(),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: HomePage()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Drive the duplicate-click scenario directly through the
+      // controller — widget taps on a disabled Checkbox are
+      // swallowed by Flutter before they ever reach
+      // `onToggleCompleted`, so the only way to exercise the
+      // "controller returns ignored" path is to call the
+      // controller's API twice in quick succession.
+      final TodayPracticeController controller =
+          container.read(todayPracticeControllerProvider.notifier);
+      final Completer<void> release = Completer<void>();
+      _GatedCompletedTasksRepository.gate = release.future;
+
+      final String taskId = container
+          .read(todayPracticeControllerProvider)
+          .value!
+          .plan
+          .tasks
+          .first
+          .id;
+      // Kick off the first write. We do NOT await it yet — the
+      // gate holds it open.
+      final Future<ToggleTaskResult> first =
+          controller.toggleTaskCompleted(taskId);
+      // Let the controller publish the pending state. A single
+      // pump is enough because the controller's state mutation
+      // is synchronous once the microtask is drained.
+      await tester.pump();
+      // Fire the duplicate click. The controller's pending
+      // guard returns `ignored` immediately.
+      final ToggleTaskResult second =
+          await controller.toggleTaskCompleted(taskId);
+
+      expect(second, ToggleTaskResult.ignored,
+          reason: 'duplicate click must return ignored');
+      // No SnackBar should have been queued at this point.
+      expect(find.text('保存失败，请重试'), findsNothing);
+      // Drain the in-flight write so the test exits cleanly.
+      release.complete();
+      await first;
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('Checkbox is disabled while a write is pending',
+        (WidgetTester tester) async {
+      final AppDatabase db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final DateTime fixed = DateTime(2026, 6, 20, 9, 0);
+      final ProviderContainer container = ProviderContainer(
+        overrides: <Override>[
+          appDatabaseProvider.overrideWithValue(db),
+          clockProvider.overrideWithValue(() => fixed),
+          installDateServiceProvider.overrideWithValue(
+            _FakeInstallDateService(fixed),
+          ),
+          completedTasksRepositoryProvider.overrideWithValue(
+            _GatedCompletedTasksRepository(),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: HomePage()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Hold the write open.
+      final Completer<void> release = Completer<void>();
+      _GatedCompletedTasksRepository.gate = release.future;
+
+      // Tap the first checkbox. The first write goes pending; the
+      // UI rebuilds with the Checkbox disabled.
+      await tester.tap(find.byType(Checkbox).first, warnIfMissed: false);
+      await tester.pump();
+      // Re-find the Checkbox after the rebuild; it should now be
+      // disabled (onChanged == null).
+      final Checkbox firstCheckbox = tester.widget<Checkbox>(
+        find.byType(Checkbox).first,
+      );
+      expect(firstCheckbox.onChanged, isNull,
+          reason: 'Checkbox must be disabled while pending');
+      expect(firstCheckbox.value, isFalse,
+          reason: 'pending must not flip the visual state');
+
+      // Release the gate and let the write finish so the page
+      // can settle and the test teardown can run.
+      release.complete();
+      await tester.pumpAndSettle();
+      final Checkbox afterCheckbox = tester.widget<Checkbox>(
+        find.byType(Checkbox).first,
+      );
+      expect(afterCheckbox.onChanged, isNotNull);
+      expect(afterCheckbox.value, isTrue);
     });
   });
 }
@@ -188,7 +303,6 @@ class _FakeInstallDateService implements InstallDateService {
 class _NeverCompletingInstallDateService implements InstallDateService {
   @override
   Future<DateTime> getInstallDate() {
-    // Intentionally never completes.
     return Completer<DateTime>().future;
   }
 }
@@ -235,5 +349,43 @@ class _ReadOnlyCompletedTasksRepository implements CompletedTasksRepository {
     required String taskId,
   }) async {
     throw StateError('read-only repository');
+  }
+}
+
+/// Gated completed-tasks repository: writes block until
+/// `_GatedCompletedTasksRepository.gate` completes.
+class _GatedCompletedTasksRepository implements CompletedTasksRepository {
+  static Future<void>? gate;
+
+  @override
+  Future<Set<String>> getCompletedTaskIds(DateTime date) async =>
+      const <String>{};
+
+  @override
+  Stream<Set<String>> watchCompletedTaskIds(DateTime date) =>
+      const Stream<Set<String>>.empty();
+
+  @override
+  Future<void> markCompleted({
+    required DateTime date,
+    required String taskId,
+    required DateTime completedAt,
+  }) async {
+    final Future<void>? g = gate;
+    if (g != null) {
+      await g;
+    }
+  }
+
+  @override
+  Future<bool> unmarkCompleted({
+    required DateTime date,
+    required String taskId,
+  }) async {
+    final Future<void>? g = gate;
+    if (g != null) {
+      await g;
+    }
+    return true;
   }
 }

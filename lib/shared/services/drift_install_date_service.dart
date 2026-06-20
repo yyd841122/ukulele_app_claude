@@ -1,13 +1,33 @@
 // Drift-backed install-date service (T013.3).
 //
 // Stores the first-launch instant under the
-// `app.installDate` key in the `user_settings` table. The
-// value is persisted as an ISO-8601 UTC string so it round-trips
-// losslessly across timezones.
+// `app.installDate` key in the `user_settings` table via the
+// generic [UserSettingsRepository] boundary.
 //
-// Contract highlights:
-// - First call within a process records `DateTime.now().toUtc()`
-//   and persists it.
+// T013.3_FIX_PENDING_RESULT_AND_INSTALL_DATE_BOUNDARY changes:
+// - The service now depends ONLY on [UserSettingsRepository].
+//   It does NOT import `AppDatabase`, `UserSettingData`, or
+//   `UserSettingsCompanion`. Feature-side services MUST stay
+//   behind the repository boundary; reaching into Drift here
+//   would force the controller (and any future caller) to share
+//   the same Drift-typed surface area.
+//
+// Timezone contract:
+// - On first launch the service writes the current UTC instant
+//   as an ISO-8601 string with an explicit `Z` (e.g.
+//   `2026-06-20T09:00:00.000Z`).
+// - On read, the service accepts any timezone-aware ISO-8601
+//   string:
+//     * `Z` suffix      → returns `DateTime` in UTC.
+//     * `±HH:MM` offset → returns `DateTime.parse(...).toUtc()`.
+// - Naive ISO strings (no `Z`, no offset), pure date strings
+//   (`YYYY-MM-DD`), and unparseable garbage all throw
+//   [FormatException]. The controller surfaces this as an
+//   AsyncError and the UI offers a Retry.
+//
+// Single-flight contract (preserved from T013.3 baseline):
+// - First call within a process records `clock().toUtc()` and
+//   persists it.
 // - Subsequent calls (in the same process or after a cold start)
 //   return the persisted value verbatim.
 // - Concurrent callers MUST observe a single write — the
@@ -16,31 +36,33 @@
 //   calls cannot race to install two different dates.
 // - If the persisted value cannot be parsed as ISO-8601, the
 //   service throws [FormatException] rather than silently
-//   overwriting it. The caller (the Controller) is responsible
-//   for surfacing this error.
+//   overwriting it, and the single-flight slot is reset so a
+//   subsequent call (after the row has been repaired) can
+//   retry.
 import 'dart:async';
 
-import 'package:ukulele_app/data/database/app_database.dart';
+import 'package:ukulele_app/shared/repositories/user_settings_repository.dart';
 import 'package:ukulele_app/shared/services/install_date_service.dart';
 
 /// Key used to store the install date in `user_settings`.
 const String kInstallDateKey = 'app.installDate';
 
 /// Drift-backed [InstallDateService] reading and writing the
-/// `app.installDate` row.
+/// `app.installDate` row through the generic
+/// [UserSettingsRepository] boundary.
 class DriftInstallDateService implements InstallDateService {
   DriftInstallDateService({
-    required AppDatabase database,
+    required UserSettingsRepository repository,
     DateTime Function()? clock,
-  })  : _db = database,
+  })  : _repository = repository,
         _clock = clock ?? DateTime.now;
 
-  final AppDatabase _db;
+  final UserSettingsRepository _repository;
   final DateTime Function() _clock;
 
   // Single-flight guard for the first-launch write.
   //
-  // On the very first call we kick off an async DB read + (maybe)
+  // On the very first call we kick off an async read + (maybe)
   // write. Every other concurrent caller awaits the same
   // [Completer] so the underlying row is touched exactly once per
   // process.
@@ -62,26 +84,19 @@ class DriftInstallDateService implements InstallDateService {
 
   Future<void> _loadOrInstall(Completer<DateTime> completer) async {
     try {
-      final UserSettingData? row = await (_db.select(_db.userSettings)
-            ..where(($UserSettingsTable t) => t.key.equals(kInstallDateKey)))
-          .getSingleOrNull();
-      if (row != null) {
-        completer.complete(_parseIso(row.value));
+      final String? existing = await _repository.getValue(kInstallDateKey);
+      if (existing != null) {
+        completer.complete(parseIsoUtc(existing));
         return;
       }
       // First launch in this process AND on this device. Persist
-      // the current UTC instant. The DB layer uses
-      // `insertOnConflictUpdate` so a re-run of this branch (e.g.
-      // because two processes raced before either wrote) converges
-      // to the same row.
+      // the current UTC instant.
       final DateTime now = _clock().toUtc();
-      await _db.into(_db.userSettings).insertOnConflictUpdate(
-            UserSettingsCompanion.insert(
-              key: kInstallDateKey,
-              value: now.toIso8601String(),
-              updatedAt: now,
-            ),
-          );
+      await _repository.setValue(
+        key: kInstallDateKey,
+        value: now.toIso8601String(),
+        updatedAt: now,
+      );
       completer.complete(now);
     } catch (e, st) {
       // Reset the single-flight slot so a *subsequent* call can
@@ -93,16 +108,61 @@ class DriftInstallDateService implements InstallDateService {
     }
   }
 
-  /// Parses [raw] as an ISO-8601 UTC instant. Throws
-  /// [FormatException] on any deviation so callers can decide
-  /// whether to surface, repair, or quarantine the bad data.
-  static DateTime _parseIso(String raw) {
+  /// Parses [raw] as a timezone-aware ISO-8601 instant and
+  /// returns it as a UTC `DateTime`.
+  ///
+  /// Accepted shapes:
+  /// - `YYYY-MM-DDTHH:MM:SS(.fff)?Z` (UTC, e.g. produced by
+  ///   [DateTime.toIso8601String] on a UTC instant).
+  /// - `YYYY-MM-DDTHH:MM:SS(.fff)?±HH:MM` (explicit offset).
+  ///
+  /// Rejected shapes — all throw [FormatException]:
+  /// - `YYYY-MM-DDTHH:MM:SS` (no timezone designator).
+  /// - `YYYY-MM-DD` (pure date, no time).
+  /// - Anything [DateTime.parse] refuses.
+  ///
+  /// The static surface exists so tests can exercise the
+  /// parser without instantiating a full Drift stack.
+  static DateTime parseIsoUtc(String raw) {
     final DateTime? parsed = DateTime.tryParse(raw);
     if (parsed == null) {
       throw FormatException(
         'Stored install date "$raw" is not a valid ISO-8601 string',
       );
     }
-    return parsed;
+    // DateTime.tryParse / parse returns a UTC `DateTime` when the
+    // input ends in `Z` and a local `DateTime` when the input has
+    // an explicit offset (per the Dart spec). Either way we need
+    // the caller's `isUtc` flag to read as `true` so downstream
+    // `state.installDate` is always UTC. We additionally guard
+    // against naive strings by inspecting the input ourselves.
+    if (!_hasTimezoneDesignator(raw)) {
+      throw FormatException(
+        'Stored install date "$raw" is missing a timezone designator',
+      );
+    }
+    return parsed.toUtc();
+  }
+
+  /// Returns `true` iff [raw] carries an explicit `Z` or
+  /// `±HH:MM` offset. The Dart parser is permissive about
+  /// timezone-less ISO strings, so we double-check here.
+  static bool _hasTimezoneDesignator(String raw) {
+    if (raw.isEmpty) return false;
+    // Walk the string looking for `Z` or `±` (i.e. `+` / `-` in
+    // the time-of-day position). The position must come AFTER
+    // the time component (`T...`).
+    final int tIndex = raw.indexOf('T');
+    if (tIndex < 0) {
+      // No time component: pure date, not allowed.
+      return false;
+    }
+    final String afterT = raw.substring(tIndex + 1);
+    if (afterT.endsWith('Z') || afterT.endsWith('z')) {
+      return true;
+    }
+    // Look for a `+` or `-` after the seconds component.
+    final RegExp offsetPattern = RegExp(r'[+\-]\d{2}:\d{2}$');
+    return offsetPattern.hasMatch(raw);
   }
 }

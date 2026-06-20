@@ -1,24 +1,27 @@
-// Home page — T013.3 implementation.
+// Home page — T013.3_FIX_PENDING_RESULT_AND_INSTALL_DATE_BOUNDARY.
 //
-// T013.3 changes vs T007:
-// - The controller is now `AsyncNotifier`. The page MUST handle
-//   the AsyncValue envelope:
+// T013.3 changes vs T013.3 baseline:
+// - The toggle result is now [ToggleTaskResult] (not `bool`).
+//   We only show the "保存失败，请重试" SnackBar when the result
+//   is `failure`. `ignored` results (duplicate click, unknown
+//   id, provider disposed, cross-day) are silent — they are
+//   not failures.
+// - The card receives an `isPending` flag driven by
+//   `state.pendingTaskIds`. A user cannot fire a second click
+//   while the first write is still in flight (the Checkbox
+//   renders as disabled).
+//
+// T013.3 baseline (unchanged):
+// - The controller is `AsyncNotifier`. The page MUST handle the
+//   AsyncValue envelope:
 //     * `AsyncLoading` → spinner.
 //     * `AsyncError` → error text + retry button. Retry calls
 //       `ref.invalidate(todayPracticeControllerProvider)` so
 //       `build()` re-runs against the current overrides.
 //     * `AsyncData` → today's plan as before.
-// - `onToggleCompleted` returns `Future<void>`. When the Future
-//   resolves to `false` (persistence failed OR the click was a
-//   duplicate), we surface a compact SnackBar so the user knows
-//   the toggle did not stick.
-// - Task checkboxes are disabled while a write for that task is
-//   in flight, to avoid the "user clicks twice and the state
-//   flips back" UX.
-//
-// Layout outside the AsyncValue handling is unchanged: the
-// header, task cards, and quick actions stay exactly where they
-// were in T007.
+// - Layout outside the AsyncValue handling is unchanged: the
+//   header, task cards, and quick actions stay exactly where
+//   they were in T007.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -138,6 +141,7 @@ class _HomeDataView extends ConsumerWidget {
             padding: const EdgeInsets.only(bottom: 8),
             child: TodayPracticeTaskCard(
               task: task,
+              isPending: state.isTaskPending(task.id),
               onTap: () => context.push(task.routePath),
               onToggleCompleted: (_) => _handleToggle(
                 context: context,
@@ -158,8 +162,10 @@ class _HomeDataView extends ConsumerWidget {
     required TodayPracticeController controller,
     required String taskId,
   }) async {
-    final bool ok = await controller.toggleTaskCompleted(taskId);
-    if (!ok && context.mounted) {
+    final ToggleTaskResult result = await controller.toggleTaskCompleted(
+      taskId,
+    );
+    if (result == ToggleTaskResult.failure && context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('保存失败，请重试'),

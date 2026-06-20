@@ -53,7 +53,8 @@ class MetronomeSettings {
 
   /// Returns `true` iff [b] is one of the allowed beats-per-bar
   /// values.
-  static bool isAllowedBeatsPerBar(int b) => allowedBeatsPerBar.contains(b);
+  static bool isAllowedBeatsPerBar(int b) =>
+      allowedBeatsPerBar.contains(b);
 
   /// Clamps [value] into `minBpm..maxBpm`. The clamp bounds are the
   /// *destination* settings' bounds, which lets the helper work for
@@ -87,7 +88,8 @@ class MetronomeSettings {
       bpm: newBpm,
       minBpm: newMin,
       maxBpm: newMax,
-      beatsPerBar: isAllowedBeatsPerBar(newBeats) ? newBeats : this.beatsPerBar,
+      beatsPerBar:
+          isAllowedBeatsPerBar(newBeats) ? newBeats : this.beatsPerBar,
       soundEnabled: soundEnabled ?? this.soundEnabled,
     );
   }

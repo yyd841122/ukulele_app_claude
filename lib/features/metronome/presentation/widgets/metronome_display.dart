@@ -23,9 +23,11 @@ class MetronomeDisplay extends StatelessWidget {
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final bool isDownbeat = state.currentAccent == BeatAccent.downbeat;
-    final Color beatColor =
-        isDownbeat ? theme.colorScheme.primary : theme.colorScheme.tertiary;
-    final String accentLabel = isDownbeat ? '重拍' : '轻拍';
+    final Color beatColor = isDownbeat
+        ? theme.colorScheme.primary
+        : theme.colorScheme.tertiary;
+    final String accentLabel =
+        isDownbeat ? '重拍' : '轻拍';
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),

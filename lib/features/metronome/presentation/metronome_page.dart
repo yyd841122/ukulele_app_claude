@@ -28,7 +28,8 @@ class MetronomePage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final MetronomeState state = ref.watch(metronomeControllerProvider);
+    final MetronomeState state =
+        ref.watch(metronomeControllerProvider);
     final MetronomeController controller =
         ref.read(metronomeControllerProvider.notifier);
     final ThemeData theme = Theme.of(context);

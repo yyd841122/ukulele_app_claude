@@ -63,7 +63,7 @@ class ChordDiagram extends StatelessWidget {
     required this.fingering,
     this.width = 220,
     this.showLabels = true,
-  }) : assert(width > 0, 'width must be > 0');
+  })  : assert(width > 0, 'width must be > 0');
 
   /// The fingering to render. Must pass [ChordFingering.validate].
   final ChordFingering fingering;

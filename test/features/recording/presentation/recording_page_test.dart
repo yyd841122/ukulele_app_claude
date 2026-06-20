@@ -179,12 +179,12 @@ void main() {
         await tester.pumpAndSettle();
 
         // Reading state via the provider confirms the choice.
-        final BuildContext ctx = tester.element(find.byType(RecordingPage));
-        final ProviderContainer container = ProviderScope.containerOf(ctx);
+        final BuildContext ctx =
+            tester.element(find.byType(RecordingPage));
+        final ProviderContainer container =
+            ProviderScope.containerOf(ctx);
         expect(
-          container
-              .read(recordingPracticeControllerProvider)
-              .selfRating
+          container.read(recordingPracticeControllerProvider).selfRating
               .toString(),
           'SelfRating.retry',
         );
@@ -212,8 +212,10 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        final BuildContext ctx = tester.element(find.byType(RecordingPage));
-        final ProviderContainer container = ProviderScope.containerOf(ctx);
+        final BuildContext ctx =
+            tester.element(find.byType(RecordingPage));
+        final ProviderContainer container =
+            ProviderScope.containerOf(ctx);
         expect(
           container.read(recordingPracticeControllerProvider).note,
           'C->Am 切换太慢',

@@ -239,8 +239,9 @@ class ControlRow extends StatelessWidget {
     // button.
     final bool canStart = !state.isRecording;
     final bool canStop = state.isRecording;
-    final bool canPlay =
-        state.hasRecording && !state.isRecording && !state.isPlaying;
+    final bool canPlay = state.hasRecording &&
+        !state.isRecording &&
+        !state.isPlaying;
     final bool canStopPlayback = state.isPlaying;
 
     return Column(
@@ -282,7 +283,8 @@ class ControlRow extends StatelessWidget {
             Expanded(
               child: OutlinedButton.icon(
                 key: const ValueKey<String>('recording-stop-playback'),
-                onPressed: canStopPlayback ? controller.stopPlayback : null,
+                onPressed:
+                    canStopPlayback ? controller.stopPlayback : null,
                 icon: const Icon(Icons.stop_circle_outlined),
                 label: const Text('停止回放'),
               ),
@@ -408,7 +410,8 @@ class _NoteFieldState extends State<NoteField> {
     if (widget.state.note != _controller.text) {
       _controller.value = TextEditingValue(
         text: widget.state.note,
-        selection: TextSelection.collapsed(offset: widget.state.note.length),
+        selection:
+            TextSelection.collapsed(offset: widget.state.note.length),
       );
     }
   }
@@ -431,7 +434,9 @@ class _NoteFieldState extends State<NoteField> {
       minLines: 3,
       onChanged: widget.onChanged,
       decoration: InputDecoration(
-        hintText: disabled ? '录音结束后可填写备注…' : '例如：C→Am 切换慢了，第三小节节奏不稳。',
+        hintText: disabled
+            ? '录音结束后可填写备注…'
+            : '例如：C→Am 切换慢了，第三小节节奏不稳。',
         filled: true,
         fillColor: disabled
             ? theme.colorScheme.surfaceContainerHighest

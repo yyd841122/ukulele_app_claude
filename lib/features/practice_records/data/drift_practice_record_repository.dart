@@ -14,6 +14,11 @@
 //   a `DateTime` with a non-zero time-of-day will see it silently
 //   truncated to midnight — this matches the DATA_MODEL_DRAFT
 //   §2.1 / §7 invariant.
+//
+// T013.2_FIX_REPOSITORY_SCOPE_AND_CONTRACTS — UTC contract:
+// - `_decode` always returns `createdAt` / `updatedAt` flagged
+//   `isUtc == true`, while keeping the underlying instant intact.
+//   This is enforced by [_toUtcInstant] and pinned by tests.
 
 import 'dart:convert';
 
@@ -71,13 +76,16 @@ class DriftPracticeRecordRepository implements PracticeRecordRepository {
 
     // The persisted copy is byte-equivalent to the validated
     // input — `createdAt` / `updatedAt` are now stamped. Return a
-    // new instance rather than mutating the caller's.
+    // new instance rather than mutating the caller's. The
+    // constructor wraps `practiceTags` in an unmodifiable list
+    // (see `PracticeRecord`), so we hand it the original list
+    // reference — the wrapper copy is the constructor's job.
     return PracticeRecord(
       id: record.id,
       practiceDate: normalisedPracticeDate,
       dayIndex: record.dayIndex,
       primaryPracticeType: record.primaryPracticeType,
-      practiceTags: List<PracticeTag>.unmodifiable(record.practiceTags),
+      practiceTags: record.practiceTags,
       practiceContent: record.practiceContent,
       durationSeconds: record.durationSeconds,
       isCompleted: record.isCompleted,
@@ -196,6 +204,18 @@ class DriftPracticeRecordRepository implements PracticeRecordRepository {
     return DateTime(localD.year, localD.month, localD.day);
   }
 
+  /// Returns [d] as a `DateTime` flagged `isUtc == true`, with the
+  /// underlying instant unchanged. Drift may return a DateTime with
+  /// `isUtc == false` even though the column stores a UTC
+  /// instant; this helper normalises the flag so the contract
+  /// "createdAt / updatedAt are UTC" is observable by callers.
+  DateTime _toUtcInstant(DateTime d) {
+    if (d.isUtc) {
+      return d;
+    }
+    return d.toUtc();
+  }
+
   /// JSON-encodes [tags] as an array of enum-case names. Empty
   /// list encodes to `[]`, never `null`.
   String _encodeTags(List<PracticeTag> tags) {
@@ -219,8 +239,8 @@ class DriftPracticeRecordRepository implements PracticeRecordRepository {
       isCompleted: row.isCompleted,
       selfAssessment: _decodeSelfAssessment(row.selfAssessment),
       audioFilePath: row.audioFilePath,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
+      createdAt: _toUtcInstant(row.createdAt),
+      updatedAt: _toUtcInstant(row.updatedAt),
     );
   }
 
@@ -284,6 +304,9 @@ class DriftPracticeRecordRepository implements PracticeRecordRepository {
         );
       }
     }
-    return List<PracticeTag>.unmodifiable(out);
+    // `PracticeRecord` wraps the incoming list in
+    // `List<PracticeTag>.unmodifiable(...)`, so we hand back the
+    // raw list and let the constructor do the immutability work.
+    return out;
   }
 }

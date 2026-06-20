@@ -70,8 +70,7 @@ void main() {
       );
     });
 
-    test('time-of-day is ignored (both sides normalised to local midnight)',
-        () {
+    test('time-of-day is ignored (both sides normalised to local midnight)', () {
       // Install late at night, then check immediately. The local date
       // has not rolled over yet, so it should still be Day 1.
       final DateTime installLateNight = DateTime(2026, 6, 20, 23, 30);

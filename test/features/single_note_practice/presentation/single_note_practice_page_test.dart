@@ -89,7 +89,8 @@ void main() {
       expect(find.text('空弦，不需要用手指'), findsOneWidget);
     });
 
-    testWidgets('"下一个" advances to the next note', (WidgetTester tester) async {
+    testWidgets('"下一个" advances to the next note',
+        (WidgetTester tester) async {
       await _useTallSurface(tester);
       await tester.pumpWidget(
         const ProviderScope(
@@ -157,8 +158,8 @@ void main() {
       await tester.tap(find.text('标记已练习'));
       await tester.pumpAndSettle();
 
-      expect(
-          find.text('已练习 1 / ${kBuiltInSingleNotes.length}'), findsOneWidget);
+      expect(find.text('已练习 1 / ${kBuiltInSingleNotes.length}'),
+          findsOneWidget);
       // The button label flipped.
       expect(find.text('取消已练习'), findsOneWidget);
       expect(find.text('标记已练习'), findsNothing);
@@ -166,8 +167,8 @@ void main() {
       // Toggle off.
       await tester.tap(find.text('取消已练习'));
       await tester.pumpAndSettle();
-      expect(
-          find.text('已练习 0 / ${kBuiltInSingleNotes.length}'), findsOneWidget);
+      expect(find.text('已练习 0 / ${kBuiltInSingleNotes.length}'),
+          findsOneWidget);
       expect(find.text('标记已练习'), findsOneWidget);
     });
 

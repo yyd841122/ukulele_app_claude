@@ -189,8 +189,9 @@ void main() {
       final RecordingPracticeController controller =
           container.read(recordingPracticeControllerProvider.notifier);
       controller.startRecording();
-      final int firstElapsed =
-          container.read(recordingPracticeControllerProvider).elapsedSeconds;
+      final int firstElapsed = container
+          .read(recordingPracticeControllerProvider)
+          .elapsedSeconds;
 
       controller.startRecording();
       final RecordingPracticeState state =

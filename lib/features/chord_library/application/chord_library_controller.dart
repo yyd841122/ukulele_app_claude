@@ -36,7 +36,8 @@ final chordLibraryProvider = Provider<List<Chord>>((Ref ref) => kBuiltInChords);
 ///
 /// Returns `null` for unknown ids — the detail page treats this as a
 /// "not found" case and renders a friendly placeholder.
-final chordByIdProvider = Provider.family<Chord?, String>((Ref ref, String id) {
+final chordByIdProvider =
+    Provider.family<Chord?, String>((Ref ref, String id) {
   if (id.isEmpty) {
     return null;
   }

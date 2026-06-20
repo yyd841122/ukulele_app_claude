@@ -103,7 +103,8 @@ void main() {
       final ProviderContainer container = ProviderContainer();
       addTearDown(container.dispose);
 
-      final MetronomeState state = container.read(metronomeControllerProvider);
+      final MetronomeState state =
+          container.read(metronomeControllerProvider);
 
       expect(state.bpm, 80);
       expect(state.beatsPerBar, 4);
@@ -298,7 +299,8 @@ void main() {
       );
 
       controller.stop();
-      MetronomeState state = container.read(metronomeControllerProvider);
+      MetronomeState state =
+          container.read(metronomeControllerProvider);
       expect(state.isRunning, isFalse);
       expect(state.currentBeat, 1);
     });

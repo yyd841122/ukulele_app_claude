@@ -216,7 +216,8 @@ class _SingleNotePositionDiagramPainter extends CustomPainter {
     } else {
       // Open-string label above the nut, on the active column.
       if (note.isOpen && activeColumn >= 0) {
-        final double labelY = top - (size.height * _topMarginFraction) * 0.55;
+        final double labelY =
+            top - (size.height * _topMarginFraction) * 0.55;
         final double labelFontSize = size.width * _labelFontSizeFraction;
         final double xCenter = left + activeColumn * stringSpacing;
         _paintCenteredText(
@@ -235,8 +236,7 @@ class _SingleNotePositionDiagramPainter extends CustomPainter {
           (size.shortestSide * _dotRadiusFraction).clamp(4.0, 18.0);
       final double fingerFontSize = dotRadius * 1.1;
       final int relativeFret = note.fret; // startFret == 1
-      if (relativeFret >= 1 &&
-          relativeFret <= _fretCount &&
+      if (relativeFret >= 1 && relativeFret <= _fretCount &&
           activeColumn >= 0) {
         final double xCenter = left + activeColumn * stringSpacing;
         final double y = top + (relativeFret - 0.5) * fretSpacing;

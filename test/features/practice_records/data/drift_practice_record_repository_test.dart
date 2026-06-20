@@ -13,6 +13,19 @@
 //   generated row class, to make sure the Repository is the only
 //   place that converts `PracticeType` / `PracticeTag` /
 //   `SelfAssessment` / JSON ↔ the typed values.
+//
+// T013.2_FIX_REPOSITORY_SCOPE_AND_CONTRACTS additions:
+// - `practiceTags` immutability is pinned end-to-end: a caller that
+//   mutates the input list after the Repository accepts it must NOT
+//   see the change reflected on the stored record.
+// - The watch subscription test exercises the *live* stream —
+//   subscribe first, then insert / delete, and verify subsequent
+//   emissions. `take(1)` is not used to validate post-subscribe
+//   state.
+// - `_decode` must always return `createdAt` / `updatedAt` with
+//   `isUtc == true`.
+
+import 'dart:async';
 
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
@@ -39,6 +52,47 @@ void main() {
       clock: () => now ?? DateTime.utc(2026, 6, 20, 9, 30),
     );
     return (db: db, repo: repo);
+  }
+
+  /// A clock that ticks forward by 1s on each invocation. Used by
+  /// the ordering test so that `createdAt` differs between rows
+  /// inserted via the same repository. (Drift stores DateTime
+  /// columns as integer seconds, so a 1ms increment would not
+  /// produce distinguishable timestamps at the SQLite layer.)
+  ({AppDatabase db, DriftPracticeRecordRepository repo}) setupIncrementing() {
+    final AppDatabase db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    int n = 0;
+    final DriftPracticeRecordRepository repo = DriftPracticeRecordRepository(
+      database: db,
+      clock: () => DateTime.utc(2026, 6, 20, 9).add(Duration(seconds: n++)),
+    );
+    return (db: db, repo: repo);
+  }
+
+  // Shared collector for the watchAll post-subscribe test. Reset
+  // per-test via `setUp` so cross-test bleed is impossible.
+  late List<List<PracticeRecord>> emissions;
+  setUp(() {
+    emissions = <List<PracticeRecord>>[];
+  });
+
+  /// Polls [emissions] until it reaches [hasLength] entries.
+  /// Drift's watch streams are async; the test driver must wait
+  /// for the table-update notification to round-trip before
+  /// asserting on the latest emission.
+  Future<void> waitForEmissions(
+    List<List<PracticeRecord>> emissions, {
+    required int hasLength,
+  }) async {
+    final DateTime deadline = DateTime.now().add(const Duration(seconds: 2));
+    while (emissions.length < hasLength) {
+      if (DateTime.now().isAfter(deadline)) {
+        fail('Timed out waiting for emission #$hasLength '
+            '(saw ${emissions.length})');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
   }
 
   group('DriftPracticeRecordRepository.insert', () {
@@ -70,18 +124,12 @@ void main() {
 
       final PracticeRecord? roundTripped = await ctx.repo.getById('rec-1');
       expect(roundTripped, isNotNull);
-      // Field-by-field comparison instead of `equals(inserted)` —
-      // a Drift round-trip through a SQLite unix-seconds column
-      // can flip the DateTime's `isUtc` flag while keeping the
-      // instant, which would defeat `==` on the DateTime fields.
-      // The Repository's contract is "the wall clock and the field
-      // values are preserved", not "the exact same object identity
-      // comes back".
+      // Field-by-field comparison. The Repository's UTC contract
+      // guarantees `createdAt` / `updatedAt` come back with
+      // `isUtc == true`, so `==` works against the in-memory
+      // `inserted` value.
       expect(roundTripped!.id, inserted.id);
-      expect(
-        roundTripped.practiceDate.millisecondsSinceEpoch,
-        inserted.practiceDate.millisecondsSinceEpoch,
-      );
+      expect(roundTripped.practiceDate, inserted.practiceDate);
       expect(roundTripped.dayIndex, inserted.dayIndex);
       expect(roundTripped.primaryPracticeType, inserted.primaryPracticeType);
       expect(roundTripped.practiceTags, inserted.practiceTags);
@@ -90,18 +138,13 @@ void main() {
       expect(roundTripped.isCompleted, inserted.isCompleted);
       expect(roundTripped.selfAssessment, inserted.selfAssessment);
       expect(roundTripped.audioFilePath, inserted.audioFilePath);
-      expect(
-        roundTripped.createdAt.millisecondsSinceEpoch,
-        inserted.createdAt.millisecondsSinceEpoch,
-      );
-      expect(
-        roundTripped.updatedAt.millisecondsSinceEpoch,
-        inserted.updatedAt.millisecondsSinceEpoch,
-      );
-      expect(
-        roundTripped.practiceDate.millisecondsSinceEpoch,
-        DateTime(2026, 6, 20).millisecondsSinceEpoch,
-      );
+      expect(roundTripped.createdAt, inserted.createdAt);
+      expect(roundTripped.updatedAt, inserted.updatedAt);
+      // UTC contract: both fields must be flagged `isUtc == true`
+      // even though drift can return the column with `isUtc == false`.
+      expect(roundTripped.createdAt.isUtc, isTrue);
+      expect(roundTripped.updatedAt.isUtc, isTrue);
+      expect(roundTripped.practiceDate, DateTime(2026, 6, 20));
       expect(roundTripped.primaryPracticeType, PracticeType.singleNote);
       expect(
         roundTripped.practiceTags,
@@ -136,10 +179,7 @@ void main() {
       // Field-by-field comparison (see the other test's note).
       expect(roundTripped, isNotNull);
       expect(roundTripped!.id, inserted.id);
-      expect(
-        roundTripped.practiceDate.millisecondsSinceEpoch,
-        inserted.practiceDate.millisecondsSinceEpoch,
-      );
+      expect(roundTripped.practiceDate, inserted.practiceDate);
       expect(roundTripped.dayIndex, inserted.dayIndex);
       expect(roundTripped.primaryPracticeType, inserted.primaryPracticeType);
       expect(roundTripped.practiceTags, inserted.practiceTags);
@@ -213,6 +253,100 @@ void main() {
     });
   });
 
+  group('PracticeRecord immutability', () {
+    test(
+        'caller mutation of input practiceTags does not leak into the stored '
+        'record (insert path)', () async {
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      final List<PracticeTag> tags = <PracticeTag>[PracticeTag.tuner];
+      final PracticeRecord input = PracticeRecord(
+        id: 'imm-1',
+        practiceDate: DateTime(2026, 6, 20),
+        dayIndex: 1,
+        primaryPracticeType: PracticeType.singleNote,
+        practiceTags: tags,
+        practiceContent: 'immutability check',
+        durationSeconds: 10,
+        isCompleted: false,
+        createdAt: DateTime.utc(2026, 6, 20, 9),
+        updatedAt: DateTime.utc(2026, 6, 20, 9),
+      );
+
+      final PracticeRecord inserted = await ctx.repo.insert(input);
+
+      // The list is unmodifiable from the caller's perspective.
+      expect(
+        () => inserted.practiceTags.add(PracticeTag.metronome),
+        throwsUnsupportedError,
+      );
+      expect(
+        () => inserted.practiceTags.clear(),
+        throwsUnsupportedError,
+      );
+      // The original input list was captured by reference; mutating
+      // it after the insert must NOT retroactively change the
+      // stored record.
+      tags.add(PracticeTag.recording);
+      tags.add(PracticeTag.selfAssessment);
+
+      final PracticeRecord? roundTripped = await ctx.repo.getById('imm-1');
+      expect(roundTripped, isNotNull);
+      expect(
+        roundTripped!.practiceTags,
+        equals(<PracticeTag>[PracticeTag.tuner]),
+      );
+    });
+
+    test('inserted.practiceTags is unmodifiable (write attempt throws)',
+        () async {
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      final PracticeRecord input = PracticeRecord(
+        id: 'imm-2',
+        practiceDate: DateTime(2026, 6, 20),
+        dayIndex: 1,
+        primaryPracticeType: PracticeType.singleNote,
+        practiceTags: <PracticeTag>[PracticeTag.tuner, PracticeTag.metronome],
+        practiceContent: 'immutability check 2',
+        durationSeconds: 10,
+        isCompleted: false,
+        createdAt: DateTime.utc(2026, 6, 20, 9),
+        updatedAt: DateTime.utc(2026, 6, 20, 9),
+      );
+      final PracticeRecord inserted = await ctx.repo.insert(input);
+      expect(
+        () => inserted.practiceTags.add(PracticeTag.recording),
+        throwsUnsupportedError,
+      );
+    });
+
+    test('round-tripped record also exposes unmodifiable practiceTags',
+        () async {
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      final PracticeRecord input = PracticeRecord(
+        id: 'imm-3',
+        practiceDate: DateTime(2026, 6, 20),
+        dayIndex: 1,
+        primaryPracticeType: PracticeType.singleNote,
+        practiceTags: <PracticeTag>[PracticeTag.tuner],
+        practiceContent: 'immutability check 3',
+        durationSeconds: 10,
+        isCompleted: false,
+        createdAt: DateTime.utc(2026, 6, 20, 9),
+        updatedAt: DateTime.utc(2026, 6, 20, 9),
+      );
+      await ctx.repo.insert(input);
+      final PracticeRecord? stored = await ctx.repo.getById('imm-3');
+      expect(stored, isNotNull);
+      expect(
+        () => stored!.practiceTags.add(PracticeTag.recording),
+        throwsUnsupportedError,
+      );
+    });
+  });
+
   group('DriftPracticeRecordRepository.getById', () {
     test('returns null for unknown id', () async {
       final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
@@ -229,22 +363,6 @@ void main() {
       );
     });
   });
-
-  /// A clock that ticks forward by 1s on each invocation. Used by
-  /// the ordering test so that `createdAt` differs between rows
-  /// inserted via the same repository. (Drift stores DateTime
-  /// columns as integer seconds, so a 1ms increment would not
-  /// produce distinguishable timestamps at the SQLite layer.)
-  ({AppDatabase db, DriftPracticeRecordRepository repo}) setupIncrementing() {
-    final AppDatabase db = AppDatabase.forTesting(NativeDatabase.memory());
-    addTearDown(db.close);
-    int n = 0;
-    final DriftPracticeRecordRepository repo = DriftPracticeRecordRepository(
-      database: db,
-      clock: () => DateTime.utc(2026, 6, 20, 9).add(Duration(seconds: n++)),
-    );
-    return (db: db, repo: repo);
-  }
 
   group('DriftPracticeRecordRepository.listRecent', () {
     test('orders by practiceDate DESC, createdAt DESC', () async {
@@ -311,12 +429,58 @@ void main() {
       await ctx.repo
           .insert(_record(id: 'y', practiceDate: DateTime(2026, 6, 20)));
 
-      final List<List<PracticeRecord>> emissions =
+      final List<List<PracticeRecord>> initialEmissions =
           await ctx.repo.watchAll().take(1).toList();
-      expect(emissions, hasLength(1));
+      expect(initialEmissions, hasLength(1));
       expect(
-        emissions.single.map((PracticeRecord r) => r.id).toList(),
+        initialEmissions.single.map((PracticeRecord r) => r.id).toList(),
         equals(<String>['y', 'x']),
+      );
+    });
+
+    test('emits post-subscribe inserts and deletes', () async {
+      // T013.2_FIX_REPOSITORY_SCOPE_AND_CONTRACTS: subscribe
+      // first (empty DB), then drive writes and assert each
+      // emission's contents. `take(1)` is only used to consume the
+      // very first empty emission, not to short-circuit the test.
+      // We poll the shared `emissions` list (rather than relying
+      // on `Future.delayed`) so the test is robust against
+      // scheduling jitter.
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+
+      final StreamSubscription<List<PracticeRecord>> sub =
+          ctx.repo.watchAll().listen((List<PracticeRecord> rows) {
+        emissions.add(List<PracticeRecord>.unmodifiable(rows));
+      });
+      addTearDown(sub.cancel);
+
+      // First emission: empty.
+      await waitForEmissions(emissions, hasLength: 1);
+      expect(emissions.single, isEmpty);
+
+      // Insert one row — wait for the next emission.
+      await ctx.repo.insert(_record(id: 'after-1'));
+      await waitForEmissions(emissions, hasLength: 2);
+      expect(
+        emissions[1].map((PracticeRecord r) => r.id).toList(),
+        equals(<String>['after-1']),
+      );
+
+      // Insert another — wait for the next emission.
+      await ctx.repo.insert(_record(id: 'after-2'));
+      await waitForEmissions(emissions, hasLength: 3);
+      expect(
+        emissions[2].map((PracticeRecord r) => r.id).toList(),
+        equals(<String>['after-1', 'after-2']),
+      );
+
+      // Delete — wait for the next emission.
+      await ctx.repo.delete('after-1');
+      await waitForEmissions(emissions, hasLength: 4);
+      expect(
+        emissions[3].map((PracticeRecord r) => r.id).toList(),
+        equals(<String>['after-2']),
       );
     });
   });

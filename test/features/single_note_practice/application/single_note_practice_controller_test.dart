@@ -19,7 +19,8 @@ import 'package:ukulele_app/features/single_note_practice/domain/single_note.dar
 
 void main() {
   group('SingleNotePracticeController', () {
-    test('initial state exposes all six notes and the first as current', () {
+    test('initial state exposes all six notes and the first as current',
+        () {
       final ProviderContainer container = ProviderContainer();
       addTearDown(container.dispose);
 
@@ -106,13 +107,15 @@ void main() {
       }
     });
 
-    test('toggleCurrentPracticed flips the flag and updates the count', () {
+    test('toggleCurrentPracticed flips the flag and updates the count',
+        () {
       final ProviderContainer container = ProviderContainer();
       addTearDown(container.dispose);
 
       final SingleNotePracticeController controller =
           container.read(singleNotePracticeControllerProvider.notifier);
-      final String firstId = kBuiltInSingleNotes.first.id;
+      final String firstId =
+          kBuiltInSingleNotes.first.id;
 
       // Mark the current note (index 0) as practiced.
       controller.toggleCurrentPracticed();
@@ -183,7 +186,8 @@ void main() {
     test('builtInSingleNotesProvider exposes the shipped list', () {
       final ProviderContainer container = ProviderContainer();
       addTearDown(container.dispose);
-      final List<SingleNote> notes = container.read(builtInSingleNotesProvider);
+      final List<SingleNote> notes =
+          container.read(builtInSingleNotesProvider);
       expect(notes, isNotEmpty);
       expect(notes.first.id, kBuiltInSingleNotes.first.id);
     });

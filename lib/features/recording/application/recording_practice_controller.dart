@@ -136,14 +136,16 @@ class RecordingPracticeState {
       hasRecording: hasRecording ?? this.hasRecording,
       isPlaying: isPlaying ?? this.isPlaying,
       elapsedSeconds: elapsedSeconds ?? this.elapsedSeconds,
-      selfRating: clearSelfRating ? null : (selfRating ?? this.selfRating),
+      selfRating:
+          clearSelfRating ? null : (selfRating ?? this.selfRating),
       note: note ?? this.note,
     );
   }
 }
 
 /// Riverpod controller for the recording practice page.
-class RecordingPracticeController extends Notifier<RecordingPracticeState> {
+class RecordingPracticeController
+    extends Notifier<RecordingPracticeState> {
   Timer? _timer;
 
   @override

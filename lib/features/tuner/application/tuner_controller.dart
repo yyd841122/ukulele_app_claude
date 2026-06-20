@@ -32,12 +32,14 @@ import 'package:ukulele_app/features/tuner/domain/tuning_string.dart';
 
 /// Provider exposing the full built-in tuning string list.
 final Provider<List<TuningString>> builtInTuningStringsProvider =
-    Provider<List<TuningString>>((Ref ref) => kBuiltInTuningStrings);
+    Provider<List<TuningString>>(
+        (Ref ref) => kBuiltInTuningStrings);
 
 /// Provider exposing the four strings in display order
 /// (G, C, E, A). The page reads from this rather than re-sorting.
 final Provider<List<TuningString>> tuningStringsDisplayOrderProvider =
-    Provider<List<TuningString>>((Ref ref) => tuningStringsInDisplayOrder());
+    Provider<List<TuningString>>(
+        (Ref ref) => tuningStringsInDisplayOrder());
 
 /// Immutable state for the tuner guide page.
 @immutable
@@ -80,7 +82,8 @@ class TunerState {
 
   /// `true` iff the user has confirmed every shipped string.
   bool get allConfirmed =>
-      confirmedStringNumbers.length == strings.length && strings.isNotEmpty;
+      confirmedStringNumbers.length == strings.length &&
+      strings.isNotEmpty;
 
   /// Returns a copy with the given fields replaced.
   TunerState copyWith({
@@ -99,7 +102,8 @@ class TunerState {
 class TunerController extends Notifier<TunerState> {
   @override
   TunerState build() {
-    final List<TuningString> strings = ref.read(builtInTuningStringsProvider);
+    final List<TuningString> strings =
+        ref.read(builtInTuningStringsProvider);
     return TunerState(
       strings: strings,
       confirmedStringNumbers: const <int>{},
@@ -168,7 +172,8 @@ class TunerController extends Notifier<TunerState> {
 }
 
 /// Provider for the tuner guide page controller.
-final NotifierProvider<TunerController, TunerState> tunerControllerProvider =
+final NotifierProvider<TunerController, TunerState>
+    tunerControllerProvider =
     NotifierProvider<TunerController, TunerState>(
   TunerController.new,
 );

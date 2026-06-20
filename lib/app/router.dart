@@ -27,12 +27,14 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/',
       name: 'home',
-      builder: (BuildContext context, GoRouterState state) => const HomePage(),
+      builder: (BuildContext context, GoRouterState state) =>
+          const HomePage(),
     ),
     GoRoute(
       path: '/tuner',
       name: 'tuner',
-      builder: (BuildContext context, GoRouterState state) => const TunerPage(),
+      builder: (BuildContext context, GoRouterState state) =>
+          const TunerPage(),
     ),
     GoRoute(
       path: '/single-note',

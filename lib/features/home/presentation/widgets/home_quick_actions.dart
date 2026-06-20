@@ -4,6 +4,11 @@
 // chords / metronome / records / settings) so the user can reach any
 // destination without having to scroll past the day's task list. This is
 // NOT a "today" feature, just the existing nav hub in a tidier layout.
+//
+// T012: added the "录音回放" entry so the basic recording playback
+// flow is reachable from the home page in addition to today's task
+// cards. Order matches the day-plan order: tuning -> notes -> chords
+// -> metronome -> recording -> records -> settings.
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -47,6 +52,12 @@ class HomeQuickActions extends StatelessWidget {
           label: '节拍器',
           icon: Icons.timer,
           onPressed: () => context.push('/metronome'),
+        ),
+        const SizedBox(height: 8),
+        PrimaryButton(
+          label: '录音回放',
+          icon: Icons.mic,
+          onPressed: () => context.push('/recording'),
         ),
         const SizedBox(height: 8),
         PrimaryButton(

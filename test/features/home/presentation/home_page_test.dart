@@ -1,11 +1,20 @@
-// Widget tests for [HomePage]
-// (T013.3_FIX_PENDING_RESULT_AND_INSTALL_DATE_BOUNDARY).
+// Widget tests for [HomePage] (T013.3_FIX_LOCAL_DAY_AND_ERROR_UI).
 //
-// T013.3 contract under test:
+// T013.3_FIX_LOCAL_DAY_AND_ERROR_UI contract under test:
+// - The error view shows ONLY a fixed friendly string and the
+//   retry button. It MUST NOT display `error.toString()` or any
+//   other internal exception text — internal Drift /
+//   ProviderException / local-path details are an information
+//   leak and must never reach the user. The previous "show the
+//   exception under the friendly string" is gone.
+// - The retry button still calls
+//   `ref.invalidate(todayPracticeControllerProvider)` so the
+//   user can recover.
+//
+// T013.3_FIX_PENDING_RESULT_AND_INSTALL_DATE_BOUNDARY contract
+// under test:
 // - The page renders a loading spinner while the controller is
 //   still building.
-// - A failure in the build path renders the error view with a
-//   retry button. Pressing retry re-runs `build()`.
 // - On data, the header, task cards and quick actions render as
 //   before — i.e. layout outside the AsyncValue envelope is
 //   unchanged.
@@ -90,12 +99,56 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('加载今日练习失败，请重试。'), findsOneWidget);
       expect(find.text('重试'), findsOneWidget);
+      // The internal exception text MUST NOT leak into the
+      // widget tree — the previous implementation rendered
+      // `error.toString()` under the friendly string.
+      expect(find.textContaining(sentinelInternalError), findsNothing);
+      expect(find.textContaining('StateError'), findsNothing);
+      expect(find.textContaining('Bad state'), findsNothing);
 
       service.failNext = false;
       await tester.tap(find.text('重试'));
       await tester.pumpAndSettle();
       expect(find.text('今日练习'), findsOneWidget);
       expect(find.text('Day 1'), findsOneWidget);
+    });
+
+    testWidgets('error view does not render the raw error.toString()',
+        (WidgetTester tester) async {
+      final AppDatabase db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final _ToggleInstallDateService service =
+          _ToggleInstallDateService(initialFailure: true);
+      final ProviderContainer container = ProviderContainer(
+        overrides: <Override>[
+          appDatabaseProvider.overrideWithValue(db),
+          clockProvider.overrideWithValue(() => DateTime(2026, 6, 20, 9)),
+          installDateServiceProvider.overrideWithValue(service),
+        ],
+      );
+      addTearDown(container.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: HomePage()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Walk the rendered tree and confirm no Text / SelectableText
+      // widget contains the injected sentinel or any obviously
+      // internal-shaped substring.
+      final Finder allText = find.byType(Text);
+      for (final Element el in allText.evaluate()) {
+        final Text w = el.widget as Text;
+        final String data = w.data ?? '';
+        expect(data, isNot(contains(sentinelInternalError)),
+            reason: 'Error view MUST NOT render the internal exception '
+                'message: "$data"');
+        expect(data, isNot(contains('StateError')),
+            reason: 'Error view MUST NOT render Dart exception class names: '
+                '"$data"');
+      }
     });
 
     testWidgets('renders data state on successful build',
@@ -307,7 +360,13 @@ class _NeverCompletingInstallDateService implements InstallDateService {
   }
 }
 
-/// Toggleable install-date service for the retry test.
+/// Install-date service whose `getInstallDate` throws a
+/// [StateError] whose message contains the `sentinelInternalError`
+/// token. The HomePage test asserts the token NEVER reaches the
+/// widget tree.
+const String sentinelInternalError =
+    'synthetic-install-date-internal-error-9f3c2b';
+
 class _ToggleInstallDateService implements InstallDateService {
   _ToggleInstallDateService({required bool initialFailure})
       : failNext = initialFailure;
@@ -317,7 +376,7 @@ class _ToggleInstallDateService implements InstallDateService {
   @override
   Future<DateTime> getInstallDate() async {
     if (failNext) {
-      throw StateError('synthetic install date failure');
+      throw StateError(sentinelInternalError);
     }
     return DateTime(2026, 6, 20, 9);
   }

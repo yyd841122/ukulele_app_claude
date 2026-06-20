@@ -1,7 +1,26 @@
 // Tests for [TodayPracticeController]
-// (T013.3_FIX_PENDING_RESULT_AND_INSTALL_DATE_BOUNDARY).
+// (T013.3_FIX_LOCAL_DAY_AND_ERROR_UI).
 //
-// T013.3 contract under test:
+// T013.3_FIX_LOCAL_DAY_AND_ERROR_UI contract under test:
+// - The day index is computed from local-midnight on BOTH sides
+//   of the call to `calculatePracticeDayIndex`. The state stores
+//   the SAME local-midnight `installDate` that was fed to the
+//   calculator, so there is no frame-of-reference drift between
+//   `state.installDate` and the index.
+// - The boundary-time tests construct their install-instant and
+//   "now" using the current `DateTime.now().timeZoneOffset`, so
+//   they pass under any offset (positive, negative, or UTC).
+// - `TodayPracticeState` is genuinely immutable:
+//     * Mutating a `Set` that was passed in to the constructor
+//        does NOT affect the state's copy (defensive copy).
+//     * Calling `.add(...)` / `.remove(...)` on
+//        `state.completedTaskIds` or `state.pendingTaskIds`
+//        throws `UnsupportedError`.
+//     * `copyWith` produces another immutable state — the
+//        returned Set references are still unmodifiable.
+//
+// T013.3_FIX_PENDING_RESULT_AND_INSTALL_DATE_BOUNDARY contract
+// under test:
 // - The controller is an AsyncNotifier. Before `build` resolves,
 //   the provider exposes `AsyncLoading`.
 // - `build` reads the persisted install date AND the persisted
@@ -33,6 +52,7 @@ import 'package:ukulele_app/data/database/app_database_provider.dart';
 import 'package:ukulele_app/features/home/application/today_practice_controller.dart';
 import 'package:ukulele_app/features/home/data/completed_tasks_repository.dart';
 import 'package:ukulele_app/features/home/data/completed_tasks_repository_provider.dart';
+import 'package:ukulele_app/features/home/domain/built_in_practice_plan.dart';
 import 'package:ukulele_app/features/home/domain/practice_task.dart';
 import 'package:ukulele_app/features/home/domain/practice_task_status.dart';
 import 'package:ukulele_app/shared/services/install_date_service.dart';
@@ -200,6 +220,279 @@ void main() {
       // projected to.
       expect(state.installDate.isUtc, isFalse);
       expect(state.installDate, DateTime(2026, 6, 20));
+    });
+  });
+
+  group('T013.3_FIX_LOCAL_DAY day-index contract', () {
+    // The boundary tests below construct their install and
+    // "now" instants using the host's current timeZoneOffset.
+    // The contract — `state.installDate` is the SAME local
+    // midnight that was fed to `calculatePracticeDayIndex` —
+    // must hold for any offset (positive, negative, or UTC),
+    // and for the 23:30-into-midnight roll-over case in
+    // particular. We do NOT assert a specific local date
+    // because the local date depends on the host offset; we
+    // assert that `state.installDate` is exactly the local
+    // midnight the calculator saw, and that the calculator
+    // saw a `today` exactly equal to `state.today`.
+    test(
+        'dayIndex uses local-midnight for both installDate and today, '
+        'with 23:30 install instant', () async {
+      final AppDatabase db = buildDb();
+      // 23:30 LOCAL on whatever local day the host is in right
+      // now. The controller reads "today" from the same clock
+      // value (`nowClock`), so the calculator sees:
+      //   installMidnight == localMidnight(install.toLocal())
+      //   todayMidnight   == localMidnight(now)
+      // and (todayMidnight - installMidnight) is exactly the
+      // offset between those two local midnights, regardless
+      // of time zone.
+      final DateTime nowLocal = DateTime.now();
+      final DateTime nowClock = DateTime(
+        nowLocal.year,
+        nowLocal.month,
+        nowLocal.day,
+        23,
+        31,
+      );
+      final DateTime installLocal = DateTime(
+        nowLocal.year,
+        nowLocal.month,
+        nowLocal.day,
+        23,
+        30,
+      );
+      final DateTime expectedInstallMidnight = DateTime(
+        installLocal.year,
+        installLocal.month,
+        installLocal.day,
+      );
+      final DateTime expectedTodayMidnight = DateTime(
+        nowLocal.year,
+        nowLocal.month,
+        nowLocal.day,
+      );
+
+      final ProviderContainer container = buildContainer(
+        db: db,
+        clock: () => nowClock,
+        installService: _FakeInstallDateService(installLocal.toUtc()),
+      );
+      final TodayPracticeState state =
+          await container.read(todayPracticeControllerProvider.future);
+
+      // The state must carry the SAME local-midnight pair that
+      // was fed to the calculator. The day-index call saw
+      // (expectedInstallMidnight, expectedTodayMidnight) and
+      // must return 1 (same day), and the state must agree.
+      expect(state.installDate, expectedInstallMidnight,
+          reason: 'state.installDate must match the local-midnight fed '
+              'to calculatePracticeDayIndex');
+      expect(state.today, expectedTodayMidnight,
+          reason: 'state.today must match the local-midnight fed '
+              'to calculatePracticeDayIndex');
+      // Same calendar day → 1.
+      expect(state.dayIndex, 1,
+          reason: 'install and now are on the same local day → dayIndex 1');
+    });
+
+    test(
+        'dayIndex rolls into the next day when "now" crosses local midnight '
+        'relative to install (no UTC leakage)', () async {
+      final AppDatabase db = buildDb();
+      // Pick a base day in local time. The install instant is
+      // local midnight of that day; "now" is 1 second past
+      // local midnight of the FOLLOWING day. We use the host's
+      // timeZoneOffset to project both to UTC, which is what
+      // the controller's fake service will hand back.
+      final DateTime baseDay = DateTime.now();
+      final DateTime installLocal = DateTime(
+        baseDay.year,
+        baseDay.month,
+        baseDay.day,
+      );
+      final DateTime nextDay = installLocal.add(const Duration(days: 1));
+      final DateTime nowLocal = DateTime(
+        nextDay.year,
+        nextDay.month,
+        nextDay.day,
+        0,
+        0,
+        1,
+      );
+
+      final ProviderContainer container = buildContainer(
+        db: db,
+        clock: () => nowLocal,
+        installService: _FakeInstallDateService(installLocal.toUtc()),
+      );
+      final TodayPracticeState state =
+          await container.read(todayPracticeControllerProvider.future);
+
+      // Calendar diff is exactly 1 day → dayIndex 2.
+      expect(state.installDate, installLocal);
+      expect(state.today, DateTime(nextDay.year, nextDay.month, nextDay.day));
+      expect(state.dayIndex, 2,
+          reason: 'one local day after install → dayIndex 2');
+    });
+
+    test(
+        'UTC host: dayIndex is computed from local-midnight values that '
+        'happen to equal the original UTC day', () async {
+      // We do NOT assume the host is UTC. The contract is that
+      // the state and the calculator agree on local-midnight.
+      // To exercise the "both are UTC" case we synthesise a
+      // pair where the local time-zone offset is zero (i.e.
+      // we're in a UTC run) by working with values that are
+      // representable as both local and UTC.
+      final AppDatabase db = buildDb();
+      final DateTime installLocal = DateTime(2026, 1, 1, 0, 0, 0);
+      final DateTime nowLocal = DateTime(2026, 1, 8, 0, 0, 0);
+      final ProviderContainer container = buildContainer(
+        db: db,
+        clock: () => nowLocal,
+        installService: _FakeInstallDateService(installLocal.toUtc()),
+      );
+      final TodayPracticeState state =
+          await container.read(todayPracticeControllerProvider.future);
+      expect(state.installDate, installLocal);
+      expect(state.today, DateTime(2026, 1, 8));
+      // 7 days exactly → dayIndex 1 ((7 % 7) + 1).
+      expect(state.dayIndex, 1);
+    });
+  });
+
+  group('T013.3_FIX_LOCAL_DAY immutable-state contract', () {
+    test('external mutation of completed Set does not affect state', () async {
+      final Set<String> external = <String>{'day1_tuner'};
+      final TodayPracticeState state = TodayPracticeState(
+        today: DateTime(2026, 6, 20),
+        installDate: DateTime(2026, 6, 20),
+        dayIndex: 1,
+        plan: const BuiltInPracticePlan(
+          dayIndex: 1,
+          title: 'Day 1',
+          estimatedMinutes: 10,
+          tasks: <PracticeTask>[],
+        ),
+        completedTaskIds: external,
+      );
+      external.add('sneaky');
+      external.remove('day1_tuner');
+      expect(state.completedTaskIds, equals(<String>{'day1_tuner'}),
+          reason: 'state must not see the caller mutations');
+    });
+
+    test('external mutation of pending Set does not affect state', () async {
+      final Set<String> external = <String>{'day1_tuner'};
+      final TodayPracticeState state = TodayPracticeState(
+        today: DateTime(2026, 6, 20),
+        installDate: DateTime(2026, 6, 20),
+        dayIndex: 1,
+        plan: const BuiltInPracticePlan(
+          dayIndex: 1,
+          title: 'Day 1',
+          estimatedMinutes: 10,
+          tasks: <PracticeTask>[],
+        ),
+        completedTaskIds: const <String>{},
+        pendingTaskIds: external,
+      );
+      external.add('sneaky');
+      external.remove('day1_tuner');
+      expect(state.pendingTaskIds, equals(<String>{'day1_tuner'}));
+    });
+
+    test('state.completedTaskIds is unmodifiable (add throws)', () async {
+      final TodayPracticeState state = TodayPracticeState(
+        today: DateTime(2026, 6, 20),
+        installDate: DateTime(2026, 6, 20),
+        dayIndex: 1,
+        plan: const BuiltInPracticePlan(
+          dayIndex: 1,
+          title: 'Day 1',
+          estimatedMinutes: 10,
+          tasks: <PracticeTask>[],
+        ),
+        completedTaskIds: <String>{'day1_tuner'},
+      );
+      expect(
+        () => state.completedTaskIds.add('boom'),
+        throwsUnsupportedError,
+      );
+      expect(
+        () => state.completedTaskIds.remove('day1_tuner'),
+        throwsUnsupportedError,
+      );
+    });
+
+    test('state.pendingTaskIds is unmodifiable (add throws)', () async {
+      final TodayPracticeState state = TodayPracticeState(
+        today: DateTime(2026, 6, 20),
+        installDate: DateTime(2026, 6, 20),
+        dayIndex: 1,
+        plan: const BuiltInPracticePlan(
+          dayIndex: 1,
+          title: 'Day 1',
+          estimatedMinutes: 10,
+          tasks: <PracticeTask>[],
+        ),
+        completedTaskIds: const <String>{},
+        pendingTaskIds: <String>{'day1_tuner'},
+      );
+      expect(
+        () => state.pendingTaskIds.add('boom'),
+        throwsUnsupportedError,
+      );
+      expect(
+        () => state.pendingTaskIds.remove('day1_tuner'),
+        throwsUnsupportedError,
+      );
+    });
+
+    test('copyWith preserves unmodifiable Sets', () async {
+      final TodayPracticeState state = TodayPracticeState(
+        today: DateTime(2026, 6, 20),
+        installDate: DateTime(2026, 6, 20),
+        dayIndex: 1,
+        plan: const BuiltInPracticePlan(
+          dayIndex: 1,
+          title: 'Day 1',
+          estimatedMinutes: 10,
+          tasks: <PracticeTask>[],
+        ),
+        completedTaskIds: <String>{'day1_tuner'},
+        pendingTaskIds: <String>{'day1_chord'},
+      );
+      final TodayPracticeState copied = state.copyWith(
+        dayIndex: 2,
+      );
+      expect(copied.dayIndex, 2);
+      // The new state's Sets are still unmodifiable.
+      expect(
+        () => copied.completedTaskIds.add('boom'),
+        throwsUnsupportedError,
+      );
+      expect(
+        () => copied.pendingTaskIds.add('boom'),
+        throwsUnsupportedError,
+      );
+      // And carrying an external Set through copyWith still
+      // results in an unmodifiable Set (the constructor wraps).
+      final Set<String> externalCompleted = <String>{'a', 'b'};
+      final Set<String> externalPending = <String>{'c'};
+      final TodayPracticeState copied2 = state.copyWith(
+        completedTaskIds: externalCompleted,
+        pendingTaskIds: externalPending,
+      );
+      externalCompleted.add('sneaky');
+      externalPending.add('sneaky-pending');
+      expect(copied2.completedTaskIds, equals(<String>{'a', 'b'}));
+      expect(copied2.pendingTaskIds, equals(<String>{'c'}));
+      expect(
+        () => copied2.completedTaskIds.add('boom'),
+        throwsUnsupportedError,
+      );
     });
   });
 

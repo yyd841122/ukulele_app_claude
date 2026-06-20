@@ -1,6 +1,20 @@
-// Home page — T013.3_FIX_PENDING_RESULT_AND_INSTALL_DATE_BOUNDARY.
+// Home page — T013.3_FIX_LOCAL_DAY_AND_ERROR_UI.
 //
-// T013.3 changes vs T013.3 baseline:
+// T013.3_FIX_LOCAL_DAY_AND_ERROR_UI scope:
+// - The error view no longer surfaces the raw `error` object.
+//   We deliberately drop the `Object error` / `StackTrace`
+//   parameters on the floor — they are still received from
+//   `AsyncValue.error` (Riverpod requires the signature) but
+//   they are NOT rendered. The user sees ONLY a fixed friendly
+//   string ('加载今日练习失败，请重试。') and the retry button.
+//   Internal exception details (Drift errors, ProviderException
+//   chains, local file paths, etc.) must never leak into the
+//   widget tree. They MAY be `debugPrint`-ed for engineering,
+//   but never displayed.
+// - `_HomeErrorView` no longer takes an `error` field — it only
+//   needs `onRetry`.
+//
+// T013.3_FIX_PENDING_RESULT_AND_INSTALL_DATE_BOUNDARY scope:
 // - The toggle result is now [ToggleTaskResult] (not `bool`).
 //   We only show the "保存失败，请重试" SnackBar when the result
 //   is `failure`. `ignored` results (duplicate click, unknown
@@ -47,10 +61,19 @@ class HomePage extends ConsumerWidget {
       body: SafeArea(
         child: asyncState.when(
           loading: () => const _HomeLoadingView(),
-          error: (Object error, StackTrace stackTrace) => _HomeErrorView(
-            error: error,
-            onRetry: () => ref.invalidate(todayPracticeControllerProvider),
-          ),
+          error: (Object error, StackTrace stackTrace) {
+            // Surface the failure to the engineering log so we
+            // can still triage from CI artefacts, but DO NOT
+            // render it. The user sees a fixed friendly message
+            // and a retry button only.
+            debugPrint(
+              'todayPracticeControllerProvider build failed: $error\n'
+              '$stackTrace',
+            );
+            return _HomeErrorView(
+              onRetry: () => ref.invalidate(todayPracticeControllerProvider),
+            );
+          },
           data: (TodayPracticeState state) => _HomeDataView(state: state),
         ),
       ),
@@ -80,9 +103,8 @@ class _HomeLoadingView extends StatelessWidget {
 }
 
 class _HomeErrorView extends StatelessWidget {
-  const _HomeErrorView({required this.error, required this.onRetry});
+  const _HomeErrorView({required this.onRetry});
 
-  final Object error;
   final VoidCallback onRetry;
 
   @override
@@ -99,14 +121,6 @@ class _HomeErrorView extends StatelessWidget {
             Text(
               '加载今日练习失败，请重试。',
               style: theme.textTheme.titleMedium,
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              error.toString(),
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 24),

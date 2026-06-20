@@ -1,5 +1,22 @@
 // Riverpod controller for the home / "today's practice" page.
 //
+// T013.3_FIX_LOCAL_DAY_AND_ERROR_UI scope (latest):
+// - `TodayPracticeState` performs a defensive copy of the
+//   `completedTaskIds` and `pendingTaskIds` arguments in its
+//   constructor, and wraps the result in `Set.unmodifiable`.
+//   External code cannot mutate the state by holding a
+//   reference to the Set it passed in, and calling `.add(...)`
+//   / `.remove(...)` on `state.completedTaskIds` or
+//   `state.pendingTaskIds` throws `UnsupportedError`.
+// - The day index is now computed from local-midnight values
+//   on BOTH sides: the controller builds `localToday` and
+//   `localInstallDate` FIRST, then feeds them to
+//   `calculatePracticeDayIndex`. There is no longer a
+//   mismatch where `state.installDate` is local-midnight but
+//   the calculator sees a raw UTC instant. The stored
+//   `state.installDate` is the SAME value used in the day-index
+//   computation, so consumers see a consistent local-date frame.
+//
 // T013.3_FIX_PENDING_RESULT_AND_INSTALL_DATE_BOUNDARY scope:
 // - `toggleTaskCompleted` now returns [ToggleTaskResult] (not
 //   `bool`). The UI can route SnackBars by intent:
@@ -18,11 +35,6 @@
 //   `ref.read(clockProvider)().toUtc()`. No direct `DateTime.now()`
 //   calls remain — tests can pin the stamp by overriding the
 //   clock.
-// - `state.installDate` is always local-midnight. The
-//   `InstallDateService` returns a UTC instant; we project to
-//   local time first, then strip to local-midnight, so the
-//   `calculatePracticeDayIndex` call sees consistent local dates
-//   on both sides.
 // - Cross-day safety: after the await, if the local day rolled
 //   over (the clock advanced past midnight while the write was
 //   in flight), we DO NOT merge yesterday's result into today's
@@ -108,16 +120,31 @@ enum ToggleTaskResult {
 }
 
 /// Immutable state for the home page.
+///
+/// T013.3_FIX_LOCAL_DAY_AND_ERROR_UI contract:
+/// - `completedTaskIds` and `pendingTaskIds` are exposed as
+///   unmodifiable [Set]s — the constructor performs a defensive
+///   copy and wraps the result in [Set.unmodifiable], so callers
+///   can NOT mutate the state by holding onto a reference to the
+///   Set they passed in. `copyWith` follows the same rule.
+/// - `today` and `installDate` are BOTH local-midnight values.
+///   They are derived from the same projections used to compute
+///   [dayIndex], so the in-memory state and the
+///   `calculatePracticeDayIndex` call see a consistent local
+///   date. There is no longer a mismatch where
+///   `state.installDate` is local-midnight but
+///   `calculatePracticeDayIndex` is fed a raw UTC instant.
 @immutable
 class TodayPracticeState {
-  const TodayPracticeState({
+  TodayPracticeState({
     required this.today,
     required this.installDate,
     required this.dayIndex,
     required this.plan,
-    required this.completedTaskIds,
-    this.pendingTaskIds = const <String>{},
-  });
+    required Set<String> completedTaskIds,
+    Set<String> pendingTaskIds = const <String>{},
+  })  : completedTaskIds = Set<String>.unmodifiable(completedTaskIds),
+        pendingTaskIds = Set<String>.unmodifiable(pendingTaskIds);
 
   /// The "today" used to compute [dayIndex] (already normalised
   /// to local-midnight by the controller).
@@ -137,6 +164,12 @@ class TodayPracticeState {
   final BuiltInPracticePlan plan;
 
   /// Set of task ids that are currently marked done.
+  ///
+  /// Always an unmodifiable [Set]. Calling `.add(...)` / `.remove(...)`
+  /// on this reference throws [UnsupportedError]. The constructor
+  /// performs a defensive copy of the caller's input, so
+  /// mutating the Set the caller passed in does NOT affect
+  /// this state.
   final Set<String> completedTaskIds;
 
   /// Set of task ids whose toggle write is currently in flight.
@@ -144,6 +177,8 @@ class TodayPracticeState {
   /// The widget tree disables the Checkbox for any task whose id
   /// is in this set, so a user cannot fire a second click while
   /// the first is still saving.
+  ///
+  /// Always an unmodifiable [Set].
   final Set<String> pendingTaskIds;
 
   /// Number of tasks marked done.
@@ -201,12 +236,23 @@ class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
         ref.read(completedTasksRepositoryProvider);
     final DateTime installInstant = await service.getInstallDate();
     final DateTime now = ref.read(clockProvider)();
-    final DateTime today = _localMidnight(now);
-    final Set<String> completedIds = await repo.getCompletedTaskIds(today);
+
+    // T013.3_FIX_LOCAL_DAY_AND_ERROR_UI: compute BOTH "today" and
+    // "installDate" as local-midnight FIRST, then feed those to
+    // `calculatePracticeDayIndex`. Previously the controller
+    // projected the install date to local-midnight for the state
+    // field but passed the raw UTC instant to the calculator, so
+    // the day index could be computed in a different time-zone
+    // frame than the stored `state.installDate` — causing an
+    // off-by-one around local midnight. The single source of
+    // truth is now the local-midnight pair.
+    final DateTime localToday = _localMidnight(now);
+    final DateTime localInstallDate = _localMidnight(installInstant.toLocal());
+    final Set<String> completedIds = await repo.getCompletedTaskIds(localToday);
 
     final int dayIndex = calculatePracticeDayIndex(
-      installDate: installInstant,
-      today: now,
+      installDate: localInstallDate,
+      today: localToday,
     );
 
     final BuiltInPracticePlan rawPlan = kBuiltInPracticePlan[dayIndex - 1];
@@ -221,13 +267,8 @@ class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
         .toList(growable: false);
 
     return TodayPracticeState(
-      today: today,
-      // The service returns a UTC instant. Project to local time
-      // BEFORE stripping the time-of-day, otherwise an install at
-      // 23:30 local can leak into the previous local day (the
-      // calculator would see 15:30 UTC of the day before in
-      // CST-equivalent offsets).
-      installDate: _localMidnight(installInstant.toLocal()),
+      today: localToday,
+      installDate: localInstallDate,
       dayIndex: dayIndex,
       plan: BuiltInPracticePlan(
         dayIndex: rawPlan.dayIndex,
@@ -235,7 +276,7 @@ class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
         estimatedMinutes: rawPlan.estimatedMinutes,
         tasks: tasks,
       ),
-      completedTaskIds: Set<String>.unmodifiable(completedIds),
+      completedTaskIds: completedIds,
     );
   }
 

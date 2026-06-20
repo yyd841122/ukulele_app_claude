@@ -1,15 +1,19 @@
 // Per-string fingering data for a single chord voicing.
 //
 // T008 scope:
-// - Ukulele has exactly 4 strings, numbered 1..4 in the *physical*
-//   order they sit on the instrument (string 1 is the lowest-pitched
-//   A string, string 4 is the highest-pitched G string on a
-//   re-entrant high-G ukulele).
-//   In notes, that is:
+// - Ukulele has exactly 4 strings. On a standard high-G re-entrant
+//   ukulele the strings are tuned to (in physical order on the
+//   instrument, low to high in *string number*):
 //     stringNumber 1 = A
 //     stringNumber 2 = E
 //     stringNumber 3 = C
 //     stringNumber 4 = G
+//   We deliberately avoid "lowest-pitched / highest-pitched" wording
+//   here because on a re-entrant high-G ukulele string 4 (G) is
+//   actually higher in pitch than string 1 (A) — but the *string
+//   number* still walks 1 → 4 from the A string to the G string.
+//   What matters for this file is the numbering convention and how
+//   it is stored, not relative pitch semantics.
 //   The list inside [ChordFingering.stringPositions] is stored in
 //   that same order (1, 2, 3, 4) so it reads in the same direction
 //   as the strings on the ukulele. The diagram, however, flips this

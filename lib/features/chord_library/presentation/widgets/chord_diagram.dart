@@ -4,14 +4,19 @@
 // - Pure Flutter widgets + CustomPaint for the dots. No third-party
 //   drawing library, no image assets.
 // - String numbering inside the data model:
-//     * stringNumber 1 = A   (the lowest-pitched string on a
-//                              high-G re-entrant ukulele)
+//     * stringNumber 1 = A
 //     * stringNumber 2 = E
 //     * stringNumber 3 = C
 //     * stringNumber 4 = G
 //   This matches the [built_in_chords.dart] data layout, where each
 //   voicing is stored string 1..4 (A, E, C, G) so the frets line up
 //   in the order they are physically strung on the instrument.
+//   We deliberately do not describe these as "lowest-pitched" /
+//   "highest-pitched" because on a re-entrant high-G ukulele the
+//   pitch order is non-monotonic: the G string (stringNumber 4) is
+//   higher in pitch than the A string (stringNumber 1) even though
+//   its number is larger. The data model only carries the numbering
+//   convention — pitch semantics are a separate concern.
 // - The diagram itself is rendered in the conventional beginner
 //   "chart" orientation: when the player holds the ukulele in
 //   playing position the *top* string (closest to the player's face)

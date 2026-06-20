@@ -979,6 +979,391 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
       expect(tester.takeException(), isNull);
     });
+
+    // -----------------------------------------------------------------
+    // Reactive delete contract (T013.4C_FIX_DELETE_PROGRESS_CONTRACT)
+    //
+    // These tests verify that the in-flight delete status is
+    // observable through Riverpod state and drives a real UI
+    // rebuild — not a side-channel bool on the controller. Each
+    // test uses a Completer-gated delete so the pending state is
+    // observable in the widget tree.
+    // -----------------------------------------------------------------
+
+    testWidgets(
+        'while a delete is pending, the page shows a "正在删除…" affordance '
+        'and the loaded record is preserved', (WidgetTester tester) async {
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', practiceContent: 'body content'),
+      });
+      addTearDown(repo.close);
+      // Gate the delete so we can observe the in-flight state.
+      repo.deleteCompleters['r-1'] = Completer<bool>();
+
+      await pumpDetailPage(tester, repository: repo);
+      await settleGetById(tester);
+
+      // Sanity: detail is up before delete.
+      expect(find.text('body content'), findsOneWidget);
+
+      await tester.tap(find.byKey(
+          const ValueKey<String>('practice-record-detail-delete-button')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-delete-confirm-button')));
+      // Pump once so the controller's
+      // `state = AsyncData(isDeleting: true)` rebuild propagates.
+      await tester.pump();
+
+      // In-flight affordance is visible.
+      expect(find.text('正在删除…'), findsOneWidget,
+          reason: 'page must surface a clear in-flight affordance while delete '
+              'is pending');
+      // The delete button is still on the tree (with `onPressed: null`)
+      // so the user sees the affordance instead of the button vanishing.
+      expect(
+          find.byKey(
+              const ValueKey<String>('practice-record-detail-delete-button')),
+          findsOneWidget);
+      // The loaded record is preserved — clearing it is forbidden by the
+      // brief.
+      expect(find.text('body content'), findsOneWidget,
+          reason: 'loaded record must be preserved while delete is pending');
+      // The repository call already landed.
+      expect(repo.deleteCalls, <String>['r-1']);
+
+      // Resolve the gate so the test cleans up. The success branch
+      // pops the route; we don't assert on the popped state here.
+      repo.deleteCompleters['r-1']!.complete(true);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets(
+        'while a delete is pending, the delete button is disabled and '
+        'a second tap does not open a second confirmation dialog',
+        (WidgetTester tester) async {
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1'),
+      });
+      addTearDown(repo.close);
+      repo.deleteCompleters['r-1'] = Completer<bool>();
+
+      await pumpDetailPage(tester, repository: repo);
+      await settleGetById(tester);
+
+      await tester.tap(find.byKey(
+          const ValueKey<String>('practice-record-detail-delete-button')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-delete-confirm-button')));
+      await tester.pump();
+
+      // The button is in the tree but disabled (onPressed: null).
+      final Finder deleteButtonFinder = find.byKey(
+          const ValueKey<String>('practice-record-detail-delete-button'));
+      final OutlinedButton button =
+          tester.widget<OutlinedButton>(deleteButtonFinder);
+      expect(button.onPressed, isNull,
+          reason: 'delete button must be disabled while delete is pending');
+
+      // A second tap on the (disabled) button does NOT open a second
+      // dialog. We tap it anyway — Flutter's gesture system still
+      // dispatches taps to disabled widgets when probed via
+      // `tester.tap` on the same finder, so the page-level guard is
+      // what stops the dialog from re-appearing.
+      await tester.tap(deleteButtonFinder, warnIfMissed: false);
+      await tester.pump();
+      expect(find.text('删除练习记录？'), findsNothing,
+          reason: 'a second confirmation dialog must NOT open while delete '
+              'is pending');
+
+      // Repository.delete was called exactly once.
+      expect(repo.deleteCalls, <String>['r-1'],
+          reason: 'repository.delete must be called exactly once during a '
+              'single in-flight delete');
+
+      // Resolve the gate so the test cleans up.
+      repo.deleteCompleters['r-1']!.complete(true);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets(
+        'while a delete is pending, a concurrent second tap does not '
+        're-fire the repository and does not open a second dialog',
+        (WidgetTester tester) async {
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1'),
+      });
+      addTearDown(repo.close);
+      // Two delete gates so the controller can finish its delete while
+      // a second tap is in flight. We only need the first delete to
+      // happen — the second is what we're asserting against.
+      repo.deleteCompleters['r-1'] = Completer<bool>();
+
+      await pumpDetailPage(tester, repository: repo);
+      await settleGetById(tester);
+
+      await tester.tap(find.byKey(
+          const ValueKey<String>('practice-record-detail-delete-button')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-delete-confirm-button')));
+      await tester.pump();
+
+      // Yield microtasks so the in-flight state has propagated.
+      await tester.pump(const Duration(milliseconds: 10));
+
+      // Force a second tap directly on the delete button. The
+      // controller's `_isDeleting` lock AND the page's
+      // `isDeleting` state both refuse the call. The dialog MUST
+      // NOT re-appear and the Repository MUST NOT be called
+      // again.
+      final Finder deleteButtonFinder = find.byKey(
+          const ValueKey<String>('practice-record-detail-delete-button'));
+      await tester.tap(deleteButtonFinder, warnIfMissed: false);
+      await tester.pump();
+      expect(find.text('删除练习记录？'), findsNothing,
+          reason: 'no second confirmation dialog while delete is pending');
+      expect(repo.deleteCalls, <String>['r-1'],
+          reason: 'repository.delete must be called exactly once');
+
+      // Cleanup: resolve the first delete and let the page pop.
+      repo.deleteCompleters['r-1']!.complete(true);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets(
+        'after a delete failure, the detail page stays up with the record, '
+        'isDeleting is released, and the delete button is re-enabled',
+        (WidgetTester tester) async {
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', practiceContent: 'kept content'),
+      });
+      addTearDown(repo.close);
+      // Stage a synthetic delete failure. The fake yields a
+      // microtask before throwing so the controller's `await`
+      // observes it as a normal rejection rather than an unhandled
+      // async error.
+      repo.nextDeleteError = StateError('synthetic delete failure');
+
+      await pumpDetailPage(tester, repository: repo);
+      await settleGetById(tester);
+
+      await tester.tap(find.byKey(
+          const ValueKey<String>('practice-record-detail-delete-button')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-delete-confirm-button')));
+      await tester.pump();
+      // Allow the failure path to publish the recovered state.
+      await tester.pump(const Duration(milliseconds: 50));
+
+      // Detail page is still mounted.
+      expect(
+          find.byKey(
+              const ValueKey<String>('practice-record-detail-delete-button')),
+          findsOneWidget);
+      // The loaded record is preserved.
+      expect(
+        find.byKey(const ValueKey<String>('practice-record-detail-content')),
+        findsOneWidget,
+      );
+      expect(find.text('kept content'), findsOneWidget);
+      // The "正在删除…" affordance has been released — the button
+      // label is back to its idle copy.
+      expect(find.text('正在删除…'), findsNothing,
+          reason: 'isDeleting must be released after a failure');
+      expect(find.text('删除练习记录'), findsOneWidget,
+          reason: 'delete button label must be restored after a failure');
+      // The button is enabled again (onPressed != null).
+      final OutlinedButton restoredButton = tester.widget<OutlinedButton>(
+          find.byKey(
+              const ValueKey<String>('practice-record-detail-delete-button')));
+      expect(restoredButton.onPressed, isNotNull,
+          reason: 'delete button must be re-enabled after a failure');
+      // The friendly failure SnackBar is shown.
+      expect(
+          find.byKey(const ValueKey<String>(
+              'practice-record-delete-failure-snackbar')),
+          findsOneWidget);
+      // No exception text leaked.
+      expect(find.textContaining('synthetic delete failure'), findsNothing);
+    });
+
+    testWidgets(
+        'after a delete failure, a follow-up retry calls the repository '
+        'a second time', (WidgetTester tester) async {
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1'),
+      });
+      addTearDown(repo.close);
+
+      await pumpDetailPage(tester, repository: repo);
+      await settleGetById(tester);
+
+      // First attempt: fail.
+      repo.nextDeleteError = StateError('boom');
+      await tester.tap(find.byKey(
+          const ValueKey<String>('practice-record-detail-delete-button')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-delete-confirm-button')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(
+          find.byKey(
+              const ValueKey<String>('practice-record-detail-delete-button')),
+          findsOneWidget);
+      // The delete button is back to its idle, enabled state.
+      expect(find.text('删除练习记录'), findsOneWidget);
+
+      // Wait for the failure SnackBar to dismiss so the
+      // success SnackBar can be asserted without ambiguity.
+      await tester.pumpAndSettle(const Duration(seconds: 3));
+
+      // Second attempt: succeed.
+      await tester.tap(find.byKey(
+          const ValueKey<String>('practice-record-detail-delete-button')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-delete-confirm-button')));
+      await tester.pumpAndSettle();
+
+      expect(repo.deleteCalls, <String>['r-1', 'r-1'],
+          reason: 'a failed delete followed by a retry must reach the '
+              'repository twice');
+      expect(find.byType(_RecordsSentinelPage), findsOneWidget);
+    });
+
+    testWidgets(
+        'on successful delete, the page pops back to the list and only '
+        'one success SnackBar is rendered end-to-end',
+        (WidgetTester tester) async {
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1'),
+      });
+      addTearDown(repo.close);
+
+      await pumpDetailPage(tester, repository: repo);
+      await settleGetById(tester);
+
+      await tester.tap(find.byKey(
+          const ValueKey<String>('practice-record-detail-delete-button')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-delete-confirm-button')));
+      // Allow the controller, the SnackBar animation, AND the
+      // go_router pop animation to settle.
+      await tester.pumpAndSettle();
+
+      // Single success SnackBar on the surviving list page —
+      // NOT two (one queued behind the first on the root
+      // ScaffoldMessenger).
+      expect(
+          find.byKey(const ValueKey<String>(
+              'practice-record-delete-success-snackbar')),
+          findsOneWidget,
+          reason:
+              'exactly one success SnackBar must appear after a single delete');
+      // No failure SnackBar leaked.
+      expect(
+          find.byKey(const ValueKey<String>(
+              'practice-record-delete-failure-snackbar')),
+          findsNothing);
+      // Popped back to the list.
+      expect(find.byType(_RecordsSentinelPage), findsOneWidget);
+    });
+
+    testWidgets(
+        'on successful delete, no second success SnackBar appears after '
+        'the first one dismisses', (WidgetTester tester) async {
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1'),
+      });
+      addTearDown(repo.close);
+
+      await pumpDetailPage(tester, repository: repo);
+      await settleGetById(tester);
+
+      await tester.tap(find.byKey(
+          const ValueKey<String>('practice-record-detail-delete-button')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-delete-confirm-button')));
+      await tester.pumpAndSettle();
+
+      // The first SnackBar is on screen.
+      expect(
+          find.byKey(const ValueKey<String>(
+              'practice-record-delete-success-snackbar')),
+          findsOneWidget);
+
+      // Wait long enough for the SnackBar's 2 s duration to elapse
+      // AND for any queued follow-up SnackBar to surface. The
+      // 5 s buffer is generous on purpose — a queued second
+      // SnackBar typically appears within 100 ms after the first
+      // dismisses, so anything that lands within the buffer is a
+      // real bug, not a timing flake. We then pumpAndSettle so
+      // any in-flight exit animation completes before we assert.
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      expect(
+          find.byKey(const ValueKey<String>(
+              'practice-record-delete-success-snackbar')),
+          findsNothing,
+          reason: 'no queued second success SnackBar should appear after the '
+              'first one dismisses');
+      // Repository.delete was called exactly once.
+      expect(repo.deleteCalls, <String>['r-1']);
+    });
+
+    testWidgets(
+        'dispose during an in-flight delete publishes no post-dispose '
+        'state and surfaces no exception', (WidgetTester tester) async {
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1'),
+      });
+      addTearDown(repo.close);
+      final Completer<bool> deleteGate = Completer<bool>();
+      repo.deleteCompleters['r-1'] = deleteGate;
+
+      await pumpDetailPage(tester, repository: repo);
+      await settleGetById(tester);
+
+      await tester.tap(find.byKey(
+          const ValueKey<String>('practice-record-detail-delete-button')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-delete-confirm-button')));
+      await tester.pump();
+
+      // The in-flight state has been published and the page
+      // shows "正在删除…".
+      expect(find.text('正在删除…'), findsOneWidget);
+
+      // Drop the widget tree while the delete is pending.
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+
+      // Resolving the gate now must NOT cause the controller to
+      // publish a state update into a torn-down Provider. The
+      // controller's `ref.mounted` check short-circuits, returning
+      // `ignored` instead of pushing the recovered state. No
+      // exception should surface.
+      deleteGate.complete(true);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(tester.takeException(), isNull,
+          reason: 'dispose during delete must not surface an exception');
+    });
   });
 
   group('practiceRecordDetailControllerProvider family', () {

@@ -26,6 +26,30 @@
 //   confirmation dialog without leaking BuildContext across
 //   async gaps.
 //
+// Reactive delete contract (T013.4C_FIX_DELETE_PROGRESS_CONTRACT):
+// - The "is a delete in flight?" signal is read from the watched
+//   [PracticeRecordDetailState.isDeleting] field, NOT from a
+//   side-channel on the controller. A state change rebuilds the
+//   `_DataView`, which disables the delete button AND swaps its
+//   icon + label to "正在删除…". The page does NOT keep its own
+//   UI lock — duplicating the controller's guard would let the
+//   two drift apart.
+// - The confirmation dialog can only open when the watched
+//   `isDeleting == false`. Tapping the delete button while a
+//   delete is in flight is a no-op — the button's `onPressed` is
+//   null and the controller's guard rejects any race that slips
+//   through.
+// - The loaded record is intentionally preserved across the
+//   in-flight transition. The detail body stays on screen; only
+//   the delete affordance changes. After failure, the page
+//   restores the delete affordance so the user can retry.
+// - The success SnackBar is shown exactly once per delete. It is
+//   emitted from a single `_confirmAndDelete` invocation
+//   (gated by the controller's in-flight check) and lives on the
+//   root ScaffoldMessenger provided by `MaterialApp.router` —
+//   not on the detail page's Scaffold, so the pop-then-show
+//   sequence does not enqueue a duplicate.
+//
 // Reuse:
 // - Date, duration, PracticeType, SelfAssessment formatters are
 //   re-exported from the T013.4B list item file. We deliberately
@@ -100,9 +124,14 @@ class _PracticeRecordDetailPageState
             final PracticeRecordDetailController controller = ref.read(
               practiceRecordDetailControllerProvider(widget.recordId).notifier,
             );
+            // The in-flight signal is read from the WATCHED
+            // state — this is the only source of truth for the
+            // UI. When the controller publishes
+            // `isDeleting = true`, the parent `ref.watch` rebuilds
+            // us and the button is disabled in the same frame.
             return _DataView(
               record: record,
-              isDeleting: controller.isDeleting,
+              isDeleting: state.isDeleting,
               onDeletePressed: () => _confirmAndDelete(context, controller),
             );
           },
@@ -131,10 +160,18 @@ class _PracticeRecordDetailPageState
     BuildContext context,
     PracticeRecordDetailController controller,
   ) async {
-    if (controller.isDeleting) {
-      // Re-entrancy guard: the delete button should already be
-      // disabled in the UI, but the controller is the source of
-      // truth and MUST refuse a second concurrent confirmation.
+    // Re-entrancy guard #1: read the in-flight signal from the
+    // CURRENTLY watched state (NOT a cached controller getter).
+    // This is the same signal that the delete button's
+    // `onPressed: isDeleting ? null : onDeletePressed` already
+    // checks, so under normal use this branch is unreachable —
+    // but we keep it because the controller is the authoritative
+    // source and the UI lock is only a UX hint.
+    final AsyncValue<PracticeRecordDetailState> current = ref.read(
+      practiceRecordDetailControllerProvider(widget.recordId),
+    );
+    final PracticeRecordDetailState? currentValue = current.value;
+    if (currentValue == null || currentValue.isDeleting) {
       return;
     }
     final bool? confirmed = await showDialog<bool>(
@@ -149,6 +186,19 @@ class _PracticeRecordDetailPageState
       // controller will refuse the call on its own (ref.mounted
       // check), but bailing out here also avoids scheduling a
       // SnackBar on a torn-down page.
+      return;
+    }
+    // Re-entrancy guard #2: by the time the dialog closes, the
+    // user may have re-opened another dialog, or a previous
+    // delete may still be in flight. Re-read the watched state
+    // so a concurrent `isDeleting = true` publish from the
+    // controller short-circuits this call BEFORE we touch the
+    // Repository.
+    final AsyncValue<PracticeRecordDetailState> beforeCall = ref.read(
+      practiceRecordDetailControllerProvider(widget.recordId),
+    );
+    final PracticeRecordDetailState? beforeCallValue = beforeCall.value;
+    if (beforeCallValue == null || beforeCallValue.isDeleting) {
       return;
     }
 
@@ -168,7 +218,12 @@ class _PracticeRecordDetailPageState
         );
         // Pop back to the list. `watchAll()` on the list page
         // already reflects the deletion — we do NOT manipulate
-        // the list's in-memory state.
+        // the list's in-memory state. The SnackBar lives on the
+        // ROOT ScaffoldMessenger (provided by
+        // `MaterialApp.router`), not on the detail page's
+        // Scaffold, so it survives the pop and is NOT queued a
+        // second time — this branch runs exactly once per
+        // successful delete.
         if (!context.mounted) return;
         _popOrGoRecords(context);
       case DeleteResult.failure:
@@ -297,6 +352,14 @@ class _DataView extends StatelessWidget {
   });
 
   final PracticeRecord record;
+
+  /// Driven by [PracticeRecordDetailState.isDeleting] — the
+  /// SAME signal that the controller published when the delete
+  /// started. When this is `true` the delete button is disabled
+  /// (`onPressed: null`) and its icon + label swap to a
+  /// "正在删除…" affordance, so the user can see the page is
+  /// still responsive without being able to fire a second
+  /// confirmation.
   final bool isDeleting;
   final VoidCallback onDeletePressed;
 
@@ -372,6 +435,10 @@ class _DataView extends StatelessWidget {
           // a colored FilledButton so the destructive intent
           // is signalled by an icon + label, not by red-only
           // color (the brief forbids "仅靠颜色表达风险的控件").
+          // The button is disabled while a delete is in flight
+          // so a second click cannot open a duplicate
+          // confirmation dialog and the Repository can never be
+          // called twice for the same id from the UI.
           OutlinedButton.icon(
             key: const ValueKey<String>('practice-record-detail-delete-button'),
             onPressed: isDeleting ? null : onDeletePressed,

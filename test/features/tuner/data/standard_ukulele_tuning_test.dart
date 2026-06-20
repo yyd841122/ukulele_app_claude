@@ -25,9 +25,8 @@ void main() {
     });
 
     test('contains the G / C / E / A notes', () {
-      final List<String> names = kBuiltInTuningStrings
-          .map((TuningString s) => s.stringName)
-          .toList();
+      final List<String> names =
+          kBuiltInTuningStrings.map((TuningString s) => s.stringName).toList();
       expect(names, containsAll(<String>['G', 'C', 'E', 'A']));
     });
 
@@ -43,8 +42,7 @@ void main() {
     test('every entry passes structural validation', () {
       for (final TuningString s in kBuiltInTuningStrings) {
         expect(s.validate(), isNull,
-            reason:
-                'stringNumber=${s.stringNumber} failed: ${s.validate()}');
+            reason: 'stringNumber=${s.stringNumber} failed: ${s.validate()}');
       }
     });
 
@@ -80,8 +78,7 @@ void main() {
     // 最低 / 最高 / 最细 / 最粗" because on a re-entrant high-G
     // ukulele the pitch walk is non-monotonic. We pin every
     // user-facing field on every entry.
-    test('no entry mentions lowest / highest / 最低 / 最高 / 最细 / 最粗',
-        () {
+    test('no entry mentions lowest / highest / 最低 / 最高 / 最细 / 最粗', () {
       const List<String> banned = <String>[
         'lowest',
         'highest',

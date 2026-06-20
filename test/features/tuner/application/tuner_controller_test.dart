@@ -201,8 +201,7 @@ void main() {
       );
     });
 
-    test(
-        'tuningStringsDisplayOrderProvider exposes G, C, E, A in that order',
+    test('tuningStringsDisplayOrderProvider exposes G, C, E, A in that order',
         () {
       final ProviderContainer container = ProviderContainer();
       addTearDown(container.dispose);

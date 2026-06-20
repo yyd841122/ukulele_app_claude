@@ -38,8 +38,7 @@ class TunerPage extends ConsumerWidget {
         ref.read(tunerControllerProvider.notifier);
     final ThemeData theme = Theme.of(context);
 
-    final List<TuningString> displayOrder =
-        state.stringsInDisplayOrder;
+    final List<TuningString> displayOrder = state.stringsInDisplayOrder;
 
     return Scaffold(
       appBar: AppBar(

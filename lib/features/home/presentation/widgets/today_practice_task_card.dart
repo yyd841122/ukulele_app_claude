@@ -53,8 +53,7 @@ class TodayPracticeTaskCard extends StatelessWidget {
                     Text(
                       task.title,
                       style: theme.textTheme.titleMedium?.copyWith(
-                        decoration:
-                            isDone ? TextDecoration.lineThrough : null,
+                        decoration: isDone ? TextDecoration.lineThrough : null,
                         color: isDone
                             ? theme.colorScheme.onSurfaceVariant
                             : theme.colorScheme.onSurface,

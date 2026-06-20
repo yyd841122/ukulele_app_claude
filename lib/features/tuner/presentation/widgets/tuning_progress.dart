@@ -54,8 +54,7 @@ class TuningProgress extends StatelessWidget {
           child: LinearProgressIndicator(
             value: fraction,
             minHeight: 8,
-            backgroundColor:
-                theme.colorScheme.surfaceContainerHighest,
+            backgroundColor: theme.colorScheme.surfaceContainerHighest,
             color: theme.colorScheme.primary,
           ),
         ),

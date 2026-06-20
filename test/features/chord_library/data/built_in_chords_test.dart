@@ -17,8 +17,7 @@ import 'package:ukulele_app/features/chord_library/domain/chord_fingering.dart';
 void main() {
   group('kBuiltInChords', () {
     test('contains C, Am, F, G', () {
-      final List<String> ids =
-          kBuiltInChords.map((Chord c) => c.id).toList();
+      final List<String> ids = kBuiltInChords.map((Chord c) => c.id).toList();
       expect(ids, containsAll(<String>['c', 'am', 'f', 'g']));
       expect(kBuiltInChords.length, 4);
     });
@@ -173,8 +172,7 @@ void main() {
       // chords live in which tier. Tests pin that mapping so a
       // future data tweak that demotes/promotes a chord also
       // surfaces here for the next Agent to update the docstring.
-      final Map<String, ChordDifficulty> expected =
-          <String, ChordDifficulty>{
+      final Map<String, ChordDifficulty> expected = <String, ChordDifficulty>{
         'c': ChordDifficulty.beginner,
         'am': ChordDifficulty.beginner,
         'f': ChordDifficulty.easy,

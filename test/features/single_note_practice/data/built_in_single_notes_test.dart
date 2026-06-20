@@ -114,8 +114,7 @@ void main() {
           expect(n.finger, isNotNull,
               reason: '${n.id} is fretted but has no finger');
         } else {
-          expect(n.finger, isNull,
-              reason: '${n.id} is open but has a finger');
+          expect(n.finger, isNull, reason: '${n.id} is open but has a finger');
         }
         if (n.finger != null) {
           expect(n.finger, inInclusiveRange(1, 4),

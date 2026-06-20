@@ -43,7 +43,8 @@ Future<void> _pumpPage(WidgetTester tester) async {
 
 void main() {
   group('TunerPage', () {
-    testWidgets('renders title, disclaimer, summary, four cards and '
+    testWidgets(
+        'renders title, disclaimer, summary, four cards and '
         'progress', (WidgetTester tester) async {
       await _useTallSurface(tester);
       await _pumpPage(tester);

@@ -105,8 +105,7 @@ class SingleNotePracticeState {
 }
 
 /// Riverpod notifier that produces [SingleNotePracticeState].
-class SingleNotePracticeController
-    extends Notifier<SingleNotePracticeState> {
+class SingleNotePracticeController extends Notifier<SingleNotePracticeState> {
   @override
   SingleNotePracticeState build() {
     final List<SingleNote> notes = ref.read(builtInSingleNotesProvider);
@@ -123,8 +122,7 @@ class SingleNotePracticeController
     if (state.notes.isEmpty) {
       return;
     }
-    final int next =
-        (state.currentIndex + 1) % state.notes.length;
+    final int next = (state.currentIndex + 1) % state.notes.length;
     state = state.copyWith(currentIndex: next);
   }
 
@@ -160,8 +158,7 @@ class SingleNotePracticeController
   /// Selects the note with [id]. No-op if the id is not in the
   /// built-in list.
   void selectNoteById(String id) {
-    final int index =
-        state.notes.indexWhere((SingleNote n) => n.id == id);
+    final int index = state.notes.indexWhere((SingleNote n) => n.id == id);
     if (index < 0) {
       return;
     }

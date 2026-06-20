@@ -210,9 +210,8 @@ class MetronomeController extends Notifier<MetronomeState> {
   /// Internal "advance one beat" logic. Updates `currentBeat`
   /// (wrap to 1 after the last beat) and increments `tickCount`.
   void _advance() {
-    final int next = state.currentBeat >= state.beatsPerBar
-        ? 1
-        : state.currentBeat + 1;
+    final int next =
+        state.currentBeat >= state.beatsPerBar ? 1 : state.currentBeat + 1;
     state = state.copyWith(
       currentBeat: next,
       tickCount: state.tickCount + 1,

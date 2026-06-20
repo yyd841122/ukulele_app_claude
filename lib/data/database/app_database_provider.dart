@@ -11,8 +11,10 @@
 //   `<documents>/ukulele.db` automatically.
 // - Test override: pass an `AppDatabase.forTesting(...)` instance via
 //   `appDatabaseProvider.overrideWithValue(...)`. Each test gets a
-//   fresh, in-memory database and `close()` is a no-op safe call
-//   (Drift closes the in-memory NativeDatabase cleanly).
+//   fresh, in-memory database. The CALLING test (or its
+//   `addTearDown`) is responsible for closing the overridden
+//   database — this provider does NOT own the test instance's
+//   lifecycle (production owns its own DB, tests own theirs).
 //
 // Why we deliberately do NOT wire this provider into `main.dart` in
 // T013.1: the task brief explicitly forbids modifying `lib/main.dart`

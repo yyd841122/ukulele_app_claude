@@ -49,3 +49,4 @@
 | T012_DOCS_COLLABORATION_BASELINE | 建立任务台账与技术债台账 | 通过 | `7ca3f36` | 175 | 通过 | 建立 `TASK_LEDGER.md` 与 `TECH_DEBT.md`,后续有文档一致性 FIX |
 | T012_FIX_DOCS_LEDGER_CONSISTENCY | 修复协作文档的状态矛盾、技术债证据不足与任务漏记 | 通过 | `c533272` | 175 | 通过 | 统一 T006-T011 状态为"待补录";删除证据不足的 TD-002;补充本任务与上一步的台账条目 |
 | T013_PREP_LOCAL_PERSISTENCE_AUDIT | T013 本地持久化只读审计 | 通过 | 无 | 175 | 待复审 | 只读审计,无代码改动;为 T013.1 ~ T013.5 拆分提供依据 |
+| T013.1_LOCAL_DB_FOUNDATION | Drift 数据库底座 | 通过 | `52bc2f9` | 184 | 通过 | 引入 `AppDatabase`、三张表的 schema 文件、`app_database_provider`,schemaVersion = 1;无 DAO / Repository;已在 `app_database_test.dart` 中覆盖 schema 与三张表基础往返 |

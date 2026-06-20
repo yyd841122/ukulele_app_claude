@@ -90,7 +90,8 @@ void main() {
       await _useTallSurface(tester);
       await _pumpPage(tester);
 
-      await tester.tap(find.byKey(const ValueKey<String>('metronome-bpm-increase')));
+      await tester
+          .tap(find.byKey(const ValueKey<String>('metronome-bpm-increase')));
       await tester.pumpAndSettle();
 
       expect(find.text('81 BPM'), findsOneWidget);
@@ -102,7 +103,8 @@ void main() {
       await _useTallSurface(tester);
       await _pumpPage(tester);
 
-      await tester.tap(find.byKey(const ValueKey<String>('metronome-bpm-decrease')));
+      await tester
+          .tap(find.byKey(const ValueKey<String>('metronome-bpm-decrease')));
       await tester.pumpAndSettle();
 
       expect(find.text('79 BPM'), findsOneWidget);
@@ -127,14 +129,16 @@ void main() {
       await _pumpPage(tester);
 
       expect(find.text('开始'), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey<String>('metronome-start-stop')));
+      await tester
+          .tap(find.byKey(const ValueKey<String>('metronome-start-stop')));
       await tester.pumpAndSettle();
 
       expect(find.text('停止'), findsOneWidget);
       expect(find.text('开始'), findsNothing);
 
       // Stop again flips it back.
-      await tester.tap(find.byKey(const ValueKey<String>('metronome-start-stop')));
+      await tester
+          .tap(find.byKey(const ValueKey<String>('metronome-start-stop')));
       await tester.pumpAndSettle();
 
       expect(find.text('开始'), findsOneWidget);

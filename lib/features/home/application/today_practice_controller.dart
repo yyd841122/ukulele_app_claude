@@ -1,6 +1,21 @@
 // Riverpod controller for the home / "today's practice" page.
 //
-// T013.3_FIX_LOCAL_DAY_AND_ERROR_UI scope (latest):
+// T013.4A0_RECORDING_SAVE_FOUNDATION scope (latest):
+// - The day-index computation is now delegated to the shared
+//   `PracticeDayResolver`. The controller no longer reads the
+//   install date / clock itself; it only consumes the
+//   `PracticeDayContext` and threads the fields through.
+// - The previously feature-local providers (`clockProvider` and
+//   `installDateServiceProvider`) have been relocated to the
+//   shared layer — see `lib/shared/providers/app_clock_provider.dart`
+//   and `lib/shared/services/install_date_service_provider.dart`.
+//   The Home Controller now imports those shared providers
+//   directly. There is intentionally NO alias preserved in this
+//   file: every consumer of `appClockProvider` shares the SAME
+//   Riverpod instance.
+// - All T013.3 contracts are preserved verbatim — see below.
+//
+// T013.3_FIX_LOCAL_DAY_AND_ERROR_UI scope:
 // - `TodayPracticeState` performs a defensive copy of the
 //   `completedTaskIds` and `pendingTaskIds` arguments in its
 //   constructor, and wraps the result in `Set.unmodifiable`.
@@ -8,87 +23,41 @@
 //   reference to the Set it passed in, and calling `.add(...)`
 //   / `.remove(...)` on `state.completedTaskIds` or
 //   `state.pendingTaskIds` throws `UnsupportedError`.
-// - The day index is now computed from local-midnight values
-//   on BOTH sides: the controller builds `localToday` and
-//   `localInstallDate` FIRST, then feeds them to
-//   `calculatePracticeDayIndex`. There is no longer a
-//   mismatch where `state.installDate` is local-midnight but
-//   the calculator sees a raw UTC instant. The stored
+// - The day index is now derived from the
+//   `PracticeDayContext.installDate` / `.today` pair, which is
+//   guaranteed to be local-midnight on BOTH sides. The stored
 //   `state.installDate` is the SAME value used in the day-index
 //   computation, so consumers see a consistent local-date frame.
 //
 // T013.3_FIX_PENDING_RESULT_AND_INSTALL_DATE_BOUNDARY scope:
-// - `toggleTaskCompleted` now returns [ToggleTaskResult] (not
-//   `bool`). The UI can route SnackBars by intent:
-//     * `success` — write committed; no UI message.
-//     * `ignored` — click was legitimately dropped (unknown id,
-//        in-flight for this id, provider unmounted, or the local
-//        day rolled over mid-write); no UI message.
-//     * `failure` — Repository write threw; UI shows a retry
-//        SnackBar.
-// - `TodayPracticeState.pendingTaskIds` exposes the in-flight
-//   set to the widget tree. The Checkbox on each task card
-//   reads `isPending` and renders as disabled when its id is in
-//   the set, so the user cannot fire a second click while the
-//   first is still in flight.
-// - `completedAt` is sourced from
-//   `ref.read(clockProvider)().toUtc()`. No direct `DateTime.now()`
-//   calls remain — tests can pin the stamp by overriding the
-//   clock.
+// - `toggleTaskCompleted` returns [ToggleTaskResult] (not `bool`).
+// - `TodayPracticeState.pendingTaskIds` exposes the in-flight set
+//   to the widget tree; the Checkbox on each task card reads
+//   `isPending` and renders as disabled when its id is in the
+//   set.
+// - `completedAt` is sourced from `ref.read(appClockProvider)()`.
+//   No direct `DateTime.now()` calls remain.
 // - Cross-day safety: after the await, if the local day rolled
-//   over (the clock advanced past midnight while the write was
-//   in flight), we DO NOT merge yesterday's result into today's
-//   state. Result is `ignored`.
-// - Lifecycle: no `catch (Object)` swallow. After every await
-//   we check `ref.mounted`; if the Provider was disposed mid-
-//   write we leave the state alone and return `ignored`.
+//   over the result is `ignored`.
+// - Lifecycle: `ref.mounted` is checked after every await.
 //
 // T013.3 baseline scope (still in effect):
-// - Converted from a synchronous `Notifier<TodayPracticeState>`
-//   to `AsyncNotifier<TodayPracticeState>`. The state is built
-//   by awaiting two persistence reads:
-//     1. The persisted install date (Drift /
-//        `InstallDateService`).
-//     2. The completed-task set for today (Drift /
-//        `CompletedTasksRepository`).
-// - The provider stays hand-written (no `@riverpod` codegen) per
-//   the project convention.
+// - `AsyncNotifier<TodayPracticeState>`; the state is loaded by
+//   awaiting the practice-day resolver and the completed-tasks
+//   repository.
+// - The provider stays hand-written (no `@riverpod` codegen).
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:ukulele_app/core/constants/practice_plan_constants.dart';
-import 'package:ukulele_app/core/utils/practice_day_calculator.dart';
 import 'package:ukulele_app/features/home/data/completed_tasks_repository.dart';
 import 'package:ukulele_app/features/home/data/completed_tasks_repository_provider.dart';
 import 'package:ukulele_app/features/home/domain/built_in_practice_plan.dart';
 import 'package:ukulele_app/features/home/domain/practice_task.dart';
 import 'package:ukulele_app/features/home/domain/practice_task_status.dart';
-import 'package:ukulele_app/shared/repositories/user_settings_repository_provider.dart';
-import 'package:ukulele_app/shared/services/drift_install_date_service.dart';
-import 'package:ukulele_app/shared/services/install_date_service.dart';
-
-/// Provider for the [InstallDateService] used by the home controller.
-///
-/// T013.3 default is the Drift-backed implementation, wired to the
-/// shared `userSettingsRepositoryProvider` (which itself wires the
-/// `appDatabaseProvider`). Tests can override this with
-/// [InMemoryInstallDateService] (or any other implementation) to
-/// pin install date / isolate from the DB.
-final Provider<InstallDateService> installDateServiceProvider =
-    Provider<InstallDateService>((Ref ref) {
-  return DriftInstallDateService(
-    repository: ref.watch(userSettingsRepositoryProvider),
-  );
-});
-
-/// Clock function for the controller. Defaults to [DateTime.now].
-///
-/// Overriding this provider is the recommended way for tests to
-/// pin "today" to a specific instant without monkey-patching
-/// globals.
-final Provider<DateTime Function()> clockProvider =
-    Provider<DateTime Function()>((Ref ref) => DateTime.now);
+import 'package:ukulele_app/shared/providers/app_clock_provider.dart';
+import 'package:ukulele_app/shared/services/practice_day_context.dart';
 
 /// Outcome of a single call to [TodayPracticeController.toggleTaskCompleted].
 ///
@@ -127,13 +96,9 @@ enum ToggleTaskResult {
 ///   copy and wraps the result in [Set.unmodifiable], so callers
 ///   can NOT mutate the state by holding onto a reference to the
 ///   Set they passed in. `copyWith` follows the same rule.
-/// - `today` and `installDate` are BOTH local-midnight values.
-///   They are derived from the same projections used to compute
-///   [dayIndex], so the in-memory state and the
-///   `calculatePracticeDayIndex` call see a consistent local
-///   date. There is no longer a mismatch where
-///   `state.installDate` is local-midnight but
-///   `calculatePracticeDayIndex` is fed a raw UTC instant.
+/// - `today` and `installDate` are BOTH local-midnight values
+///   sourced from the shared `PracticeDayContext`. The state and
+///   the day-index computation share a single local-date frame.
 @immutable
 class TodayPracticeState {
   TodayPracticeState({
@@ -147,13 +112,13 @@ class TodayPracticeState {
         pendingTaskIds = Set<String>.unmodifiable(pendingTaskIds);
 
   /// The "today" used to compute [dayIndex] (already normalised
-  /// to local-midnight by the controller).
+  /// to local-midnight by the resolver).
   final DateTime today;
 
   /// The install date used to compute [dayIndex]. Always
-  /// normalised to local-midnight by the controller — the
+  /// normalised to local-midnight by the resolver — the
   /// underlying [InstallDateService] returns a UTC instant, the
-  /// controller projects to local and strips the time-of-day.
+  /// resolver projects to local and strips the time-of-day.
   final DateTime installDate;
 
   /// 1-based day in the 7-day cycle. Always in 1..7.
@@ -175,8 +140,8 @@ class TodayPracticeState {
   /// Set of task ids whose toggle write is currently in flight.
   ///
   /// The widget tree disables the Checkbox for any task whose id
-  /// is in this set, so a user cannot fire a second click while
-  /// the first is still saving.
+  /// is in this set, so a user cannot fire a second click while the
+  /// first is still saving.
   ///
   /// Always an unmodifiable [Set].
   final Set<String> pendingTaskIds;
@@ -224,38 +189,23 @@ class TodayPracticeState {
 
 /// Riverpod notifier that produces [TodayPracticeState].
 ///
-/// The state is loaded asynchronously from the install-date
-/// service and the completed-tasks repository. While the load is
+/// The state is loaded asynchronously from the practice-day
+/// resolver and the completed-tasks repository. While the load is
 /// in flight the provider exposes an `AsyncLoading`. The UI
 /// MUST handle the `AsyncValue` envelope.
 class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
   @override
   Future<TodayPracticeState> build() async {
-    final InstallDateService service = ref.read(installDateServiceProvider);
+    final PracticeDayResolver resolver = ref.read(practiceDayResolverProvider);
+    final PracticeDayContext dayContext = await resolver.resolve();
     final CompletedTasksRepository repo =
         ref.read(completedTasksRepositoryProvider);
-    final DateTime installInstant = await service.getInstallDate();
-    final DateTime now = ref.read(clockProvider)();
 
-    // T013.3_FIX_LOCAL_DAY_AND_ERROR_UI: compute BOTH "today" and
-    // "installDate" as local-midnight FIRST, then feed those to
-    // `calculatePracticeDayIndex`. Previously the controller
-    // projected the install date to local-midnight for the state
-    // field but passed the raw UTC instant to the calculator, so
-    // the day index could be computed in a different time-zone
-    // frame than the stored `state.installDate` — causing an
-    // off-by-one around local midnight. The single source of
-    // truth is now the local-midnight pair.
-    final DateTime localToday = _localMidnight(now);
-    final DateTime localInstallDate = _localMidnight(installInstant.toLocal());
-    final Set<String> completedIds = await repo.getCompletedTaskIds(localToday);
+    final Set<String> completedIds =
+        await repo.getCompletedTaskIds(dayContext.today);
 
-    final int dayIndex = calculatePracticeDayIndex(
-      installDate: localInstallDate,
-      today: localToday,
-    );
-
-    final BuiltInPracticePlan rawPlan = kBuiltInPracticePlan[dayIndex - 1];
+    final BuiltInPracticePlan rawPlan =
+        kBuiltInPracticePlan[dayContext.dayIndex - 1];
     final List<PracticeTask> tasks = rawPlan.tasks
         .map(
           (PracticeTask t) => t.copyWith(
@@ -267,9 +217,9 @@ class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
         .toList(growable: false);
 
     return TodayPracticeState(
-      today: localToday,
-      installDate: localInstallDate,
-      dayIndex: dayIndex,
+      today: dayContext.today,
+      installDate: dayContext.installDate,
+      dayIndex: dayContext.dayIndex,
       plan: BuiltInPracticePlan(
         dayIndex: rawPlan.dayIndex,
         title: rawPlan.title,
@@ -287,7 +237,7 @@ class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
   /// that type for the exact mapping from cause to result.
   ///
   /// No direct `DateTime.now()` calls: the `completedAt` stamp
-  /// is sourced from `ref.read(clockProvider)`. The Provider
+  /// is sourced from `ref.read(appClockProvider)`. The Provider
   /// lifecycle is guarded with `ref.mounted` after every await.
   Future<ToggleTaskResult> toggleTaskCompleted(String taskId) async {
     final TodayPracticeState? snapshotValue = state.value;
@@ -325,7 +275,7 @@ class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
         await repo.markCompleted(
           date: snapshotValue.today,
           taskId: taskId,
-          completedAt: ref.read(clockProvider)().toUtc(),
+          completedAt: ref.read(appClockProvider)().toUtc(),
         );
       } else {
         await repo.unmarkCompleted(
@@ -414,13 +364,6 @@ class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
   }
 
   // --- Internal helpers ---
-
-  /// Returns the local-midnight representation of [d]. Strips the
-  /// time-of-day component to keep `today` consistent with what
-  /// the calculator expects.
-  static DateTime _localMidnight(DateTime d) {
-    return DateTime(d.year, d.month, d.day);
-  }
 
   /// Adds [taskId] to `pendingTaskIds` and publishes the new
   /// state. The current value must be non-null when this is

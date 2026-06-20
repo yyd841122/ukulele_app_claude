@@ -1,5 +1,18 @@
 // Repository contract for [PracticeRecord] persistence.
 //
+// T013.4A0_RECORDING_SAVE_FOUNDATION — ID ownership:
+// - `PracticeRecord.id` is a UUID v4 string. The Repository is NOT
+//   responsible for generating it. IDs are minted by the
+//   application / use-case layer via
+//   `PracticeRecordIdGenerator` (see
+//   `lib/features/practice_records/application/practice_record_id_generator.dart`)
+//   BEFORE this Repository is called.
+// - `insert(...)` validates that `record.id` is non-empty and
+//   persists it verbatim. It does NOT auto-generate an id, does
+//   NOT call any ID generator, and does NOT inspect the caller
+//   for a missing id. An empty `id` is a contract violation and
+//   results in `ArgumentError`.
+//
 // T013.2 scope:
 // - Repository is the SINGLE data-conversion boundary. UI /
 //   Controllers only see [PracticeRecord]; they never touch
@@ -20,8 +33,9 @@ abstract class PracticeRecordRepository {
   /// Persists [record] and returns the stored copy.
   ///
   /// The Repository is responsible for:
-  /// - generating the UUID `id` if the caller did not supply one
-  ///   (T013.2 callers always supply one — see below),
+  /// - validating that [PracticeRecord.id] is non-empty (the id
+  ///   was minted upstream by `PracticeRecordIdGenerator`; the
+  ///   Repository NEVER generates or fabricates one),
   /// - normalising `practiceDate` to local-midnight,
   /// - stamping `createdAt` / `updatedAt` to the current UTC instant,
   /// - serialising `practiceTags` via `jsonEncode`.

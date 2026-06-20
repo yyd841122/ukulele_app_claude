@@ -1,5 +1,19 @@
 // Tests for [TodayPracticeController]
-// (T013.3_FIX_LOCAL_DAY_AND_ERROR_UI).
+// (T013.3_FIX_LOCAL_DAY_AND_ERROR_UI + T013.4A0).
+//
+// T013.4A0_RECORDING_SAVE_FOUNDATION contract under test:
+// - The day-index computation is delegated to the shared
+//   `PracticeDayResolver`. The controller reads
+//   `practiceDayResolverProvider` instead of computing
+//   `localToday` / `localInstallDate` inline.
+// - The previously feature-local providers `clockProvider` and
+//   `installDateServiceProvider` were relocated to the shared
+//   layer. The Home Controller and these tests now import the
+//   shared providers; there is intentionally no alias preserved
+//   in the controller file.
+// - `appClockProvider` overrides are still honoured by the
+//   resolver — the test contract "completedAt uses the shared
+//   clock" is preserved.
 //
 // T013.3_FIX_LOCAL_DAY_AND_ERROR_UI contract under test:
 // - The day index is computed from local-midnight on BOTH sides
@@ -35,7 +49,7 @@
 //       SnackBar.
 // - `TodayPracticeState.pendingTaskIds` exposes the in-flight set
 //   so the UI can disable the Checkbox while a write is pending.
-// - `completedAt` is sourced from `clockProvider`, NOT
+// - `completedAt` is sourced from `appClockProvider`, NOT
 //   `DateTime.now()`.
 // - Concurrent toggles on DIFFERENT taskIds complete
 //   independently — neither one clobbers the other.
@@ -55,7 +69,9 @@ import 'package:ukulele_app/features/home/data/completed_tasks_repository_provid
 import 'package:ukulele_app/features/home/domain/built_in_practice_plan.dart';
 import 'package:ukulele_app/features/home/domain/practice_task.dart';
 import 'package:ukulele_app/features/home/domain/practice_task_status.dart';
+import 'package:ukulele_app/shared/providers/app_clock_provider.dart';
 import 'package:ukulele_app/shared/services/install_date_service.dart';
+import 'package:ukulele_app/shared/services/install_date_service_provider.dart';
 
 void main() {
   // Each test gets a fresh in-memory DB. We always close it.
@@ -66,7 +82,7 @@ void main() {
   }
 
   /// Builds a `ProviderContainer` wired against [db]. The
-  /// controller's `clockProvider` and
+  /// controller's `appClockProvider` and
   /// `installDateServiceProvider` are overrideable per test.
   /// [completedTasksRepo] overrides the
   /// `completedTasksRepositoryProvider` for tests that need to
@@ -79,7 +95,7 @@ void main() {
   }) {
     final List<Override> overrides = <Override>[
       appDatabaseProvider.overrideWithValue(db),
-      if (clock != null) clockProvider.overrideWithValue(clock),
+      if (clock != null) appClockProvider.overrideWithValue(clock),
       if (installService != null)
         installDateServiceProvider.overrideWithValue(installService),
       if (completedTasksRepo != null)
@@ -205,7 +221,7 @@ void main() {
       // 2026-06-20 in CST, but in other offsets it can be the
       // day before. The controller MUST project to local first.
       final DateTime localLateNight = DateTime(2026, 6, 20, 23, 30);
-      // The fixed clock the controller reads via clockProvider.
+      // The fixed clock the controller reads via appClockProvider.
       final DateTime fixedClock = DateTime(2026, 6, 20, 23, 31);
       final ProviderContainer container = buildContainer(
         db: db,
@@ -835,7 +851,7 @@ void main() {
       expect(after.pendingTaskIds, isEmpty);
     });
 
-    test('completedAt uses clockProvider (not DateTime.now)', () async {
+    test('completedAt uses appClockProvider (not DateTime.now)', () async {
       final AppDatabase db = buildDb();
       // Pin a deterministic "now" via the override clock; the
       // controller MUST stamp `completedAt` with this exact

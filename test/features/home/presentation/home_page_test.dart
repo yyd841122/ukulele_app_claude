@@ -43,7 +43,9 @@ import 'package:ukulele_app/features/home/application/today_practice_controller.
 import 'package:ukulele_app/features/home/data/completed_tasks_repository.dart';
 import 'package:ukulele_app/features/home/data/completed_tasks_repository_provider.dart';
 import 'package:ukulele_app/features/home/presentation/home_page.dart';
+import 'package:ukulele_app/shared/providers/app_clock_provider.dart';
 import 'package:ukulele_app/shared/services/install_date_service.dart';
+import 'package:ukulele_app/shared/services/install_date_service_provider.dart';
 
 void main() {
   setUpAll(() async {
@@ -58,7 +60,7 @@ void main() {
       final ProviderContainer container = ProviderContainer(
         overrides: <Override>[
           appDatabaseProvider.overrideWithValue(db),
-          clockProvider.overrideWithValue(() => DateTime(2026, 6, 20, 9)),
+          appClockProvider.overrideWithValue(() => DateTime(2026, 6, 20, 9)),
           installDateServiceProvider.overrideWithValue(
             _NeverCompletingInstallDateService(),
           ),
@@ -85,7 +87,7 @@ void main() {
       final ProviderContainer container = ProviderContainer(
         overrides: <Override>[
           appDatabaseProvider.overrideWithValue(db),
-          clockProvider.overrideWithValue(() => DateTime(2026, 6, 20, 9)),
+          appClockProvider.overrideWithValue(() => DateTime(2026, 6, 20, 9)),
           installDateServiceProvider.overrideWithValue(service),
         ],
       );
@@ -122,7 +124,7 @@ void main() {
       final ProviderContainer container = ProviderContainer(
         overrides: <Override>[
           appDatabaseProvider.overrideWithValue(db),
-          clockProvider.overrideWithValue(() => DateTime(2026, 6, 20, 9)),
+          appClockProvider.overrideWithValue(() => DateTime(2026, 6, 20, 9)),
           installDateServiceProvider.overrideWithValue(service),
         ],
       );
@@ -159,7 +161,7 @@ void main() {
       final ProviderContainer container = ProviderContainer(
         overrides: <Override>[
           appDatabaseProvider.overrideWithValue(db),
-          clockProvider.overrideWithValue(() => fixed),
+          appClockProvider.overrideWithValue(() => fixed),
           installDateServiceProvider.overrideWithValue(
             _FakeInstallDateService(fixed),
           ),
@@ -187,7 +189,7 @@ void main() {
       final ProviderContainer container = ProviderContainer(
         overrides: <Override>[
           appDatabaseProvider.overrideWithValue(db),
-          clockProvider.overrideWithValue(() => fixed),
+          appClockProvider.overrideWithValue(() => fixed),
           installDateServiceProvider.overrideWithValue(
             _FakeInstallDateService(fixed),
           ),
@@ -227,7 +229,7 @@ void main() {
       final ProviderContainer container = ProviderContainer(
         overrides: <Override>[
           appDatabaseProvider.overrideWithValue(db),
-          clockProvider.overrideWithValue(() => fixed),
+          appClockProvider.overrideWithValue(() => fixed),
           installDateServiceProvider.overrideWithValue(
             _FakeInstallDateService(fixed),
           ),
@@ -294,7 +296,7 @@ void main() {
       final ProviderContainer container = ProviderContainer(
         overrides: <Override>[
           appDatabaseProvider.overrideWithValue(db),
-          clockProvider.overrideWithValue(() => fixed),
+          appClockProvider.overrideWithValue(() => fixed),
           installDateServiceProvider.overrideWithValue(
             _FakeInstallDateService(fixed),
           ),

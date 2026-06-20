@@ -24,10 +24,11 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:ukulele_app/app/app.dart';
 import 'package:ukulele_app/data/database/app_database.dart';
 import 'package:ukulele_app/data/database/app_database_provider.dart';
-import 'package:ukulele_app/features/home/application/today_practice_controller.dart';
+import 'package:ukulele_app/shared/providers/app_clock_provider.dart';
 import 'package:ukulele_app/shared/repositories/drift_user_settings_repository.dart';
 import 'package:ukulele_app/shared/services/drift_install_date_service.dart';
 import 'package:ukulele_app/shared/services/install_date_service.dart';
+import 'package:ukulele_app/shared/services/install_date_service_provider.dart';
 
 void main() {
   setUpAll(() async {
@@ -56,7 +57,7 @@ void main() {
         // never call the production `path_provider` code path.
         overrides: <Override>[
           appDatabaseProvider.overrideWithValue(db),
-          clockProvider.overrideWithValue(() => fixed),
+          appClockProvider.overrideWithValue(() => fixed),
           installDateServiceProvider.overrideWithValue(installService),
         ],
         child: const UkuleleApp(),

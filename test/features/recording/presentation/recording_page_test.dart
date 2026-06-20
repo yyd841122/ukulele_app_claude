@@ -271,5 +271,63 @@ void main() {
         expect(find.text('00:00'), findsOneWidget);
       },
     );
+
+    testWidgets(
+      'tapping "开始模拟录音" while playing starts a new take',
+      (WidgetTester tester) async {
+        // T012_FIX_RECORDING_PLAYBACK_START_BUTTON: the page must
+        // expose the "开始模拟录音" button while the simulated
+        // playback is running, so the user can stop playback and
+        // start a new take in one tap (matching the controller
+        // contract).
+        await _useTallSurface(tester);
+        await _pumpPage(tester);
+
+        // Record a short take so we can play it back.
+        await tester.tap(
+          find.byKey(const ValueKey<String>('recording-start')),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const ValueKey<String>('recording-stop')),
+        );
+        await tester.pumpAndSettle();
+
+        // Enter playback.
+        await tester.tap(
+          find.byKey(const ValueKey<String>('recording-play')),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('模拟回放中'), findsOneWidget);
+
+        // While playing, the "开始模拟录音" button must remain
+        // enabled. The previous implementation disabled it here,
+        // which broke the controller contract that allows
+        // startRecording() to interrupt playback.
+        final FilledButton startButton = tester.widget<FilledButton>(
+          find.byKey(const ValueKey<String>('recording-start')),
+        );
+        expect(startButton.onPressed, isNotNull);
+
+        // Tap it. The page must transition to "模拟录音中" and
+        // leave playback behind.
+        await tester.tap(
+          find.byKey(const ValueKey<String>('recording-start')),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('模拟录音中'), findsOneWidget);
+        expect(find.text('模拟回放中'), findsNothing);
+
+        // The controller should also be in the recording state
+        // and the clock should have been reset to 00:00.
+        expect(find.text('00:00'), findsOneWidget);
+
+        // Cleanup the timer.
+        await tester.tap(
+          find.byKey(const ValueKey<String>('recording-stop')),
+        );
+        await tester.pumpAndSettle();
+      },
+    );
   });
 }

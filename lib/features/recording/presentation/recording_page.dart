@@ -212,13 +212,15 @@ class ElapsedDisplay extends StatelessWidget {
 /// Primary controls: start / stop / play / stop-playback.
 ///
 /// The enablement rules come straight from the brief:
-// - `start` is disabled while already recording or playing.
+/// - `start` is disabled ONLY while a recording is already in
+///   progress. Tapping it while the simulated playback is running
+///   is allowed and MUST stop playback + start a new take — the
+///   controller enforces the transition, the UI just routes
+///   (T012_FIX_RECORDING_PLAYBACK_START_BUTTON).
 /// - `stop` is disabled unless we are recording.
 /// - `play` is disabled unless we have a take AND we are not
 ///   recording AND we are not already playing.
 /// - `stop-playback` is disabled unless we are playing.
-/// - Tapping `start` while playing stops playback and starts a new
-///   recording; the controller enforces that, the UI just routes.
 class ControlRow extends StatelessWidget {
   const ControlRow({
     super.key,
@@ -231,7 +233,11 @@ class ControlRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bool canStart = !state.isRecording && !state.isPlaying;
+    // `start` is tappable as long as we are not already recording
+    // — including during playback. The controller will stop
+    // playback and start a new take; the UI just has to expose the
+    // button.
+    final bool canStart = !state.isRecording;
     final bool canStop = state.isRecording;
     final bool canPlay = state.hasRecording &&
         !state.isRecording &&

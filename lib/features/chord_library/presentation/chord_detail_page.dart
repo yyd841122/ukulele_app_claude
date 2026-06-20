@@ -1,36 +1,163 @@
-import 'package:flutter/material.dart';
+// Chord detail page.
+//
+// T008 scope:
+// - Receives a [chordId] from the router and looks it up via
+//   [chordByIdProvider]. When the id is unknown (or empty) the page
+//   renders a friendly "not found" placeholder instead of crashing.
+// - When the chord is found, shows the diagram, description, tips and
+//   a small "related chords" jump list.
 
-/// Chord detail page placeholder.
-///
-/// T006: receives [chordId] from the router but does not look up a real
-/// diagram yet — that comes with the chord data module in a later task.
-class ChordDetailPage extends StatelessWidget {
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import 'package:ukulele_app/features/chord_library/application/chord_library_controller.dart';
+import 'package:ukulele_app/features/chord_library/domain/chord.dart';
+import 'package:ukulele_app/features/chord_library/domain/chord_difficulty.dart';
+import 'package:ukulele_app/features/chord_library/presentation/widgets/chord_diagram.dart';
+
+class ChordDetailPage extends ConsumerWidget {
   const ChordDetailPage({super.key, required this.chordId});
 
   final String chordId;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final Chord? chord = ref.watch(chordByIdProvider(chordId));
+    final ThemeData theme = Theme.of(context);
+
+    if (chord == null) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('和弦详情'),
+        ),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                const Icon(Icons.error_outline, size: 48),
+                const SizedBox(height: 16),
+                Text(
+                  '未找到 “$chordId” 和弦',
+                  style: theme.textTheme.titleMedium,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '请返回和弦库选择其他和弦。',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                FilledButton(
+                  onPressed: () => context.go('/chords'),
+                  child: const Text('返回和弦库'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
-        title: Text('和弦 $chordId'),
+        title: Text(chord.displayName),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(16),
           children: <Widget>[
-            Text(
-              '和弦详情（占位）',
-              style: Theme.of(context).textTheme.titleLarge,
+            Center(
+              child: ChordDiagram(fingering: chord.primaryVoicing, width: 240),
             ),
-            const SizedBox(height: 12),
-            Text('chordId: $chordId'),
-            const SizedBox(height: 12),
-            const Text('指法图与组成音说明将在后续任务接入。'),
+            const SizedBox(height: 16),
+            Text(
+              chord.displayName,
+              style: theme.textTheme.headlineSmall,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '难度：${chord.difficulty.label}',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              '和弦说明',
+              style: theme.textTheme.titleSmall,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              chord.description,
+              style: theme.textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 20),
+            Text(
+              '练习提示',
+              style: theme.textTheme.titleSmall,
+            ),
+            const SizedBox(height: 6),
+            for (final String tip in chord.tips)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    const Text('• '),
+                    Expanded(
+                      child: Text(
+                        tip,
+                        style: theme.textTheme.bodyMedium,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            if (chord.relatedChordIds.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 20),
+              Text(
+                '相关和弦',
+                style: theme.textTheme.titleSmall,
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: <Widget>[
+                  for (final String id in chord.relatedChordIds)
+                    _RelatedChordChip(
+                      id: id,
+                      onTap: () => context.push('/chords/$id'),
+                    ),
+                ],
+              ),
+            ],
           ],
         ),
       ),
+    );
+  }
+}
+
+class _RelatedChordChip extends ConsumerWidget {
+  const _RelatedChordChip({required this.id, required this.onTap});
+
+  final String id;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final Chord? related = ref.watch(chordByIdProvider(id));
+    final String label = related?.name ?? id.toUpperCase();
+    return ActionChip(
+      label: Text(label),
+      onPressed: onTap,
     );
   }
 }

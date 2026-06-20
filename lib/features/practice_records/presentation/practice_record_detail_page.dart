@@ -1,35 +1,473 @@
-import 'package:flutter/material.dart';
+// Practice record detail page (T013.4C).
+//
+// Scope:
+// - Receives [recordId] from the router (the `:recordId` path
+//   parameter of `/records/:recordId`) — it is NEVER hardcoded.
+// - Drives the page through the [AsyncValue] envelope of
+//   [practiceRecordDetailControllerProvider]:
+//     * Loading  — spinner + "正在加载练习记录…".
+//     * Error    — friendly Chinese copy + 重试 button. The raw
+//                 `Object error` / `StackTrace` are NOT rendered
+//                 to the user; they are debugPrint'd for
+//                 engineering triage and then dropped.
+//     * Not Found— "未找到这条练习记录" + 返回练习记录列表
+//                 button. The delete button is intentionally
+//                 absent in this state — there is nothing to
+//                 delete.
+//     * Data     — full read-only detail with a 删除 button.
+// - Delete is gated by a confirmation dialog; while the delete is
+//   in flight the page disables the delete button AND the
+//   back-button is allowed (the list's `watchAll()` subscription
+//   reflects the deletion whether or not we popped, so the user
+//   can leave the detail page at any time and the list stays
+//   consistent).
+// - The page is `ConsumerStatefulWidget` so it can own the
+//   ScaffoldMessenger-driven SnackBar lifecycle and the delete
+//   confirmation dialog without leaking BuildContext across
+//   async gaps.
+//
+// Reuse:
+// - Date, duration, PracticeType, SelfAssessment formatters are
+//   re-exported from the T013.4B list item file. We deliberately
+//   do NOT introduce a second copy of these mappings — the brief
+//   requires "复用 T013.4B 已有的日期、时长、PracticeType 和
+//   SelfAssessment 显示映射，不得创建互相矛盾的第二套文案".
 
-/// Practice record detail page placeholder.
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import 'package:ukulele_app/features/practice_records/application/practice_record_detail_controller.dart';
+import 'package:ukulele_app/features/practice_records/domain/practice_record.dart';
+import 'package:ukulele_app/features/practice_records/presentation/widgets/practice_record_list_item.dart';
+
+/// Practice record detail page.
 ///
-/// T006: receives [recordId] from the router. No database lookup yet.
-class PracticeRecordDetailPage extends StatelessWidget {
+/// Loads a [PracticeRecord] by [recordId] (sourced from the
+/// router) and renders one of four views. The delete flow lives
+/// at the bottom of the Data view.
+class PracticeRecordDetailPage extends ConsumerStatefulWidget {
   const PracticeRecordDetailPage({super.key, required this.recordId});
 
   final String recordId;
 
   @override
+  ConsumerState<PracticeRecordDetailPage> createState() =>
+      _PracticeRecordDetailPageState();
+}
+
+class _PracticeRecordDetailPageState
+    extends ConsumerState<PracticeRecordDetailPage> {
+  @override
   Widget build(BuildContext context) {
+    final AsyncValue<PracticeRecordDetailState> asyncState = ref.watch(
+      practiceRecordDetailControllerProvider(widget.recordId),
+    );
+
     return Scaffold(
       appBar: AppBar(
-        title: Text('记录 $recordId'),
+        title: const Text('练习记录详情'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          // Go back via the router so the navigation contract is
+          // owned by GoRouter. If the page was opened directly
+          // (no parent on the stack), fall back to /records so
+          // the user is never stranded.
+          onPressed: () => _popOrGoRecords(context),
+        ),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
+      body: SafeArea(
+        child: asyncState.when(
+          loading: () => const _LoadingView(),
+          error: (Object error, StackTrace stackTrace) {
+            debugPrint(
+              'practiceRecordDetailControllerProvider build failed: '
+              '$error\n$stackTrace',
+            );
+            return _ErrorView(
+              onRetry: () => ref.invalidate(
+                practiceRecordDetailControllerProvider(widget.recordId),
+              ),
+            );
+          },
+          data: (PracticeRecordDetailState state) {
+            if (state.isNotFound) {
+              return _NotFoundView(
+                onBackToList: () => _popOrGoRecords(context),
+              );
+            }
+            final PracticeRecord record = state.record!;
+            final PracticeRecordDetailController controller = ref.read(
+              practiceRecordDetailControllerProvider(widget.recordId).notifier,
+            );
+            return _DataView(
+              record: record,
+              isDeleting: controller.isDeleting,
+              onDeletePressed: () => _confirmAndDelete(context, controller),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  /// Pops back to the list. If the page was reached without a
+  /// parent route on the stack (a direct push from somewhere
+  /// else), falls back to a router-level `go` so the user is
+  /// never left stranded on a dead-end page.
+  void _popOrGoRecords(BuildContext context) {
+    if (context.canPop()) {
+      context.pop();
+      return;
+    }
+    context.go('/records');
+  }
+
+  /// Shows the delete confirmation dialog and, on confirmation,
+  /// drives the controller's delete method. SnackBars are shown
+  /// via the page's own `ScaffoldMessenger` so they are scoped to
+  /// the detail page's lifecycle.
+  Future<void> _confirmAndDelete(
+    BuildContext context,
+    PracticeRecordDetailController controller,
+  ) async {
+    if (controller.isDeleting) {
+      // Re-entrancy guard: the delete button should already be
+      // disabled in the UI, but the controller is the source of
+      // truth and MUST refuse a second concurrent confirmation.
+      return;
+    }
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) => const _DeleteConfirmDialog(),
+    );
+    if (confirmed != true) {
+      return;
+    }
+    if (!mounted) {
+      // The widget was disposed while the dialog was open. The
+      // controller will refuse the call on its own (ref.mounted
+      // check), but bailing out here also avoids scheduling a
+      // SnackBar on a torn-down page.
+      return;
+    }
+
+    final DeleteResult result = await controller.deleteCurrentRecord();
+    if (!context.mounted) {
+      return;
+    }
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+    switch (result) {
+      case DeleteResult.success:
+        messenger.showSnackBar(
+          const SnackBar(
+            key: ValueKey<String>('practice-record-delete-success-snackbar'),
+            content: Text('练习记录已删除'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+        // Pop back to the list. `watchAll()` on the list page
+        // already reflects the deletion — we do NOT manipulate
+        // the list's in-memory state.
+        if (!context.mounted) return;
+        _popOrGoRecords(context);
+      case DeleteResult.failure:
+        messenger.showSnackBar(
+          const SnackBar(
+            key: ValueKey<String>('practice-record-delete-failure-snackbar'),
+            content: Text('删除失败，请重试'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      case DeleteResult.ignored:
+        // Intentional no-op: a duplicate click or a stale
+        // controller. Must NOT show an error SnackBar.
+        break;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// View widgets
+// ---------------------------------------------------------------------------
+
+class _LoadingView extends StatelessWidget {
+  const _LoadingView();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(24),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            Text(
-              '练习记录详情（占位）',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 12),
-            Text('recordId: $recordId'),
-            const SizedBox(height: 12),
-            const Text('回放控件与录音文件丢失处理将在后续任务接入。'),
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('正在加载练习记录…'),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _ErrorView extends StatelessWidget {
+  const _ErrorView({required this.onRetry});
+
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const Icon(Icons.error_outline, size: 48),
+            const SizedBox(height: 16),
+            Text(
+              '加载练习记录失败，请重试。',
+              style: theme.textTheme.titleMedium,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              key: const ValueKey<String>(
+                  'practice-record-detail-error-retry-button'),
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('重试'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _NotFoundView extends StatelessWidget {
+  const _NotFoundView({required this.onBackToList});
+
+  final VoidCallback onBackToList;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const Icon(Icons.search_off, size: 48),
+            const SizedBox(height: 16),
+            Text(
+              '未找到这条练习记录',
+              style: theme.textTheme.titleMedium,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '记录可能已被删除，或链接已失效。',
+              style: theme.textTheme.bodyMedium,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            FilledButton(
+              key: const ValueKey<String>(
+                  'practice-record-detail-not-found-back-button'),
+              onPressed: onBackToList,
+              child: const Text('返回练习记录列表'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DataView extends StatelessWidget {
+  const _DataView({
+    required this.record,
+    required this.isDeleting,
+    required this.onDeletePressed,
+  });
+
+  final PracticeRecord record;
+  final bool isDeleting;
+  final VoidCallback onDeletePressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          _DetailField(
+            label: '练习日期',
+            value: formatPracticeDate(record.practiceDate),
+          ),
+          _DetailField(
+            label: 'Day',
+            value: 'Day ${record.dayIndex}',
+          ),
+          _DetailField(
+            label: '练习类型',
+            value: practiceTypeLabel(record.primaryPracticeType),
+          ),
+          _DetailField(
+            label: '练习时长',
+            value: formatPracticeDuration(record.durationSeconds),
+          ),
+          _DetailField(
+            label: '完成状态',
+            value: record.isCompleted ? '已完成' : '未完成',
+          ),
+          _DetailField(
+            label: '自评',
+            // Explicit "未填写" for the null case — chosen over
+            // hiding the row so the field layout is stable and
+            // the user can see what the record did NOT capture.
+            value: record.selfAssessment == null
+                ? '未填写'
+                : selfAssessmentLabel(record.selfAssessment!),
+          ),
+          // The tag row's value cell carries a stable Key so
+          // tests (and any future instrumentation) can scope
+          // assertions to "the rendered tags column" without
+          // colliding with the field label "自评" when
+          // [PracticeTag.selfAssessment] is one of the tags.
+          _DetailField(
+            label: '标签',
+            valueKey:
+                const ValueKey<String>('practice-record-detail-tags-value'),
+            value: record.practiceTags.isEmpty
+                ? '无'
+                : record.practiceTags.map(practiceTagLabel).join('、'),
+          ),
+          // Practice content gets its own block because the
+          // value can be long; wrapping it in a constrained
+          // Text widget prevents horizontal overflow on small
+          // surfaces.
+          const SizedBox(height: 16),
+          Text(
+            '练习内容',
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            record.practiceContent,
+            key: const ValueKey<String>('practice-record-detail-content'),
+            style: theme.textTheme.bodyLarge,
+          ),
+          const SizedBox(height: 24),
+          // Delete action — uses an OutlinedButton rather than
+          // a colored FilledButton so the destructive intent
+          // is signalled by an icon + label, not by red-only
+          // color (the brief forbids "仅靠颜色表达风险的控件").
+          OutlinedButton.icon(
+            key: const ValueKey<String>('practice-record-detail-delete-button'),
+            onPressed: isDeleting ? null : onDeletePressed,
+            icon: isDeleting
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.delete_outline),
+            label: Text(isDeleting ? '正在删除…' : '删除练习记录'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DetailField extends StatelessWidget {
+  const _DetailField({
+    required this.label,
+    required this.value,
+    this.valueKey,
+  });
+
+  final String label;
+  final String value;
+  final Key? valueKey;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          SizedBox(
+            width: 96,
+            child: Text(
+              label,
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              value,
+              key: valueKey,
+              style: theme.textTheme.bodyLarge,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Confirmation dialog shown before a destructive delete.
+///
+/// Explicitly states "删除后无法恢复" so the user understands
+/// the consequence. Uses [TextButton] + label ("取消" / "删除")
+/// so the destructive intent is conveyed by words, not only by
+/// red color.
+class _DeleteConfirmDialog extends StatelessWidget {
+  const _DeleteConfirmDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    return AlertDialog(
+      title: const Text('删除练习记录？'),
+      content: const Text(
+        '删除后无法恢复，确定要删除这条练习记录吗？',
+      ),
+      actions: <Widget>[
+        TextButton(
+          key: const ValueKey<String>(
+              'practice-record-detail-delete-cancel-button'),
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('取消'),
+        ),
+        TextButton(
+          key: const ValueKey<String>(
+              'practice-record-detail-delete-confirm-button'),
+          // Color is reinforced by the label "删除" + the icon —
+          // we never rely on red alone to signal destruction.
+          style: TextButton.styleFrom(
+            foregroundColor: theme.colorScheme.error,
+          ),
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('删除'),
+        ),
+      ],
     );
   }
 }

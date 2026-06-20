@@ -14,6 +14,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:ukulele_app/features/practice_records/domain/practice_record.dart';
+import 'package:ukulele_app/features/practice_records/domain/practice_tag.dart';
 import 'package:ukulele_app/features/practice_records/domain/practice_type.dart';
 import 'package:ukulele_app/features/practice_records/domain/self_assessment.dart';
 
@@ -59,8 +60,8 @@ class PracticeRecordListItem extends StatelessWidget {
             const SizedBox(height: 4),
             // Type (Chinese) + duration (mm:ss).
             Text(
-              '${_practiceTypeLabel(record.primaryPracticeType)} · '
-              '${_formatDuration(record.durationSeconds)}',
+              '${practiceTypeLabel(record.primaryPracticeType)} · '
+              '${formatPracticeDuration(record.durationSeconds)}',
               style: theme.textTheme.bodyMedium,
             ),
             const SizedBox(height: 4),
@@ -76,7 +77,7 @@ class PracticeRecordListItem extends StatelessWidget {
             if (record.selfAssessment != null) ...<Widget>[
               const SizedBox(height: 4),
               Text(
-                '自评：${_selfAssessmentLabel(record.selfAssessment!)}',
+                '自评：${selfAssessmentLabel(record.selfAssessment!)}',
                 style: theme.textTheme.bodySmall,
               ),
             ],
@@ -88,22 +89,28 @@ class PracticeRecordListItem extends StatelessWidget {
 
   /// `2026-06-20 · Day 2` style header.
   String _formatHeader(PracticeRecord r) {
-    final String date = _formatDate(r.practiceDate);
+    final String date = formatPracticeDate(r.practiceDate);
     return '$date · Day ${r.dayIndex}';
   }
+}
 
-  String _formatDate(DateTime d) {
-    String two(int v) => v.toString().padLeft(2, '0');
-    return '${d.year}-${two(d.month)}-${two(d.day)}';
-  }
+/// `yyyy-MM-dd` formatter for [DateTime]s normalised to
+/// local-midnight (the Repository's contract). Exposed at the
+/// library scope so the detail page (T013.4C) can reuse the
+/// EXACT same format string as the list and we never drift
+/// between two copies.
+String formatPracticeDate(DateTime d) {
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${d.year}-${two(d.month)}-${two(d.day)}';
+}
 
-  /// `mm:ss` formatter. Zero-pads both fields.
-  String _formatDuration(int seconds) {
-    final int safe = seconds < 0 ? 0 : seconds;
-    final String mm = (safe ~/ 60).toString().padLeft(2, '0');
-    final String ss = (safe % 60).toString().padLeft(2, '0');
-    return '$mm:$ss';
-  }
+/// `mm:ss` formatter. Zero-pads both fields. Negative values are
+/// clamped to zero so a corrupt row still renders sensibly.
+String formatPracticeDuration(int seconds) {
+  final int safe = seconds < 0 ? 0 : seconds;
+  final String mm = (safe ~/ 60).toString().padLeft(2, '0');
+  final String ss = (safe % 60).toString().padLeft(2, '0');
+  return '$mm:$ss';
 }
 
 /// Small chip showing the completion state.
@@ -142,11 +149,10 @@ class _CompletionChip extends StatelessWidget {
 /// The set is exhaustive on purpose: a future enum case will
 /// fail to compile against this switch, surfacing the missing
 /// label as a static error rather than silently rendering
-/// `practiceType.name` to the user.
-@visibleForTesting
-String practiceTypeLabel(PracticeType type) => _practiceTypeLabel(type);
-
-String _practiceTypeLabel(PracticeType type) {
+/// `practiceType.name` to the user. Reused by the list row
+/// (T013.4B) and the detail page (T013.4C) so the two views can
+/// never drift to two different Chinese translations.
+String practiceTypeLabel(PracticeType type) {
   switch (type) {
     case PracticeType.singleNote:
       return '单音练习';
@@ -164,11 +170,8 @@ String _practiceTypeLabel(PracticeType type) {
 /// User-readable Chinese label for every [SelfAssessment].
 ///
 /// Exhaustive on purpose; same rationale as
-/// [practiceTypeLabel].
-@visibleForTesting
-String selfAssessmentLabel(SelfAssessment value) => _selfAssessmentLabel(value);
-
-String _selfAssessmentLabel(SelfAssessment value) {
+/// [practiceTypeLabel]. Shared between list and detail.
+String selfAssessmentLabel(SelfAssessment value) {
   switch (value) {
     case SelfAssessment.good:
       return '好';
@@ -176,5 +179,28 @@ String _selfAssessmentLabel(SelfAssessment value) {
       return '一般';
     case SelfAssessment.needsImprovement:
       return '需改进';
+  }
+}
+
+/// User-readable Chinese label for every [PracticeTag].
+///
+/// Exhaustive on purpose; same rationale as [practiceTypeLabel].
+/// The raw enum-case `.name` is never shown to the user — the
+/// detail page maps every tag through this function before
+/// rendering.
+String practiceTagLabel(PracticeTag tag) {
+  switch (tag) {
+    case PracticeTag.tuner:
+      return '调音';
+    case PracticeTag.singleNote:
+      return '单音';
+    case PracticeTag.chord:
+      return '和弦';
+    case PracticeTag.metronome:
+      return '节拍器';
+    case PracticeTag.recording:
+      return '录音';
+    case PracticeTag.selfAssessment:
+      return '自评';
   }
 }

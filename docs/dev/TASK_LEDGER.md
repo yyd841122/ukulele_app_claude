@@ -50,3 +50,7 @@
 | T012_FIX_DOCS_LEDGER_CONSISTENCY | 修复协作文档的状态矛盾、技术债证据不足与任务漏记 | 通过 | `c533272` | 175 | 通过 | 统一 T006-T011 状态为"待补录";删除证据不足的 TD-002;补充本任务与上一步的台账条目 |
 | T013_PREP_LOCAL_PERSISTENCE_AUDIT | T013 本地持久化只读审计 | 通过 | 无 | 175 | 待复审 | 只读审计,无代码改动;为 T013.1 ~ T013.5 拆分提供依据 |
 | T013.1_LOCAL_DB_FOUNDATION | Drift 数据库底座 | 通过 | `52bc2f9` | 184 | 通过 | 引入 `AppDatabase`、三张表的 schema 文件、`app_database_provider`,schemaVersion = 1;无 DAO / Repository;已在 `app_database_test.dart` 中覆盖 schema 与三张表基础往返 |
+| T013.2_LOCAL_REPOSITORIES | 本地 Repository 层(Drift) | 通过 | `67d7189` | 237 | 通过 | 引入 `DriftCompletedTasksRepository`、`DriftPracticeRecordRepository`、`DriftUserSettingsRepository`;统一 localDate / UTC 等 Repository 边界契约;本任务有范围与契约 FIX |
+| T013.2_FIX_REPOSITORY_SCOPE_AND_CONTRACTS | 修复 Repository 范围与契约 | 通过 | `b27f6d9` | 237 | 通过 | 修复 T013.2 中 Repository 暴露了不必要的方法、localDate 时区契约缺失等问题,缩窄 API 并补齐契约测试 |
+| T013.3_PREP_HOME_PERSISTENCE_INTEGRATION | 首页持久化整合只读审计 | 通过 | 无 | 237 | 待复审 | 只读审计,无代码改动;最终采用 AsyncNotifier + HomePage AsyncValue 路径,放弃启动前 Bootstrap |
+| T013.3_PERSIST_TODAY_PRACTICE | 首页 installDate + 今日任务完成状态接入 Drift | 通过 | 见 commit | 253 | 待复审 | 将 `InstallDateService` 改为 `Future<DateTime> getInstallDate()`,新增 `DriftInstallDateService`(single-flight + ISO-8601 解析),`TodayPracticeController` 改为 `AsyncNotifier<TodayPracticeState>`,`HomePage` 处理 `AsyncValue` 三态(loading/error/data + retry),`toggleTaskCompleted` 返回 `Future<bool>` 并按 taskId 串行化,`widget_test.dart` 改为注入 `DriftInstallDateService` 不再走 `path_provider` |

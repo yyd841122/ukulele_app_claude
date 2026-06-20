@@ -1,8 +1,24 @@
-// Home page — T007 implementation.
+// Home page — T013.3 implementation.
 //
-// Shows today's practice (Day N, theme, task list) and quick nav to
-// existing feature pages. Tapping a task navigates to the existing
-// placeholder page; toggling the checkbox records completion in memory.
+// T013.3 changes vs T007:
+// - The controller is now `AsyncNotifier`. The page MUST handle
+//   the AsyncValue envelope:
+//     * `AsyncLoading` → spinner.
+//     * `AsyncError` → error text + retry button. Retry calls
+//       `ref.invalidate(todayPracticeControllerProvider)` so
+//       `build()` re-runs against the current overrides.
+//     * `AsyncData` → today's plan as before.
+// - `onToggleCompleted` returns `Future<void>`. When the Future
+//   resolves to `false` (persistence failed OR the click was a
+//   duplicate), we surface a compact SnackBar so the user knows
+//   the toggle did not stick.
+// - Task checkboxes are disabled while a write for that task is
+//   in flight, to avoid the "user clicks twice and the state
+//   flips back" UX.
+//
+// Layout outside the AsyncValue handling is unchanged: the
+// header, task cards, and quick actions stay exactly where they
+// were in T007.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -18,36 +34,138 @@ class HomePage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final TodayPracticeState state = ref.watch(todayPracticeControllerProvider);
-    final TodayPracticeController controller =
-        ref.read(todayPracticeControllerProvider.notifier);
+    final AsyncValue<TodayPracticeState> asyncState =
+        ref.watch(todayPracticeControllerProvider);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Ukulele App'),
       ),
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(16),
+        child: asyncState.when(
+          loading: () => const _HomeLoadingView(),
+          error: (Object error, StackTrace stackTrace) => _HomeErrorView(
+            error: error,
+            onRetry: () => ref.invalidate(todayPracticeControllerProvider),
+          ),
+          data: (TodayPracticeState state) => _HomeDataView(state: state),
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeLoadingView extends StatelessWidget {
+  const _HomeLoadingView();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            TodayPracticeHeader(state: state),
-            const SizedBox(height: 16),
-            ...state.plan.tasks.map(
-              (task) => Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: TodayPracticeTaskCard(
-                  task: task,
-                  onTap: () => context.push(task.routePath),
-                  onToggleCompleted: (_) =>
-                      controller.toggleTaskCompleted(task.id),
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            const HomeQuickActions(),
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('正在加载今日练习…'),
           ],
         ),
       ),
     );
+  }
+}
+
+class _HomeErrorView extends StatelessWidget {
+  const _HomeErrorView({required this.error, required this.onRetry});
+
+  final Object error;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const Icon(Icons.error_outline, size: 48),
+            const SizedBox(height: 16),
+            Text(
+              '加载今日练习失败，请重试。',
+              style: theme.textTheme.titleMedium,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              error.toString(),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('重试'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeDataView extends ConsumerWidget {
+  const _HomeDataView({required this.state});
+
+  final TodayPracticeState state;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final TodayPracticeController controller =
+        ref.read(todayPracticeControllerProvider.notifier);
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: <Widget>[
+        TodayPracticeHeader(state: state),
+        const SizedBox(height: 16),
+        ...state.plan.tasks.map(
+          (task) => Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: TodayPracticeTaskCard(
+              task: task,
+              onTap: () => context.push(task.routePath),
+              onToggleCompleted: (_) => _handleToggle(
+                context: context,
+                controller: controller,
+                taskId: task.id,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        const HomeQuickActions(),
+      ],
+    );
+  }
+
+  Future<void> _handleToggle({
+    required BuildContext context,
+    required TodayPracticeController controller,
+    required String taskId,
+  }) async {
+    final bool ok = await controller.toggleTaskCompleted(taskId);
+    if (!ok && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('保存失败，请重试'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
   }
 }

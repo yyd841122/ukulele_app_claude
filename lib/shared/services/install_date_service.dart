@@ -1,44 +1,44 @@
 // installDate storage.
 //
-// T007 temporary implementation:
-// - The spec for T007 explicitly forbids adding a `shared_preferences`
-//   dependency and forbids touching Drift for this task. So we provide
-//   a lightweight abstraction with an in-memory implementation.
-// - On a cold start, [InMemoryInstallDateService] records the *current*
-//   `DateTime.now()` as the install date. This means every cold start
-//   resets the 7-day cycle — acceptable for T007, marked below as a
-//   known limitation.
-// - The expected follow-up is T013 (local settings persistence) where a
-//   real Drift / SharedPreferences backed implementation replaces
-//   [InMemoryInstallDateService] without changing the interface.
+// T013.3 scope:
+// - The interface is now asynchronous. T007 used a synchronous
+//   `DateTime getInstallDate()` because persistence was out of
+//   scope; T013.3 wires the install date through Drift and the
+//   controller needs to await it during `build`. The async shape
+//   is the only sane contract for a Future-returning repository
+//   stack (`UserSettingsRepository`, `CompletedTasksRepository`).
+// - In-memory implementation keeps its lazy, single-flight
+//   semantics but returns a `Future` so call sites can be
+//   implementation-agnostic.
+// - Drift-backed implementation lives in
+//   `lib/shared/services/drift_install_date_service.dart` and is
+//   the default Provider value.
 //
-// !!! DO NOT persist anything here until T013.
 // !!! This service is the SINGLE source of truth for "Day 1 vs Day 7".
 // !!! All other code MUST go through [InstallDateService] — no direct
 // !!! `DateTime.now()` calls when computing the day index.
 
 /// Abstract install-date source.
 ///
-/// T007 ships one in-memory implementation. T013 is expected to add a
-/// Drift-backed implementation that survives cold starts.
+/// Implementations MUST:
+/// - Lazily record `DateTime.now().toUtc()` on first access.
+/// - Return a stable value across subsequent reads within the
+///   same process.
+/// - Survive cold starts (the Drift implementation persists the
+///   first-launch instant).
 abstract class InstallDateService {
   /// Returns the install date recorded for this device.
-  ///
-  /// Implementations are allowed to lazily record `DateTime.now()` on
-  /// first access, and they MUST return a stable value across subsequent
-  /// reads within the same app session.
-  DateTime getInstallDate();
+  Future<DateTime> getInstallDate();
 }
 
 /// Session-only in-memory install date.
 ///
-/// T007 behaviour:
-/// - On the first call to [getInstallDate] within a process, the current
-///   `DateTime.now()` is recorded.
+/// - On the first call to [getInstallDate] within a process, the
+///   current `DateTime.now()` is recorded.
 /// - Subsequent calls return that same instant.
-/// - When the process dies and restarts, the recorded date is lost and
-///   the next call re-records `DateTime.now()` (i.e. the 7-day cycle
-///   resets on every cold start). This is the documented T007 limitation.
+/// - The recorded date is lost when the process dies. Tests use
+///   the `resetForTesting` hook (or override the Provider) to
+///   force a fresh install instant.
 class InMemoryInstallDateService implements InstallDateService {
   InMemoryInstallDateService({DateTime Function()? clock})
       : _clock = clock ?? DateTime.now;
@@ -47,12 +47,13 @@ class InMemoryInstallDateService implements InstallDateService {
   DateTime? _installDate;
 
   @override
-  DateTime getInstallDate() {
+  Future<DateTime> getInstallDate() async {
     return _installDate ??= _clock();
   }
 
-  /// Test-only: clears the recorded install date. Production code should
-  /// not call this — the controller exposes a richer reset hook.
+  /// Test-only: clears the recorded install date. Production code
+  /// should not call this — the controller exposes a richer
+  /// reset hook.
   void resetForTesting() {
     _installDate = null;
   }

@@ -1,37 +1,60 @@
 // Riverpod controller for the home / "today's practice" page.
 //
-// T007 scope:
-// - Hand-written [Notifier] (no `@riverpod` codegen) per the task brief
-//   to keep this task self-contained.
-// - The controller derives the day's [BuiltInPracticePlan] from the
-//   install date (via [InstallDateService]) and the current local date,
-//   and keeps a per-task "completed" set in memory.
-// - No Drift, no SharedPreferences, no network, no permissions — see
-//   task brief §10.
+// T013.3 scope:
+// - Converted from a synchronous `Notifier<TodayPracticeState>`
+//   to `AsyncNotifier<TodayPracticeState>`. The state is built by
+//   awaiting two persistence reads:
+//     1. The persisted install date (Drift /
+//        `InstallDateService`).
+//     2. The completed-task set for today (Drift /
+//        `CompletedTasksRepository`).
+//   This means the UI must handle the `AsyncValue` envelope
+//   instead of seeing a "fake empty" snapshot during the load
+//   window.
+// - `toggleTaskCompleted` is now `Future<bool>`. It awaits the
+//   persistence write BEFORE updating the in-memory state, so:
+//     * On success it returns `true` and the UI sees the new
+//       completion state.
+//     * On failure it returns `false` and leaves the state
+//       unchanged.
+//   Concurrent clicks on the same `taskId` while a write is in
+//   flight are dropped (return `false`) — see `_pendingTaskIds`.
+//   Concurrent clicks on DIFFERENT taskIds proceed independently.
+// - The provider stays hand-written (no `@riverpod` codegen) per
+//   the project convention.
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:ukulele_app/core/constants/practice_plan_constants.dart';
 import 'package:ukulele_app/core/utils/practice_day_calculator.dart';
+import 'package:ukulele_app/data/database/app_database_provider.dart';
+import 'package:ukulele_app/features/home/data/completed_tasks_repository.dart';
+import 'package:ukulele_app/features/home/data/completed_tasks_repository_provider.dart';
 import 'package:ukulele_app/features/home/domain/built_in_practice_plan.dart';
 import 'package:ukulele_app/features/home/domain/practice_task.dart';
 import 'package:ukulele_app/features/home/domain/practice_task_status.dart';
+import 'package:ukulele_app/shared/services/drift_install_date_service.dart';
 import 'package:ukulele_app/shared/services/install_date_service.dart';
 
 /// Provider for the [InstallDateService] used by the home controller.
 ///
-/// T007 ships only an in-memory implementation. T013 is expected to
-/// override this with a Drift-backed implementation.
+/// T013.3 default is the Drift-backed implementation, wired to the
+/// shared [appDatabaseProvider]. Tests can override this with
+/// [InMemoryInstallDateService] (or any other implementation) to
+/// pin install date / isolate from the DB.
 final Provider<InstallDateService> installDateServiceProvider =
     Provider<InstallDateService>((Ref ref) {
-  return InMemoryInstallDateService();
+  return DriftInstallDateService(
+    database: ref.watch(appDatabaseProvider),
+  );
 });
 
 /// Clock function for the controller. Defaults to [DateTime.now].
 ///
-/// Overriding this provider is the recommended way for tests to pin
-/// "today" to a specific instant without monkey-patching globals.
+/// Overriding this provider is the recommended way for tests to
+/// pin "today" to a specific instant without monkey-patching
+/// globals.
 final Provider<DateTime Function()> clockProvider =
     Provider<DateTime Function()>((Ref ref) => DateTime.now);
 
@@ -46,19 +69,19 @@ class TodayPracticeState {
     required this.completedTaskIds,
   });
 
-  /// The "today" used to compute [dayIndex] (already normalised to
-  /// local-midnight by the calculator).
+  /// The "today" used to compute [dayIndex] (already normalised
+  /// to local-midnight by the calculator).
   final DateTime today;
 
-  /// The install date used to compute [dayIndex] (already normalised to
-  /// local-midnight by the calculator).
+  /// The install date used to compute [dayIndex] (already
+  /// normalised to local-midnight by the calculator).
   final DateTime installDate;
 
   /// 1-based day in the 7-day cycle. Always in 1..7.
   final int dayIndex;
 
-  /// The plan for [dayIndex]. Each [PracticeTask] in the list reflects
-  /// the current completion state.
+  /// The plan for [dayIndex]. Each [PracticeTask] in the list
+  /// reflects the current completion state.
   final BuiltInPracticePlan plan;
 
   /// Set of task ids that are currently marked done.
@@ -70,14 +93,15 @@ class TodayPracticeState {
   /// Total number of tasks for the day.
   int get totalTaskCount => plan.tasks.length;
 
-  /// Total estimated minutes, derived from the current task list to
-  /// guarantee consistency with what the UI renders.
+  /// Total estimated minutes, derived from the current task list
+  /// to guarantee consistency with what the UI renders.
   int get totalEstimatedMinutes => plan.tasks.fold<int>(
         0,
         (int sum, PracticeTask task) => sum + task.estimatedMinutes,
       );
 
-  /// Returns `true` iff the task with the given id is marked done.
+  /// Returns `true` iff the task with the given id is marked
+  /// done.
   bool isTaskCompleted(String taskId) => completedTaskIds.contains(taskId);
 
   TodayPracticeState copyWith({
@@ -98,85 +122,48 @@ class TodayPracticeState {
 }
 
 /// Riverpod notifier that produces [TodayPracticeState].
-class TodayPracticeController extends Notifier<TodayPracticeState> {
+///
+/// The state is loaded asynchronously from the install-date
+/// service and the completed-tasks repository. While the load is
+/// in flight the provider exposes an `AsyncLoading`. The UI
+/// MUST handle the `AsyncValue` envelope.
+class TodayPracticeController extends AsyncNotifier<TodayPracticeState> {
+  // Tracks task ids whose toggle write is currently in flight.
+  //
+  // Set, not bool, because the spec requires different taskIds to
+  // be processed independently: task A's pending write MUST NOT
+  // block task B's pending write. A single `bool _busy` would
+  // over-block.
+  final Set<String> _pendingTaskIds = <String>{};
+
   @override
-  TodayPracticeState build() {
-    return _rebuildState();
-  }
+  Future<TodayPracticeState> build() async {
+    final InstallDateService service = ref.read(installDateServiceProvider);
+    final CompletedTasksRepository repo =
+        ref.read(completedTasksRepositoryProvider);
+    final DateTime installDate = await service.getInstallDate();
+    final DateTime now = ref.read(clockProvider)();
+    final DateTime today = DateTime(now.year, now.month, now.day);
+    final Set<String> completedIds = await repo.getCompletedTaskIds(today);
 
-  /// Flips the completion state of [taskId] (idempotent toggle).
-  ///
-  /// Unknown ids are ignored: if [taskId] is not part of the current
-  /// plan, the state is left untouched. This is a defensive choice so a
-  /// typo in a built-in constant (or a stale id from an older app
-  /// version) cannot silently inflate [completedTaskCount] or mutate
-  /// the task list.
-  void toggleTaskCompleted(String taskId) {
-    final bool isKnownTask = state.plan.tasks.any(
-      (PracticeTask t) => t.id == taskId,
+    final int dayIndex = calculatePracticeDayIndex(
+      installDate: installDate,
+      today: now,
     );
-    if (!isKnownTask) {
-      return;
-    }
 
-    final Set<String> next = Set<String>.from(state.completedTaskIds);
-    if (next.contains(taskId)) {
-      next.remove(taskId);
-    } else {
-      next.add(taskId);
-    }
-
-    final List<PracticeTask> nextTasks = state.plan.tasks
+    final BuiltInPracticePlan rawPlan = kBuiltInPracticePlan[dayIndex - 1];
+    final List<PracticeTask> tasks = rawPlan.tasks
         .map(
           (PracticeTask t) => t.copyWith(
-            status: next.contains(t.id)
+            status: completedIds.contains(t.id)
                 ? PracticeTaskStatus.done
                 : PracticeTaskStatus.todo,
           ),
         )
         .toList(growable: false);
 
-    state = state.copyWith(
-      completedTaskIds: next,
-      plan: BuiltInPracticePlan(
-        dayIndex: state.plan.dayIndex,
-        title: state.plan.title,
-        estimatedMinutes: state.plan.estimatedMinutes,
-        tasks: nextTasks,
-      ),
-    );
-  }
-
-  /// Recomputes the state from the install date + current clock.
-  ///
-  /// Intended for test resets. Production code does not need to call
-  /// this — the state is rebuilt once on [build] and then mutated in
-  /// place via [toggleTaskCompleted].
-  void resetForTesting() {
-    state = _rebuildState();
-  }
-
-  TodayPracticeState _rebuildState() {
-    final InstallDateService service = ref.read(installDateServiceProvider);
-    final DateTime installDate = service.getInstallDate();
-    final DateTime today = ref.read(clockProvider)();
-    final int dayIndex = calculatePracticeDayIndex(
-      installDate: installDate,
-      today: today,
-    );
-
-    final BuiltInPracticePlan rawPlan = kBuiltInPracticePlan[dayIndex - 1];
-    // Re-emit the plan with every task marked todo. Completion is held
-    // in [completedTaskIds] only, so a re-build always starts from a
-    // clean task list.
-    final List<PracticeTask> tasks = rawPlan.tasks
-        .map(
-          (PracticeTask t) => t.copyWith(status: PracticeTaskStatus.todo),
-        )
-        .toList(growable: false);
-
     return TodayPracticeState(
-      today: DateTime(today.year, today.month, today.day),
+      today: today,
       installDate: DateTime(
         installDate.year,
         installDate.month,
@@ -189,14 +176,136 @@ class TodayPracticeController extends Notifier<TodayPracticeState> {
         estimatedMinutes: rawPlan.estimatedMinutes,
         tasks: tasks,
       ),
-      completedTaskIds: const <String>{},
+      completedTaskIds: Set<String>.unmodifiable(completedIds),
     );
+  }
+
+  /// Toggles the completion state of [taskId] and persists the
+  /// change.
+  ///
+  /// Returns:
+  /// - `true` if the persistence write succeeded and the in-memory
+  ///   state now reflects the new completion flag.
+  /// - `false` if the persistence write failed (state is left
+  ///   unchanged) OR if a write for [taskId] is already in flight
+  ///   (concurrent click is dropped — UI should briefly disable
+  ///   the checkbox).
+  ///
+  /// Unknown ids are ignored: a typo or a stale id from an older
+  /// app version cannot silently inflate the completion count.
+  Future<bool> toggleTaskCompleted(String taskId) async {
+    final AsyncValue<TodayPracticeState> snapshot = state;
+    final TodayPracticeState? snapshotValue = snapshot.value;
+    if (snapshotValue == null) {
+      // Still loading or in error — refuse the write so the UI
+      // does not silently mutate a half-initialised state.
+      return false;
+    }
+    final bool isKnownTask = snapshotValue.plan.tasks.any(
+      (PracticeTask t) => t.id == taskId,
+    );
+    if (!isKnownTask) {
+      return false;
+    }
+    if (_pendingTaskIds.contains(taskId)) {
+      // Another write for this id is still pending. Drop the
+      // duplicate click; the in-flight write will resolve the
+      // UI state on its own.
+      return false;
+    }
+    _pendingTaskIds.add(taskId);
+
+    final bool wasCompleted = snapshotValue.completedTaskIds.contains(taskId);
+    final bool nowCompleted = !wasCompleted;
+    final CompletedTasksRepository repo =
+        ref.read(completedTasksRepositoryProvider);
+    try {
+      if (nowCompleted) {
+        await repo.markCompleted(
+          date: snapshotValue.today,
+          taskId: taskId,
+          completedAt: DateTime.now().toUtc(),
+        );
+      } else {
+        await repo.unmarkCompleted(
+          date: snapshotValue.today,
+          taskId: taskId,
+        );
+      }
+    } catch (_) {
+      // Persistence failed. Do not mutate state.
+      _pendingTaskIds.remove(taskId);
+      return false;
+    }
+
+    // Re-read state.value (NOT the snapshot captured at
+    // function entry): another concurrent toggle on a DIFFERENT
+    // task may have already updated the in-memory completion set
+    // while we were awaiting the DB write. Overwriting
+    // `state.value` with a set that only knows about *this* task
+    // would clobber that progress.
+    final TodayPracticeState? latest;
+    try {
+      latest = state.value;
+    } on Object {
+      // The provider was disposed between our await and here.
+      // The ref is unmounted and `state` throws
+      // `UnmountedRefException`. Nothing safe to write back to.
+      _pendingTaskIds.remove(taskId);
+      return false;
+    }
+    if (latest == null) {
+      // The AsyncValue is in a loading/error state — refuse the
+      // in-memory update.
+      _pendingTaskIds.remove(taskId);
+      return false;
+    }
+    final Set<String> next = Set<String>.from(latest.completedTaskIds);
+    if (nowCompleted) {
+      next.add(taskId);
+    } else {
+      next.remove(taskId);
+    }
+    final List<PracticeTask> nextTasks = latest.plan.tasks
+        .map(
+          (PracticeTask t) => t.copyWith(
+            status: next.contains(t.id)
+                ? PracticeTaskStatus.done
+                : PracticeTaskStatus.todo,
+          ),
+        )
+        .toList(growable: false);
+    state = AsyncData<TodayPracticeState>(
+      latest.copyWith(
+        completedTaskIds: Set<String>.unmodifiable(next),
+        plan: BuiltInPracticePlan(
+          dayIndex: latest.plan.dayIndex,
+          title: latest.plan.title,
+          estimatedMinutes: latest.plan.estimatedMinutes,
+          tasks: nextTasks,
+        ),
+      ),
+    );
+    _pendingTaskIds.remove(taskId);
+    return true;
+  }
+
+  /// Test-only helper that clears the in-flight write guard. Do
+  /// NOT call from production code — it exists only so tests can
+  /// reset state between scenarios.
+  @visibleForTesting
+  void resetPendingForTesting() {
+    _pendingTaskIds.clear();
   }
 }
 
 /// Provider for the home page controller.
-final NotifierProvider<TodayPracticeController, TodayPracticeState>
+///
+/// `AsyncNotifierProvider` exposes an `AsyncValue<TodayPracticeState>`
+/// — `AsyncLoading`, `AsyncData`, or `AsyncError` — so the UI
+/// MUST `.when(...)` it.
+final AsyncNotifierProvider<TodayPracticeController, TodayPracticeState>
     todayPracticeControllerProvider =
-    NotifierProvider<TodayPracticeController, TodayPracticeState>(
+    AsyncNotifierProvider<TodayPracticeController, TodayPracticeState>(
   TodayPracticeController.new,
 );

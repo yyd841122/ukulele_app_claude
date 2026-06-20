@@ -81,4 +81,22 @@ void main() {
       expect(find.byType(ChordDiagram), findsNWidgets(4));
     });
   });
+
+  group('visibleStringOrder', () {
+    // The chord diagram is rendered in the conventional beginner
+    // "chart" orientation: G, C, E, A from left to right. Because
+    // the data model numbers strings 1..4 as A, E, C, G, the visible
+    // left-to-right order is the reverse: [4, 3, 2, 1]. This test
+    // pins the mapping so a future refactor cannot silently flip
+    // the diagram back to the data-model order.
+    test('returns [4, 3, 2, 1] for the default ukulele layout', () {
+      expect(visibleStringOrder(), <int>[4, 3, 2, 1]);
+    });
+
+    test('exposes four entries, one per string', () {
+      final List<int> order = visibleStringOrder();
+      expect(order.length, 4);
+      expect(order.toSet(), <int>{1, 2, 3, 4});
+    });
+  });
 }

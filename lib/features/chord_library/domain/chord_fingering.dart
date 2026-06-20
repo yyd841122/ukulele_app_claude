@@ -1,11 +1,22 @@
 // Per-string fingering data for a single chord voicing.
 //
 // T008 scope:
-// - Ukulele has exactly 4 strings, conventionally numbered 1..4 from
-//   the player's left to right (G-C-E-A from top to bottom when
-//   holding the instrument in playing position). We expose a
-//   [ChordStringPosition] for each of the 4 strings, ordered from
-//   string 1 to string 4 so the UI can render left-to-right.
+// - Ukulele has exactly 4 strings, numbered 1..4 in the *physical*
+//   order they sit on the instrument (string 1 is the lowest-pitched
+//   A string, string 4 is the highest-pitched G string on a
+//   re-entrant high-G ukulele).
+//   In notes, that is:
+//     stringNumber 1 = A
+//     stringNumber 2 = E
+//     stringNumber 3 = C
+//     stringNumber 4 = G
+//   The list inside [ChordFingering.stringPositions] is stored in
+//   that same order (1, 2, 3, 4) so it reads in the same direction
+//   as the strings on the ukulele. The diagram, however, flips this
+//   to the conventional beginner-chart orientation (G, C, E, A from
+//   left to right) — see the top-level `visibleStringOrder` helper
+//   exported from `presentation/widgets/chord_diagram.dart` for the
+//   single source of truth for the visible order.
 // - [fret] semantics:
 //   * `null`        -> the string is muted (do not strum).
 //   * `0`           -> the string is played open (no finger).
@@ -36,7 +47,11 @@ class ChordStringPosition {
     this.finger,
   });
 
-  /// 1-based string index. 1 = leftmost (G) when rendered horizontally.
+  /// 1-based string index. 1 = A, 2 = E, 3 = C, 4 = G on a standard
+  /// high-G ukulele. Note that the visible left-to-right order in
+  /// the chord diagram is the reverse — see the top-level
+  /// `visibleStringOrder` helper exported from
+  /// `presentation/widgets/chord_diagram.dart`.
   final int stringNumber;
 
   /// Fret number. See file-level docs for semantics.
@@ -85,8 +100,10 @@ class ChordFingering {
     required this.maxFretShown,
   });
 
-  /// Exactly 4 entries, ordered string 1..4 (left to right when
-  /// rendered).
+  /// Exactly 4 entries, ordered by internal [stringNumber] 1..4
+  /// (A, E, C, G). The visible left-to-right order in the diagram
+  /// is the reverse — see the top-level `visibleStringOrder` helper
+  /// exported from `presentation/widgets/chord_diagram.dart`.
   final List<ChordStringPosition> stringPositions;
 
   /// Fret shown at the top of the diagram. Normally 1.
@@ -103,11 +120,33 @@ class ChordFingering {
   /// We do not throw — `built_in_chords.dart` uses this to gate
   /// data, and tests use it to assert that every built-in chord is
   /// well-formed.
+  ///
+  /// The checks covered here:
+  ///   * exactly 4 [stringPositions] with unique [stringNumber]s
+  ///     in 1..4;
+  ///   * [startFret] >= 1 and [maxFretShown] >= 1 so the diagram
+  ///     has a valid vertical window to render into;
+  ///   * every pressed fret (fret > 0) sits inside the visible
+  ///     window `[startFret, startFret + maxFretShown - 1]`;
+  ///   * finger indices are 1..4 and never appear on open / muted
+  ///     strings.
+  ///
+  /// The window check protects the painter from drawing a dot
+  /// outside the playable area, and protects the data layer from
+  /// shipping a voicing that has no faithful on-screen
+  /// representation.
   String? validate() {
+    if (startFret < 1) {
+      return 'startFret must be >= 1, got $startFret';
+    }
+    if (maxFretShown < 1) {
+      return 'maxFretShown must be >= 1, got $maxFretShown';
+    }
     if (stringPositions.length != 4) {
       return 'A ukulele voicing must have exactly 4 strings, '
           'got ${stringPositions.length}';
     }
+    final int maxRenderableFret = startFret + maxFretShown - 1;
     final Set<int> seenStringNumbers = <int>{};
     for (final ChordStringPosition pos in stringPositions) {
       if (pos.stringNumber < 1 || pos.stringNumber > 4) {
@@ -124,6 +163,11 @@ class ChordFingering {
         if (fret > 0 && fret < startFret) {
           return 'Pressed fret $fret is below startFret $startFret '
               'on string ${pos.stringNumber}';
+        }
+        if (fret > 0 && fret > maxRenderableFret) {
+          return 'Pressed fret $fret on string ${pos.stringNumber} is '
+              'outside the visible window '
+              '[$startFret, $maxRenderableFret] (maxFretShown=$maxFretShown)';
         }
       }
       if (pos.finger != null) {

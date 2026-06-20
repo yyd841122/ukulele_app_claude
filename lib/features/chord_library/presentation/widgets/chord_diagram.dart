@@ -3,9 +3,24 @@
 // T008 scope:
 // - Pure Flutter widgets + CustomPaint for the dots. No third-party
 //   drawing library, no image assets.
-// - The diagram is laid out as 4 vertical lines (strings) intersected
-//   by [maxFretShown] horizontal lines (frets). String 1 is drawn on
-//   the left, string 4 on the right (ukulele "chart" convention).
+// - String numbering inside the data model:
+//     * stringNumber 1 = A   (the lowest-pitched string on a
+//                              high-G re-entrant ukulele)
+//     * stringNumber 2 = E
+//     * stringNumber 3 = C
+//     * stringNumber 4 = G
+//   This matches the [built_in_chords.dart] data layout, where each
+//   voicing is stored string 1..4 (A, E, C, G) so the frets line up
+//   in the order they are physically strung on the instrument.
+// - The diagram itself is rendered in the conventional beginner
+//   "chart" orientation: when the player holds the ukulele in
+//   playing position the *top* string (closest to the player's face)
+//   is G. We render G as the leftmost column, then C, E, A from
+//   left to right. That means the *visible* left-to-right string
+//   order is [4, 3, 2, 1] — opposite of the internal [stringNumber]
+//   order. The [visibleStringOrder] helper centralises this mapping
+//   so the painter, the tests, and any future widget (e.g. a tab
+//   editor) cannot drift apart.
 // - Open strings (fret 0) are drawn as an "O" above the top nut line.
 // - Muted strings (fret null) are drawn as an "X" above the top nut.
 // - Pressed strings (fret 1..N) are drawn as filled dots; when a
@@ -17,6 +32,20 @@
 import 'package:flutter/material.dart';
 
 import 'package:ukulele_app/features/chord_library/domain/chord_fingering.dart';
+
+/// Left-to-right string order used by the diagram, in terms of the
+/// internal [ChordStringPosition.stringNumber] values.
+///
+/// For the MVP, the ukulele has exactly 4 strings and the diagram
+/// always shows them in the beginner "chart" orientation: G, C, E, A
+/// from left to right. Because the data model numbers strings 1..4
+/// as A, E, C, G, the visible order is the reverse: `[4, 3, 2, 1]`.
+///
+/// Exposed as a top-level helper so unit tests can pin the mapping
+/// without spinning up a widget tree, and so a future widget (e.g. a
+/// tab editor, or a left-handed variant) can call into the same
+/// source of truth rather than re-deriving the order.
+List<int> visibleStringOrder() => <int>[4, 3, 2, 1];
 
 /// Reusable ukulele chord diagram widget.
 ///
@@ -103,7 +132,12 @@ class _ChordDiagramPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final int stringCount = 4;
+    // The ukulele always has 4 strings. We read the visible
+    // left-to-right order from [visibleStringOrder] so the
+    // orientation rule ("G, C, E, A from left to right") has a
+    // single source of truth.
+    final List<int> stringOrder = visibleStringOrder();
+    final int stringCount = stringOrder.length;
     final int fretCount = fingering.maxFretShown;
 
     // Reserve the top strip for open / muted labels and the bottom
@@ -137,7 +171,9 @@ class _ChordDiagramPainter extends CustomPainter {
       canvas.drawLine(Offset(left, y), Offset(right, y), p);
     }
 
-    // Vertical string lines.
+    // Vertical string lines. Index `s` walks the *visible* left-to-
+    // right order, so column 0 is always the leftmost string the
+    // player sees (G for the MVP).
     final Paint stringPaint = Paint()
       ..color = lineColor
       ..style = PaintingStyle.stroke
@@ -156,7 +192,8 @@ class _ChordDiagramPainter extends CustomPainter {
     final double labelFontSize = size.width * _labelFontSizeFraction;
 
     for (int s = 0; s < stringCount; s++) {
-      final ChordStringPosition? pos = fingering.positionFor(s + 1);
+      final int stringNumber = stringOrder[s];
+      final ChordStringPosition? pos = fingering.positionFor(stringNumber);
       if (pos == null) {
         continue;
       }
@@ -186,7 +223,8 @@ class _ChordDiagramPainter extends CustomPainter {
     final double fingerFontSize = dotRadius * 1.1;
 
     for (int s = 0; s < stringCount; s++) {
-      final ChordStringPosition? pos = fingering.positionFor(s + 1);
+      final int stringNumber = stringOrder[s];
+      final ChordStringPosition? pos = fingering.positionFor(stringNumber);
       if (pos == null || pos.fret == null || pos.fret == 0) {
         continue;
       }

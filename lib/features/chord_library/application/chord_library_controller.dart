@@ -25,9 +25,11 @@ import 'package:ukulele_app/features/chord_library/domain/chord.dart';
 /// Provider exposing the full built-in chord list.
 ///
 /// The list is the same `List` instance stored in
-/// `built_in_chords.dart`. We deliberately do NOT wrap it in another
-/// immutable layer so equality checks stay cheap (the list is already
-/// `const`).
+/// `built_in_chords.dart`. It is declared as a top-level `final`
+/// (stable final built-in list) and is initialised once at startup;
+/// we deliberately do NOT wrap it in another immutable layer so
+/// equality checks stay cheap — every consumer sees the same
+/// canonical instance.
 final chordLibraryProvider = Provider<List<Chord>>((Ref ref) => kBuiltInChords);
 
 /// Family provider that resolves a single [Chord] by id.

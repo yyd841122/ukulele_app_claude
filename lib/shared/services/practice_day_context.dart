@@ -52,19 +52,48 @@ import 'package:ukulele_app/shared/services/install_date_service_provider.dart';
 /// in-memory context and the day-index call share a single
 /// frame-of-reference. There is no possible UTC/local mismatch
 /// between this struct and the index it carries.
+///
+/// Invariants enforced at construction (Release-safe, NOT assert):
+/// - [dayIndex] is in `1..7` — otherwise a [RangeError] is thrown.
+/// - [today] is a local (non-UTC) DateTime — otherwise an
+///   [ArgumentError] is thrown.
+/// - [today] is a complete local midnight (hour, minute, second,
+///   millisecond and microsecond all zero) — otherwise an
+///   [ArgumentError] is thrown.
+/// - [installDate] is a local (non-UTC) DateTime AND a complete
+///   local midnight — same [ArgumentError] contract.
 @immutable
 class PracticeDayContext {
-  const PracticeDayContext({
+  const PracticeDayContext._({
     required this.today,
     required this.installDate,
     required this.dayIndex,
-  }) : assert(dayIndex >= 1 && dayIndex <= 7,
-            'dayIndex must be in 1..7, got $dayIndex');
+  });
+
+  /// Public factory that validates every runtime invariant before
+  /// delegating to the private constructor. Validation MUST run
+  /// in Release — using `assert` here would silently strip the
+  /// contract outside of debug builds, so we throw explicitly.
+  factory PracticeDayContext({
+    required DateTime today,
+    required DateTime installDate,
+    required int dayIndex,
+  }) {
+    _validateDayIndex(dayIndex);
+    _validateLocalMidnight('today', today);
+    _validateLocalMidnight('installDate', installDate);
+    return PracticeDayContext._(
+      today: today,
+      installDate: installDate,
+      dayIndex: dayIndex,
+    );
+  }
 
   /// Local-midnight of "today" (the user's current calendar day).
   ///
-  /// `today.hour == 0 && today.minute == 0 && today.second == 0`,
-  /// and `today.isUtc == false`.
+  /// `today.hour == 0 && today.minute == 0 && today.second == 0 &&
+  /// today.millisecond == 0 && today.microsecond == 0`, and
+  /// `today.isUtc == false`.
   final DateTime today;
 
   /// Local-midnight of the install date.
@@ -72,11 +101,58 @@ class PracticeDayContext {
   /// The underlying [InstallDateService] returns a UTC instant; the
   /// resolver projects that instant to local time and strips the
   /// time-of-day. `installDate.hour == 0 && installDate.minute == 0
-  /// && installDate.second == 0`, and `installDate.isUtc == false`.
+  /// && installDate.second == 0 && installDate.millisecond == 0 &&
+  /// installDate.microsecond == 0`, and `installDate.isUtc == false`.
   final DateTime installDate;
 
   /// 1-based day in the 7-day cycle. Always in `1..7`.
   final int dayIndex;
+
+  /// Range-checks [dayIndex]. Throws [RangeError] for any value
+  /// outside `1..7` so that the contract survives in Release.
+  static void _validateDayIndex(int dayIndex) {
+    if (dayIndex < 1 || dayIndex > 7) {
+      throw RangeError.range(
+        dayIndex,
+        1,
+        7,
+        'dayIndex',
+        'must be in 1..7',
+      );
+    }
+  }
+
+  /// Confirms [value] is a local (non-UTC) DateTime at
+  /// `00:00:00.000000`. UTC midnights AND any non-zero
+  /// time-of-day component are rejected with an [ArgumentError]
+  /// so the data is never silently "fixed" by the context.
+  static void _validateLocalMidnight(String fieldName, DateTime value) {
+    if (value.isUtc) {
+      throw ArgumentError.value(
+        value,
+        fieldName,
+        'must be a local DateTime (isUtc == false); got a UTC instant',
+      );
+    }
+    if (value.hour != 0 ||
+        value.minute != 0 ||
+        value.second != 0 ||
+        value.millisecond != 0 ||
+        value.microsecond != 0) {
+      throw ArgumentError.value(
+        value,
+        fieldName,
+        'must be local-midnight (00:00:00.000000); '
+        'got ${_describeTimeOfDay(value)}',
+      );
+    }
+  }
+
+  static String _describeTimeOfDay(DateTime value) {
+    return 'hour=${value.hour}, minute=${value.minute}, '
+        'second=${value.second}, millisecond=${value.millisecond}, '
+        'microsecond=${value.microsecond}';
+  }
 }
 
 /// Resolves the user's [PracticeDayContext] from the
@@ -103,6 +179,10 @@ class PracticeDayResolver {
   /// swallowed — they propagate to the caller, which surfaces
   /// them through the existing AsyncValue / retry pathway in the
   /// consuming Controller.
+  ///
+  /// The constructed [PracticeDayContext] is guaranteed to pass
+  /// its own Release-safe validation — i.e. local midnights and a
+  /// `1..7` day index — so consumers do not need to re-check.
   Future<PracticeDayContext> resolve() async {
     final DateTime installInstant = await _installDateService.getInstallDate();
     final DateTime now = _clock();

@@ -22,8 +22,10 @@
 //   returning yesterday's context.
 // - `InstallDateService.getInstallDate()` errors propagate to
 //   the caller (no silent swallow).
-// - `PracticeDayContext`'s constructor asserts `1..7` (defensive
-//   against an off-by-one from a misconfigured clock).
+// - `PracticeDayContext`'s constructor validates `1..7` for
+//   `dayIndex` and `00:00:00.000000 local` for both `today` and
+//   `installDate` at runtime — the contract survives Release
+//   builds (not a debug-only `assert`).
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart';
@@ -36,39 +38,142 @@ import 'package:ukulele_app/shared/services/practice_day_context.dart';
 
 void main() {
   group('PracticeDayContext', () {
-    test('asserts dayIndex is in 1..7', () {
+    test('accepts dayIndex 1 (lower boundary)', () {
+      final PracticeDayContext ctx = PracticeDayContext(
+        today: DateTime(2026, 6, 20),
+        installDate: DateTime(2026, 6, 20),
+        dayIndex: 1,
+      );
+      expect(ctx, isNotNull);
+      expect(ctx.dayIndex, 1);
+    });
+
+    test('accepts dayIndex 7 (upper boundary)', () {
+      final PracticeDayContext ctx = PracticeDayContext(
+        today: DateTime(2026, 6, 20),
+        installDate: DateTime(2026, 6, 20),
+        dayIndex: 7,
+      );
+      expect(ctx, isNotNull);
+      expect(ctx.dayIndex, 7);
+    });
+
+    test('rejects dayIndex 0 with RangeError (runtime validation)', () {
       expect(
         () => PracticeDayContext(
           today: DateTime(2026, 6, 20),
           installDate: DateTime(2026, 6, 20),
           dayIndex: 0,
         ),
-        throwsA(isA<AssertionError>()),
+        throwsA(isA<RangeError>()),
       );
+    });
+
+    test('rejects dayIndex 8 with RangeError (runtime validation)', () {
       expect(
         () => PracticeDayContext(
           today: DateTime(2026, 6, 20),
           installDate: DateTime(2026, 6, 20),
           dayIndex: 8,
         ),
-        throwsA(isA<AssertionError>()),
+        throwsA(isA<RangeError>()),
       );
-      // Boundary values succeed.
+    });
+
+    test('rejects UTC today with ArgumentError (runtime validation)', () {
       expect(
-        PracticeDayContext(
-          today: DateTime(2026, 6, 20),
+        () => PracticeDayContext(
+          today: DateTime.utc(2026, 6, 20),
           installDate: DateTime(2026, 6, 20),
           dayIndex: 1,
         ),
-        isNotNull,
+        throwsA(isA<ArgumentError>()),
       );
+    });
+
+    test('rejects UTC installDate with ArgumentError (runtime validation)', () {
       expect(
-        PracticeDayContext(
+        () => PracticeDayContext(
           today: DateTime(2026, 6, 20),
-          installDate: DateTime(2026, 6, 20),
-          dayIndex: 7,
+          installDate: DateTime.utc(2026, 6, 20),
+          dayIndex: 1,
         ),
-        isNotNull,
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('rejects today with non-zero hour (runtime validation)', () {
+      expect(
+        () => PracticeDayContext(
+          today: DateTime(2026, 6, 20, 1),
+          installDate: DateTime(2026, 6, 20),
+          dayIndex: 1,
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test(
+        'rejects today with non-zero minute/second/millisecond/microsecond '
+        '(runtime validation)', () {
+      // Non-zero minute.
+      expect(
+        () => PracticeDayContext(
+          today: DateTime(2026, 6, 20, 0, 1),
+          installDate: DateTime(2026, 6, 20),
+          dayIndex: 1,
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+      // Non-zero second.
+      expect(
+        () => PracticeDayContext(
+          today: DateTime(2026, 6, 20, 0, 0, 1),
+          installDate: DateTime(2026, 6, 20),
+          dayIndex: 1,
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+      // Non-zero millisecond.
+      expect(
+        () => PracticeDayContext(
+          today: DateTime(2026, 6, 20, 0, 0, 0, 1),
+          installDate: DateTime(2026, 6, 20),
+          dayIndex: 1,
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+      // Non-zero microsecond.
+      expect(
+        () => PracticeDayContext(
+          today: DateTime(2026, 6, 20, 0, 0, 0, 0, 1),
+          installDate: DateTime(2026, 6, 20),
+          dayIndex: 1,
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test(
+        'rejects installDate with non-zero time-of-day '
+        '(runtime validation)', () {
+      // Non-zero hour.
+      expect(
+        () => PracticeDayContext(
+          today: DateTime(2026, 6, 20),
+          installDate: DateTime(2026, 6, 20, 0, 0, 0, 0, 1),
+          dayIndex: 1,
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+      // Non-zero second on installDate.
+      expect(
+        () => PracticeDayContext(
+          today: DateTime(2026, 6, 20),
+          installDate: DateTime(2026, 6, 20, 0, 0, 1),
+          dayIndex: 1,
+        ),
+        throwsA(isA<ArgumentError>()),
       );
     });
   });

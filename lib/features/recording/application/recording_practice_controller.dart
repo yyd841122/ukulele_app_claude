@@ -165,9 +165,10 @@ class RecordingPracticeController
   ///   the two states are mutually exclusive.
   /// - `hasRecording` is reset because the user is starting a new
   ///   take; `elapsedSeconds` resets to 0; `selfRating` and `note`
-  ///   are intentionally preserved so the previous take's metadata
-  ///   remains visible until the user explicitly clears it (or the
-  ///   new take is finished and they rate the new one).
+  ///   are cleared as well because the previous take is being
+  ///   dropped — leaving stale metadata would create the confusing
+  ///   "no recording yet but a self-rating is still selected"
+  ///   state (T012_FIX).
   void startRecording() {
     if (state.isRecording) {
       return;
@@ -178,6 +179,8 @@ class RecordingPracticeController
       isPlaying: false,
       hasRecording: false,
       elapsedSeconds: 0,
+      clearSelfRating: true,
+      note: '',
     );
     _timer = Timer.periodic(kRecordingTickInterval, (_) => _advance());
   }

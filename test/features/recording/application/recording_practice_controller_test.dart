@@ -138,31 +138,49 @@ void main() {
       expect(state.note, '');
     });
 
-    test('startRecording flips isRecording and resets elapsedSeconds',
-        () {
-      final ProviderContainer container = ProviderContainer();
-      addTearDown(container.dispose);
+    test(
+      'startRecording flips isRecording and clears the previous take',
+      () {
+        final ProviderContainer container = ProviderContainer();
+        addTearDown(container.dispose);
 
-      final RecordingPracticeController controller =
-          container.read(recordingPracticeControllerProvider.notifier);
+        final RecordingPracticeController controller =
+            container.read(recordingPracticeControllerProvider.notifier);
 
-      // Pre-poison the state via tickForTesting + setSelfRating to
-      // prove startRecording resets the clock and starts a fresh
-      // take.
-      controller.tickForTesting();
-      controller.tickForTesting();
+        // Walk through a full previous take so isRecording /
+        // hasRecording / selfRating / note are all populated.
+        controller.startRecording();
+        controller.tickForTesting();
+        controller.tickForTesting();
+        controller.stopRecording();
+        controller.setSelfRating(SelfRating.good);
+        controller.setNote('forgot the Am fingering');
+        // Sanity check: the previous take is on file with metadata.
+        RecordingPracticeState poisoned =
+            container.read(recordingPracticeControllerProvider);
+        expect(poisoned.isRecording, isFalse);
+        expect(poisoned.hasRecording, isTrue);
+        expect(poisoned.selfRating, SelfRating.good);
+        expect(poisoned.note, 'forgot the Am fingering');
 
-      controller.startRecording();
-      RecordingPracticeState state =
-          container.read(recordingPracticeControllerProvider);
-      expect(state.isRecording, isTrue);
-      expect(state.hasRecording, isFalse);
-      expect(state.isPlaying, isFalse);
-      expect(state.elapsedSeconds, 0);
+        // Start a new take. The previous take is dropped: clock
+        // resets to 0, hasRecording flips to false, and the
+        // self-rating + note are CLEARED so the user does not see
+        // "no recording but a rating is still selected".
+        controller.startRecording();
+        RecordingPracticeState state =
+            container.read(recordingPracticeControllerProvider);
+        expect(state.isRecording, isTrue);
+        expect(state.hasRecording, isFalse);
+        expect(state.isPlaying, isFalse);
+        expect(state.elapsedSeconds, 0);
+        expect(state.selfRating, isNull);
+        expect(state.note, '');
 
-      // Cleanup the timer.
-      controller.stopRecording();
-    });
+        // Cleanup the timer.
+        controller.stopRecording();
+      },
+    );
 
     test('startRecording while already recording is a no-op', () {
       final ProviderContainer container = ProviderContainer();
@@ -319,7 +337,9 @@ void main() {
         );
 
         // Now start a new recording. Playback must end and the new
-        // take must be the active one.
+        // take must be the active one. The old take's self-rating
+        // and note must be CLEARED (T012_FIX) so the UI does not
+        // show "no recording but a rating is still selected".
         controller.startRecording();
         final RecordingPracticeState state =
             container.read(recordingPracticeControllerProvider);
@@ -327,9 +347,8 @@ void main() {
         expect(state.isPlaying, isFalse);
         expect(state.hasRecording, isFalse);
         expect(state.elapsedSeconds, 0);
-        // selfRating and note are intentionally preserved by the
-        // controller — only the new take replaces the old one when
-        // it is stopped.
+        expect(state.selfRating, isNull);
+        expect(state.note, '');
 
         controller.stopRecording();
       },

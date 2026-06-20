@@ -1,21 +1,36 @@
 // Built-in manual tuning data for the MVP.
 //
 // T011 scope:
-// - One preset: standard high-G re-entrant ukulele G-C-E-A.
-//   This file is the *only* place where the per-string tip and
+// - One preset: the standard ukulele G-C-E-A tuning. This file
+//   is the *only* place where the per-string tip and
 //   common-mistake copy lives, so a copy edit cannot accidentally
 //   drift between pages.
-// - The data is shown to the user in the *teaching order* G, C,
-//   E, A — see [kTuningStringDisplayOrder] below. The internal
-//   [TuningString.stringNumber] keeps the T008 / T009 convention
-//   (1 = A, 2 = E, 3 = C, 4 = G) so a future combined view
-//   (chord diagram + tuner guide overlay) can join on
-//   `stringNumber` without translation.
-// - We deliberately do NOT carry a linear "lowest / highest"
-//   pitch ordering. On a re-entrant high-G ukulele the pitch
-//   walk from string 1 to string 4 is non-monotonic, and the
-//   task brief explicitly forbids words like "lowest / highest /
-//   最低 / 最高 / 最细 / 最粗" in any user-facing copy.
+// - Two orderings exist in the project and they are *different*
+//   things — keep them separate:
+//     * [kTuningStringDisplayOrder] is the teaching / chart
+//       order shown to the user: G, C, E, A. It is also the
+//       left-to-right order in a chord diagram.
+//     * [TuningString.stringNumber] is the internal 1-based
+//       index carried by every model. It follows the T008 /
+//       T009 convention:
+//           1 = A string
+//           2 = E string
+//           3 = C string
+//           4 = G string
+//       A future combined view (chord diagram + tuner guide
+//       overlay) can join on `stringNumber` without translation.
+// - The model carries no pitch / physical / perspective
+//   ordering. The stringNumber and the display-order constant
+//   are sufficient to address every string unambiguously:
+//     * "G" is the string with stringNumber 4.
+//     * "C" is the string with stringNumber 3.
+//     * "E" is the string with stringNumber 2.
+//     * "A" is the string with stringNumber 1.
+//   Any description that tries to rank the four strings
+//   "from low to high" / "from high to low" / "thickest to
+//   thinnest" / "closest to the player's face" is *out of
+//   scope* for this file — see the project rules pinned in the
+//   T011 test suite.
 // - No frequency / cents / pitch-detection state is present in
 //   any model. This page is a guide, not a tuner.
 // - This file is a pure constant. It must not perform I/O, must
@@ -25,9 +40,10 @@
 import 'package:ukulele_app/features/tuner/domain/tuning_string.dart';
 
 /// The four standard-tuning strings, in *teaching / display*
-/// order: G (4th string), C (3rd string), E (2nd string), A
-/// (1st string). Top to bottom in a chord diagram, leftmost to
-/// rightmost. This order is pinned by tests.
+/// order: G (stringNumber 4), C (stringNumber 3), E
+/// (stringNumber 2), A (stringNumber 1). This is also the
+/// left-to-right order in a chord diagram. The order is pinned
+/// by tests.
 ///
 /// We deliberately expose this as a separate constant rather than
 /// inlining the ordering inside [kBuiltInTuningStrings]: tests
@@ -36,15 +52,11 @@ import 'package:ukulele_app/features/tuner/domain/tuning_string.dart';
 /// the teaching order.
 const List<int> kTuningStringDisplayOrder = <int>[4, 3, 2, 1];
 
-/// The four standard high-G ukulele strings, in the order they
-/// are *stored* (1..4). The page renders them via
+/// The four standard ukulele strings, keyed by their T008 / T009
+/// `stringNumber` (1..4). The page renders them via
 /// [kTuningStringDisplayOrder] rather than this list directly.
 final List<TuningString> kBuiltInTuningStrings = <TuningString>[
-  // ---- 4 弦 G ----
-  // String 4 = G. Highest-pitched string on a re-entrant ukulele
-  // (it is the *shortest* string physically, but it is NOT the
-  // "highest string number" in pitch terms — we intentionally do
-  // not describe pitch order, see file-level docs).
+  // ---- stringNumber 4 = G ----
   const TuningString(
     stringNumber: 4,
     stringName: 'G',
@@ -54,8 +66,7 @@ final List<TuningString> kBuiltInTuningStrings = <TuningString>[
     commonMistake: '不要一开始就拧太紧，新手最容易把 4 弦拧断。',
   ),
 
-  // ---- 3 弦 C ----
-  // String 3 = C. Sits one perfect-fourth below G.
+  // ---- stringNumber 3 = C ----
   const TuningString(
     stringNumber: 3,
     stringName: 'C',
@@ -65,8 +76,7 @@ final List<TuningString> kBuiltInTuningStrings = <TuningString>[
     commonMistake: '调完 3 弦又回头拧 4 弦，导致两弦互相拉扯走音。',
   ),
 
-  // ---- 2 弦 E ----
-  // String 2 = E. Tuned up a major second from C.
+  // ---- stringNumber 2 = E ----
   const TuningString(
     stringNumber: 2,
     stringName: 'E',
@@ -76,9 +86,7 @@ final List<TuningString> kBuiltInTuningStrings = <TuningString>[
     commonMistake: '误把 2 弦当 1 弦的位置，从琴头右侧开始算弦。',
   ),
 
-  // ---- 1 弦 A ----
-  // String 1 = A. The bottom string (closest to the player's
-  // face when held in playing position). The note name is A.
+  // ---- stringNumber 1 = A ----
   const TuningString(
     stringNumber: 1,
     stringName: 'A',
@@ -92,8 +100,9 @@ final List<TuningString> kBuiltInTuningStrings = <TuningString>[
 /// Returns the [TuningString] with the given [stringNumber],
 /// or `null` if no such string is in the built-in library.
 ///
-/// The lookup is `O(1)` and safe to call from the UI on every
-/// rebuild — backed by an immutable map built once at startup.
+/// In the MVP the library has exactly four entries, so the linear
+/// scan is effectively constant work. Callers in the UI may invoke
+/// this on every rebuild.
 TuningString? findBuiltInTuningString(int stringNumber) {
   if (stringNumber < 1 || stringNumber > 4) {
     return null;

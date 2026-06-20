@@ -46,5 +46,6 @@
 | T012_BUILD_BASIC_RECORDING_PLAYBACK | 实现录音回放基础版(MVP 占位式练习页面) | 通过 | `e0ae6c4` | 174 | 通过 | 引入 `RecordingPracticeController`、`SelfRating`、模拟回放流程页面;其后有两个 FIX |
 | T012_FIX_RECORDING_START_CLEARS_METADATA | 修复 `startRecording` 清空 selfRating/note 的行为 | 通过 | `edd457b` | 174 | 通过 | 让 Controller 行为、状态机注释、测试断言三者保持一致 |
 | T012_FIX_RECORDING_PLAYBACK_START_BUTTON | 修复播放中"开始模拟录音"按钮误禁用 | 通过 | `974198d` | 175 | 通过 | 让 UI 启用条件与 Controller"播放中可 start"契约一致 |
-| T012_DOCS_COLLABORATION_BASELINE | 建立任务台账与技术债台账 | 待复审 | `7ca3f36` | 175 | 待复审 | 建立 `TASK_LEDGER.md` 与 `TECH_DEBT.md`,后续有文档一致性 FIX |
-| T012_FIX_DOCS_LEDGER_CONSISTENCY | 修复协作文档的状态矛盾、技术债证据不足与任务漏记 | 待补录 | 待补录 | 待补录 | 待补录 | 统一 T006-T011 状态为"待补录";删除证据不足的 TD-002;补充本任务与上一步的台账条目 |
+| T012_DOCS_COLLABORATION_BASELINE | 建立任务台账与技术债台账 | 通过 | `7ca3f36` | 175 | 通过 | 建立 `TASK_LEDGER.md` 与 `TECH_DEBT.md`,后续有文档一致性 FIX |
+| T012_FIX_DOCS_LEDGER_CONSISTENCY | 修复协作文档的状态矛盾、技术债证据不足与任务漏记 | 通过 | `c533272` | 175 | 通过 | 统一 T006-T011 状态为"待补录";删除证据不足的 TD-002;补充本任务与上一步的台账条目 |
+| T013_PREP_LOCAL_PERSISTENCE_AUDIT | T013 本地持久化只读审计 | 通过 | 无 | 175 | 待复审 | 只读审计,无代码改动;为 T013.1 ~ T013.5 拆分提供依据 |

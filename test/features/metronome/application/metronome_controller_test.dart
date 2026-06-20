@@ -3,9 +3,28 @@
 // T010 scope:
 // - Settings defaults and clamping.
 // - Beat progression (tickForTesting only — never real time).
-// - Timer lifecycle: no double-start, dispose cancels timer.
 // - beatsPerBar whitelist.
 // - start / stop / toggleRunning behaviour.
+//
+// Testing strategy — Timer coverage is intentionally limited:
+// - T010 does NOT directly assert the number of `Timer` instances
+//   held by the controller (we have no fake test double for it and
+//   we deliberately do not pull in `package:fake_async` for this
+//   MVP).
+// - T010 does NOT verify real periodic tick precision, accuracy of
+//   the `Duration` between two ticks, or any wall-clock behaviour.
+// - T010 NEVER calls `sleep`, `Future.delayed` + await, or
+//   `tester.pump(Duration(...))` to wait for a real tick.
+// - Timer-related tests only cover:
+//     * public state transitions (isRunning flips on start/stop/
+//       toggleRunning; currentBeat resets to 1 on stop);
+//     * safety of `dispose` when a timer is active (must not throw
+//       and must cancel the in-flight periodic timer so the
+//       provider can be torn down without leaking it).
+// - Beat progression itself is fixed by [tickForTesting]. Every
+//   beat-related test calls that method directly. The Timer is
+//   therefore the *runtime* driver only; it is not exercised by
+//   the test suite.
 //
 // We deliberately never call [start] in tests, except for the
 // handful that explicitly assert the timer is created. Those tests

@@ -42,8 +42,9 @@ class MetronomeSettings {
   /// Whether the user has asked for a real audio click. The MVP
   /// ships with no audio backend, so the page is required to
   /// explain this in the UI. The field is kept on the state so a
-  /// future task can wire it to `flutter_audio_capture` / a tone
-  /// generator without changing the public controller API.
+  /// future task can wire this flag to a local click sound, tone
+  /// generator, asset sound, or platform-safe audio playback
+  /// without changing the public controller API.
   final bool soundEnabled;
 
   /// The beats-per-bar values the UI exposes. Anything outside this

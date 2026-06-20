@@ -10,9 +10,9 @@
 //     F  : 2nd string fret 1                  — index finger
 //     G  : 4th string fret 0 (open G)        — no finger
 //     A  : 1st string fret 0 (open A)        — no finger
-//   The "A" note could alternatively be played as the 4th string
-//   at fret 2 (the same pitch one octave higher), but the open A
-//   on string 1 is the easier choice for absolute beginners and
+//   The "A" note could alternatively be played on a different
+//   string and fret, but the open A on string 1 is the easier
+//   choice for absolute beginners (no fretting required) and
 //   matches the order in which the strings are usually taught in
 //   the standard "A, E, C, G" recital. We ship the open version.
 // - String numbering inside the data model follows T008:
@@ -20,8 +20,13 @@
 //     stringNumber 2 = E
 //     stringNumber 3 = C
 //     stringNumber 4 = G
-//   The visible left-to-right order in the diagram is the reverse
-//   — see [visibleSingleNoteStringOrder].
+//   The data model only carries the numbering convention and
+//   per-note string / fret metadata — it does NOT carry a
+//   linear pitch ordering, because on a re-entrant high-G
+//   ukulele the pitch walk from string 1 to string 4 is
+//   non-monotonic. Visible orientation rules live in
+//   [visibleSingleNoteStringOrder] (G, C, E, A from left to
+//   right in the diagram).
 // - This file is a pure constant. It must not perform I/O, must not
 //   call into Flutter, and must not be mutated. Tests import it
 //   directly to assert the contents.
@@ -72,12 +77,12 @@ final List<SingleNote> kBuiltInSingleNotes = <SingleNote>[
   ),
 
   // ---- E ----
-  // 2nd string, open. The "low E" of the ukulele.
+  // 2nd string, open.
   SingleNote(
     id: 'e',
     name: 'E',
     displayName: 'E 音',
-    description: 'E 大调的第一个音。2 弦空弦，音色温暖。',
+    description: 'E 大调的第一个音。2 弦空弦，不需要按品。',
     stringName: 'E',
     stringNumber: 2,
     fret: 0,
@@ -85,7 +90,7 @@ final List<SingleNote> kBuiltInSingleNotes = <SingleNote>[
     difficulty: SingleNoteDifficulty.openString,
     tips: <String>[
       '不需要按品，直接拨响 2 弦。',
-      '2 弦比 3 弦略细，拨弦力度可以稍轻。',
+      '注意只拨目标弦，不要碰到 1 弦或 3 弦。',
       '与 C 音切换时，左手可以保留在 3 弦第 2 品。',
     ],
   ),
@@ -111,12 +116,12 @@ final List<SingleNote> kBuiltInSingleNotes = <SingleNote>[
   ),
 
   // ---- G ----
-  // 4th string, open. The highest string on a re-entrant ukulele.
+  // 4th string, open.
   SingleNote(
     id: 'g',
     name: 'G',
     displayName: 'G 音',
-    description: 'G 大调的第一个音。4 弦空弦，是尤克里里最亮的音。',
+    description: 'G 大调的第一个音。4 弦空弦，不需要按品。',
     stringName: 'G',
     stringNumber: 4,
     fret: 0,
@@ -124,7 +129,7 @@ final List<SingleNote> kBuiltInSingleNotes = <SingleNote>[
     difficulty: SingleNoteDifficulty.openString,
     tips: <String>[
       '不需要按品，直接拨响 4 弦。',
-      '4 弦是尤克里里最细、音色最亮的弦。',
+      '4 弦在图中显示在最左侧。',
       '右手食指或拇指都可以拨弦，新手建议用拇指。',
     ],
   ),
@@ -147,8 +152,8 @@ final List<SingleNote> kBuiltInSingleNotes = <SingleNote>[
     difficulty: SingleNoteDifficulty.openString,
     tips: <String>[
       '不需要按品，直接拨响 1 弦。',
-      '1 弦是尤克里里最靠近地板的弦（最细的那根）。',
-      '如果想换个音色，可以在 4 弦第 2 品上找到同名 A 音。',
+      '1 弦在图中显示在最右侧。',
+      '如果想换个位置练习同名 A 音，可以在 4 弦第 2 品上找到。',
     ],
   ),
 ];

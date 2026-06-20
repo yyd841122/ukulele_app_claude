@@ -8,8 +8,16 @@
 // - State is read from [singleNotePracticeControllerProvider]; the
 //   page itself is a [ConsumerWidget] so it can both watch state
 //   and invoke the controller's methods.
-// - All state is in memory (no persistence) per the task brief.
-//   Closing the page resets completion state.
+// - All "practiced" state is held in memory only:
+//     * It is never written to a database (no Drift).
+//     * It is never written to SharedPreferences.
+//     * It is lost whenever the application process is killed
+//       (cold restart, OS reclaim, etc.).
+//   Whether the state survives *navigating away from this page
+//   and back* depends on the provider's lifecycle, which this
+//   page does not control. A future task can promote the
+//   practiced set to a shared service or `autoDispose` the
+//   provider if a different lifecycle is required.
 // - No audio, no microphone, no recording, no network — see the
 //   task brief §边界限制.
 

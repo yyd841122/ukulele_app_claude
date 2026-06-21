@@ -20,3 +20,11 @@
 | ID | 问题 | 影响 | 优先级 | 建议处理阶段 | 状态 |
 | --- | --- | --- | --- | --- | --- |
 | TD-001 | `RecordingPracticeController` 当前使用非 autoDispose 的 Riverpod provider,用户离开录音页面后,模拟录音/回放的 `Timer.periodic` 可能继续在后台运行并持续更新 state | 中 — 当前不影响功能正确性,但会消耗后台 tick,且页面关闭后回到录音页会看到已经累计的 `elapsedSeconds`,与"模拟一次练习"的语义略有冲突 | 中 | 后续体验打磨阶段评估 autoDispose,或在页面退出时主动停止录音/回放 | 待处理 |
+| TD-002 | 离线 MVP 仍未产出可分发的 Release APK / AAB;`android/app/build.gradle` 中 `release` 当前仍临时借用 `signingConfigs.debug`,未配置正式签名密钥、密钥口令管理、密钥库安全与商店发布流程 | 高 — 不阻塞 MVP 离线功能验收,但未通过此检查点不得宣称"可上架 / 生产就绪";Release 构建与签名必须作为独立任务由用户和 GPT 首席架构师另行选择启动 | 高 | Release 工程化阶段(由 GPT 首席架构师复审 MVP_ACCEPTANCE.md 后单独排期,不在 T016 范围内) | 待处理 |
+| TD-003 | 尚未在 iOS 平台进行真机验收;iOS Runner 配置、Info.plist、签名证书、TestFlight 等均未纳入当前任务范围 | 中 — 当前 MVP 仅承诺 Android 离线能力,iOS 适配与验收需独立排期 | 中 | iOS 适配阶段(由 GPT 首席架构师另行排期) | 待处理 |
+| TD-004 | Debug 通用 APK 体积较大(约 154 MiB,记录在 `MVP_ACCEPTANCE.md` 的 `Android Build Artifact` 节),不能据此推断 Release 包体积;当前未产出 `--split-per-abi` 或 `--release` 产物 | 低 — Debug 体积不直接代表用户体验;Release 阶段需重新评估体积策略(App Bundle、按 ABI 拆分、资源压缩) | 低 | Release 工程化阶段 | 待处理 |
+| TD-005 | Android 构建工具链(Gradle 8.7 / AGP 8.6.0 / Kotlin Gradle Plugin 2.1.0 / JDK 17)在未来可能进入弃用或强制升级窗口;当前 MVP 不主动升级,工具链升级需独立任务并重新跑全量测试 | 低 — 当前构建已成功,弃用警告不阻塞 MVP 验收 | 低 | 后续兼容性维护阶段(独立任务) | 待处理 |
+| TD-006 | 本机开发环境中 `adb` 未加入系统 PATH,目前通过绝对路径使用;该问题与代码、依赖、构建产物均无关,仅影响本地真机调试命令 | 低 — 不影响仓库可移植性,新开发者在自己的环境中按需配置 | 低 | 本地开发环境初始化阶段(非代码任务) | 待处理 |
+| TD-007 | 当前 MVP 阶段不调用真实麦克风、不保存或播放真实音频,`PracticeRecord.audioFilePath` 始终为 `null`;`RecordingPracticeController` 在保存时硬编码 `audioFilePath: null`(`lib/features/recording/application/recording_practice_controller.dart:534`);同时未申请 `RECORD_AUDIO` 权限,`AndroidManifest.xml` 显式声明无此权限 | 高 — 进入真实音频阶段前,必须重新设计:① 运行时权限申请与回退(RECORD_AUDIO / iOS `NSMicrophoneUsageDescription`);② 音频文件生命周期(目录、清理、迁移);③ 隐私政策、用户告知、合规审查;④ 平台架构(Drift schema 升级、文件存储抽象、错误恢复);这些范围远超当前离线 MVP,不得在未排期的情况下私自启动 | 高 | 真实音频阶段(由 GPT 首席架构师 + 产品另行决策) | 待处理 |
+| TD-008 | MVP 之后的产品方向(账号 / 云同步 / AI 评分 / 商业化 / 真实音频)尚未决定;`ROADMAP.md` 中 V1-V5 阶段均标记为"后期",不在当前 MVP 范围守卫内 | 中 — 任何"开始下一阶段"的指令必须由用户和 GPT 首席架构师显式发出,本仓库不在 T016 内自动启动 | 中 | MVP 复盘与下一阶段排期阶段 | 待处理 |
+| TD-009 | 构建环境可能依赖用户级网络代理配置(例如 Gradle 依赖拉取、Dart pub 镜像);该配置属于本机环境而非仓库,本台账不记录具体端口、用户名、绝对用户目录或密钥;如未来 CI / 团队协作需要,应改用仓库外(环境变量 / CI 密钥管理)而非提交到代码库 | 低 — 不影响仓库可移植性,仅在跨环境协作时需要明确"该配置不属于本仓库" | 低 | 持续 | 待处理 |

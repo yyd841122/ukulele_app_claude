@@ -345,8 +345,93 @@ ChatGPT (主脑)
 - 禁止越权审批
 - 禁止绕过 Handoff 直接交接
 
-## 8. 文档版本
+## 8. Release 阶段协作机制（T019 起追加）
+
+本节是 T019 阶段在保留既有内容基础上追加的 **Release 工程化阶段**协作机制。任何 Release 阶段任务（T019-T024）必须遵循本节规则。
+
+### 8.1 角色与边界（Release 阶段）
+
+| 角色 | 角色定位 | 关键职责 | **不允许** |
+| --- | --- | --- | --- |
+| 用户 | 产品决策方 + 密钥保管方 + 真机验收方 | 决定是否生成正式 keystore；保管 keystore / key.properties / 密码；真机安装与冒烟；高风险操作确认 | 不替 Agent 完成实现；不替 Agent 填写真机验收"通过"结论；不在未批准时让 Agent push 或创建 Tag |
+| GPT 首席架构师 | 范围 / 任务拆分 / 复审 / 阶段批准 | 拆分 Release 阶段任务；审核每一份 Task Report；批准进入下一任务 | 不直接写实现；不替用户保管密钥；不复审未提供证据的报告 |
+| Release 执行 Agent（Claude） | 单任务实现 / 测试 / Commit / 结构化报告 | 在 SDD/TDD 允许范围内实现；执行定向 + 全量验证；按 TDD §8 Evidence Template 输出报告；Commit（**不 push**） | 不自行进入下一任务；不保存 / 回显密码；不擅自创建 Tag / push；不替用户勾选真机验收项 |
+| QA / Review Agent | 只读审查 | 审查 diff 范围、测试证据、签名风险、范围合规 | 不修改文件；不复审未提供 Evidence 的报告 |
+| 文档 / 追溯角色 | 维护 SDD / TDD / TASK_LEDGER / 验收记录 | 维护任务台账与技术债台账；汇总 MVP / Release 验收基线 | 不混入产品代码改动 |
+
+### 8.2 协作铁律
+
+> 本节与现有第 0 节"执行模式分级"协同使用。Release 阶段默认在 **Level 1 → Level 2** 模式下推进，GPT 首席架构师复审是必经关卡。
+
+1. **同一工作树同一时间只允许一个写入 Agent**：禁止多个 Agent 并发修改 master。任何时刻若发现工作树被未授权修改，Agent 必须**立即停止**并上报用户。
+2. **Reviewer 默认只读**：QA / Review Agent 不得直接修改文件；如发现问题必须以报告形式提交给用户与 GPT 首席架构师。
+3. **每个 Agent 只能修改明确文件所有权**：
+   - Release 执行 Agent 仅修改 `pubspec.yaml` 的 `version` 字段、`android/app/build.gradle`、`android/app/src/main/AndroidManifest.xml`（仅在不破坏 MVP 约束的前提下）、`.gitignore`、文档；
+   - **不**修改产品代码、测试代码、数据库 schema、依赖列表；
+   - 任何超出所有权范围的改动必须先取得 GPT 首席架构师书面授权。
+4. **每个任务独立 Commit**：禁止把多个任务的改动合并为一个 commit。
+5. **不允许 Agent 自行进入下一任务**：每个任务结束后 Agent 必须显式输出"等待 GPT 首席架构师复审"，由用户在复审通过后**手动复制下一个任务 Prompt**给 Agent。
+6. **高风险操作需要用户确认**：
+   - 生成 / 移动 / 删除正式 keystore
+   - 写入 `key.properties`
+   - push 任何分支或 Tag
+   - 创建 / 移动 / 删除 `v0.1.0-mvp` 以外的 Tag
+   - 提交到 Google Play / 任何应用商店
+7. **测试失败不得 Commit**：包括 `flutter analyze` 警告、`flutter test` 失败、产物校验失败中任意一项。
+8. **未经用户确认不得把真机项目写成通过**：Agent 在报告中只能写"待用户在 T023 验收"，不得代写"通过"。
+9. **不得由 Agent 保存或回显密钥密码**：Agent 报告、SDD、TDD、任务台账中**严禁**出现真实密码 / keystore 内容 / 用户目录 / 本机代理配置。
+10. **push 与 Tag 必须由任务明确授权**：Release 阶段所有 push 与 Tag 动作均由用户在 GPT 首席架构师复审通过后手动执行；Agent 仅产出本地 commit。
+11. **发现未知改动立即停止**：Agent 开始任何 Release 任务前必须执行 `git status --short`、`git branch --show-current`、`git rev-parse --short HEAD`、`git log -1 --oneline`、`git remote -v`、`git tag -n1 --list v0.1.0-mvp` 基线核对；若工作树不 clean / 分支不是 master / HEAD 不匹配基线 / 出现未知改动，必须**立即停止**并报告用户。
+12. **使用任务队列 + 交接报告 + GPT 复审关卡**：
+    - 每个任务产出独立的"交接报告"（handoff）由下一个任务读取
+    - 交接报告必须包含"未完成项 / 风险 / 下一步建议"
+13. **三步反思继续作为强制要求**：与现有 `docs/DEVELOPMENT_WORKFLOW.md` 配合，每个 Agent 报告必须包含 `Initial Implementation` / `Self-Critique` / `Final Delivery` 三段。
+
+### 8.3 Release 阶段责任表（简洁版）
+
+| 阶段 / 任务 | 主责 Agent | 必须复核 | 关键交付 | 高风险动作 |
+| --- | --- | --- | --- | --- |
+| T019 设计阶段 | Claude（执行） | GPT 首席架构师 | SDD / TDD / MULTI_AGENT_WORKFLOW / TASK_LEDGER | 无（仅文档） |
+| T020 签名与敏感文件保护 | Claude（执行） | QA Reviewer + GPT 首席架构师 + 用户 | `android/app/build.gradle` + `.gitignore` | ❌ **不生成** keystore / 不写 key.properties |
+| T021 版本元数据 + Release 构建 | Claude（执行） | QA Reviewer + GPT 首席架构师 + 用户（执行构建命令） | `pubspec.yaml` + APK / AAB 产物 | Release 构建命令（用户授权） |
+| T022 产物自动验证 | Claude（执行） | QA Reviewer + GPT 首席架构师 | 校验脚本 + `docs/dev/RELEASE_ARTIFACTS.md` | 无 |
+| T023 真机安装与冒烟 | 用户（主导）+ Claude（产出验收模板） | GPT 首席架构师 | 真机验收报告 | 真机操作（用户） |
+| T024 Release 验收与发布检查点 | Claude（执行） | GPT 首席架构师 + 用户 | `docs/dev/RELEASE_ACCEPTANCE.md` + TASK_LEDGER / TECH_DEBT 更新 | 无 |
+
+### 8.4 Release 阶段任务流
+
+```
+用户 → 复审 T019 报告 → 决定是否进入 T020
+   ↓
+GPT 首席架构师 → 出具 T020 Prompt（明确 keystore / key.properties 决策）
+   ↓
+用户 → 确认决策 + （如必要）提供 keystore 摘要（密码不在 Prompt 内）
+   ↓
+Claude → T020 实现 → 定向验证 → 全量回归 → 自检 → Commit → 输出报告
+   ↓
+QA Reviewer → 只读审查 → 出具审查意见
+   ↓
+GPT 首席架构师 → 复审 → 通过 / 打回
+   ↓
+（通过后）用户 → 决定是否进入 T021
+   ...（T021 → T024 循环）
+   ↓
+T024 通过后 → 用户手动 push + 创建 Tag（不在 Agent 范围）
+```
+
+> **不在本节引入自动化调度**：与现有 §0.3 一致，Level 3 自动化调度（claude-octopus / MCP / 本地 task runner / GitHub Issues 驱动）在 Release 阶段**不实现**，避免引入未验证的自动化风险。
+
+### 8.5 与既有审核流程（§5）的衔接
+
+| 既有审核流程 | Release 阶段额外要求 |
+| --- | --- |
+| 5.1 Chief Architect 审核 | **必须**包含 SDD/TDD 一致性、敏感文件未跟踪、Tag 未被修改、范围未越过 §8.2 第 3 条所有权 |
+| 5.2 QA Review 审核 | **必须**包含 TDD §4 Signing Tests / §5 Artifact Tests / §7 Acceptance Gate 全部通过 |
+| 5.3 Compliance Review 审核 | **必须**确认 Manifest 不出现新增权限、不引入第三方服务、不收集新增用户数据 |
+
+## 9. 文档版本
 
 | 版本 | 日期 | 修改内容 |
 |------|------|----------|
 | 0.1 | 2026-06-19 | 初始版本 |
+| 0.2 | 2026-06-21 | T019 追加：Release 阶段协作机制（§8），明确角色 / 铁律 / 责任表 / 任务流；保留既有 Level 1 → Level 2 → Level 3 分级与 9 个 Agent 角色定义 |

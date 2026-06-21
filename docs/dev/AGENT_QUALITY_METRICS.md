@@ -88,6 +88,23 @@
 > - **Medium**：Reviewer 报告完整但未发现重大问题，仅做规范性检查。
 > - **Low**：Reviewer 报告缺失 / 模糊 / 形式主义，或 Reviewer 自身引入偏差。
 
+### 4.1 T022 Scorecard（首个 Per-Task 实例）
+
+| 字段 | 值 |
+| --- | --- |
+| Task ID | `T022_RELEASE_ARTIFACT_AUTOMATED_VERIFICATION` |
+| Primary Agent | `07-qa-reviewer` |
+| Review Agents | `02-flutter-architect`、`08-compliance-reviewer` |
+| High Risk Areas | 签名证书指纹、构建产物元信息、Manifest 权限声明、`key.properties` / `*.jks` / `*.keystore` 跟踪状态、Release vs Debug 证书区分 |
+| Blockers Found | 0（Flutter Architect Reviewer + Compliance Reviewer 均给 `Approved`，未发现阻断项） |
+| Blockers Valid | 0（无 Blockers） |
+| Fix Commits Required | 0 |
+| Tests Passed | 407（基线保持；新增 / 更新 / 删除 0 / 0 / 0） |
+| Scope Clean | Yes（仅新建 `tool/verify_release_artifacts.dart`、`docs/dev/RELEASE_ARTIFACTS.md`；仅修改 `docs/dev/TASK_LEDGER.md`、`docs/dev/AGENT_QUALITY_METRICS.md`） |
+| Final Approval | 待 GPT 复审 |
+| Collaboration Value | Medium（Flutter Architect + Compliance Reviewer 报告完整、证据具体，但本任务为静态校验脚本，元信息已知，未发现重大缺陷；Reviewer 主要做规范性检查，未拦截真实 Bug） |
+| Notes | Flutter Architect Reviewer 确认脚本自实现 SHA-256 与 `certutil` 输出交叉验证一致；Compliance Reviewer 确认 `android/key.properties` 已 ignore 且未跟踪、产物未被 git 跟踪、文档未泄露敏感信息；两个 Reviewer 均按 `AGENT_REVIEW_TEMPLATE.md` 模板填写 `Scope Reviewed` / `Evidence Checked` / `Findings` / `Blockers` / `Approval`，无"已通过"模糊表述；本任务不进行真机验收，T023 仍由用户执行 |
+
 ## 5. Initial Historical Backfill
 
 > 仅回填**有可靠来源**的历史事实，不虚构未知内容。

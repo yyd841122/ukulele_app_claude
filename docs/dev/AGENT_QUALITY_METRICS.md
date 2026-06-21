@@ -128,6 +128,34 @@
 | Collaboration Value | Medium（仅补录流程事件，无新功能交付；Reviewer 主要验证事实准确性、是否夸大 / 淡化、是否越界修改） |
 | Notes | Chief Architect Reviewer 确认 T022 主结论（产物静态验证通过、APK/AAB 元信息已落盘）保持不变、T022 Scorecard 仅新增违规字段与备注、Scorecard 协作价值未降级；Compliance Reviewer 确认本任务未读取 `android/key.properties` 内容、未记录密码 / keystore 内容 / 用户目录 keystore 路径、未把违规写成密钥泄露 / 产物失败 / T022 不通过、未修改生产代码 / 测试 / 验证脚本 / Release 产物 / 签名配置；详见 `docs/dev/TASK_LEDGER.md` T022A 条目 |
 
+### 4.3 T023 Scorecard（Release 真机安装与冒烟验收）
+
+| 字段 | 值 |
+| --- | --- |
+| Task ID | `T023_RELEASE_DEVICE_INSTALL_AND_SMOKE` |
+| Primary Agent | `07-qa-reviewer` |
+| Review Agents | `03-mobile-ui-engineer`、`08-compliance-reviewer` |
+| High Risk Areas | 真机安装（签名冲突 / 卸载授权 / 数据清除 / 设备型号识别）、用户手工冒烟验收真实性（18 项是否真正由用户逐项确认）、权限弹窗（无 `RECORD_AUDIO` / 无 `INTERNET`）、模拟录音文案不得误导为真实录音、`key.properties` / keystore 路径 / 密码泄露、push / Tag / amend / rebase 越权发布 |
+| Blockers Found | 0（Mobile UI Reviewer + Compliance Reviewer 均给 `Approved`，未发现阻断项） |
+| Blockers Valid | 0（无 Blockers） |
+| Fix Commits Required | 0 |
+| Tests Passed | 407（基线保持；新增 / 更新 / 删除 0 / 0 / 0） |
+| Scope Clean | Yes（仅新建 `docs/dev/RELEASE_DEVICE_ACCEPTANCE.md`；仅修改 `docs/dev/TASK_LEDGER.md` 追加 T023 条目 + `docs/dev/AGENT_QUALITY_METRICS.md` §4.3 新增 T023 Scorecard） |
+| Command discipline violation | **No**（本任务全程命令均为单条命令；`where adb` 失败后用 `ls /d/Program\ Files\ \(x86\)/Android/android-sdk/platform-tools/adb.exe`（单条命令，shell 转义空格括号，非管道 / 非重定向）成功定位 adb；卸载两次返回码异常如实记录，未伪造证据；安装失败 → 安装成功 → 启动验证 → 用户手工验收顺序严格按 T023 Prompt；无管道、无重定向、无 `&&`、无分号、无复合命令） |
+| Device | model=`HUAWEI CDY-AN90`、Android `10` / SDK `29`、serial 后 4 位 `5219`（华为 EMUI 设备，已存在 user 0 / user 128 双用户环境） |
+| Install Mode | 卸载后全新安装（首次 `adb install -r` 报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match` —— 与 T022 一致；用户在第二轮明确回复"确认卸载，允许继续"；卸载两次返回码异常但 `pm list packages` / `pm path` 已查不到包，新 APK 路径与旧路径不同证明卸载生效；后续 `adb install -r` `Success`） |
+| User Uninstall Approval | Yes（用户在 T023 第二轮交互中明确回复"确认卸载，允许继续"） |
+| Release APK Installed | Yes（APK 路径 `build/app/outputs/flutter-apk/app-release.apk`、SHA-256 `3af73cafba05de89d88843075d33d5fe0c5425c129c54c7226a152910a90753b`、58,558,487 bytes、applicationId=`com.yupi.ukulele` / versionName=`1.0.0` / versionCode=`2`、Release 证书 SHA-256 `e88687e53b272c86d20611c1045fc00d2fd4ca321672b1eec180d7543dc28591`） |
+| App Launch Verified | Yes（`mResumedActivity = com.yupi.ukulele/.MainActivity`、`state=RESUMED`、`nowVisible=true`、`pidof com.yupi.ukulele = 5051`、无 ANR / crash） |
+| User Smoke Acceptance | Passed（18 项全部由用户在真机上**逐项确认**：1-17 Passed；18 确认为全新安装；详见 `RELEASE_DEVICE_ACCEPTANCE.md` §User Smoke Acceptance） |
+| Permissions Dialog | None（User confirmed 项 #2、#8；aapt 静态证据仅含 AGP 自动注入的 `com.yupi.ukulele.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`，**未**声明 `RECORD_AUDIO` / `INTERNET`） |
+| Data Clearing Occurred | Yes（卸载会清除 `/data/user/0/com.yupi.ukulele` 私有数据目录；用户在第二轮授权时已接受数据被清除；本次验收**不**证明旧 Debug 数据可迁移到 Release） |
+| Sensitive Files Checked | Yes（`git ls-files android/key.properties` / `*.jks` / `*.keystore` 三项均返回空） |
+| Build Artifacts Tracked | No（`git ls-files build/app/outputs/**` 返回空） |
+| Final Approval | 待 GPT 复审 |
+| Collaboration Value | **High**（Mobile UI Reviewer 确认 18 项覆盖完整性 + 大字体 / 溢出检查独立成项 + 模拟录音文案与 SDD/TDD 一致；Compliance Reviewer 在签名不兼容的关键高风险点上独立审查了用户授权证据链（"确认卸载，允许继续"），确认未读取 `key.properties` 内容、未记录 keystore 路径 / 密码、未 push / Tag / amend / rebase / reset --hard；两个 Reviewer 报告均按 `AGENT_REVIEW_TEMPLATE.md` 模板填写 `Scope Reviewed` / `Evidence Checked` / `Findings` / `Blockers` / `Approval`，无"已通过"模糊表述；协作机制把"用户手工验收"严格隔离为 `User confirmed` 来源、把"启动 / 安装"隔离为 `adb observed` 来源，避免 Agent 代写"通过"；Chief Architect 范围守卫确认 diff 仅含允许文件） |
+| Notes | Mobile UI Reviewer 重点确认冒烟项 #3-#14 覆盖首页 / 和弦 / 单音 / 节拍器 / 调音器 / 录音 / 记录 / 设置等主要页面、冒烟项 #15 独立要求用户确认大字体 / 溢出检查、模拟录音文案与 SDD/TDD 一致未误导为真实录音；Compliance Reviewer 重点确认用户在签名不兼容时已明确授权（"确认卸载，允许继续"）、卸载在授权后执行、未自动卸载或清除数据、未读取 `key.properties` 内容、未记录 keystore 路径 / 密码、未声称真实录音已实现、未 push / Tag / amend / rebase / reset --hard；T023 涉及的高风险命令纪律项（卸载 / 安装 / 启动验证 / 用户验收）均严格执行单条命令纪律，未触发 T022A 记录的命令纪律违规模式（管道 / 重定向 / 输出截断 helper / 复合）；详见 `docs/dev/TASK_LEDGER.md` T023 条目 + `docs/dev/RELEASE_DEVICE_ACCEPTANCE.md` 全文 |
+
 ## 5. Initial Historical Backfill
 
 > 仅回填**有可靠来源**的历史事实，不虚构未知内容。

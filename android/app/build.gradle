@@ -5,6 +5,85 @@ plugins {
     id "dev.flutter.flutter-gradle-plugin"
 }
 
+// --- T020: Android release signing guard ------------------------------------
+// The release build reads its signing material from `android/key.properties`,
+// which is owned by the local developer (never committed). When a release
+// task is requested and the file is missing, incomplete, or references a
+// keystore that does not exist on disk, the build fails fast with a clear
+// message instead of silently falling back to the debug key.
+//
+// Debug builds (assembleDebug, flutter run, flutter test, flutter analyze)
+// must remain unaffected by the presence or absence of key.properties.
+//
+// In a standard Flutter Android project the Gradle rootProject is the
+// `android/` directory itself, so `key.properties` and the keystore sit at
+// `<rootProject>/key.properties` and `<rootProject>/<storeFile>` respectively.
+def releaseSigningRequested() {
+    def requested = gradle.startParameter.taskNames ?: []
+    return requested.any { String name ->
+        // Match `assembleRelease`, `bundleRelease`, `packageRelease`,
+        // `:app:assembleRelease`, Flutter task names that fan out to those, etc.
+        // Case-insensitive to tolerate platform-specific Gradle task casing.
+        name.toLowerCase().contains("release")
+    }
+}
+
+def loadReleaseSigningProps(File androidRootDir) {
+    def propsFile = new File(androidRootDir, "key.properties")
+    if (!propsFile.exists()) {
+        throw new GradleException(
+                "Android release signing is requested but " + propsFile.path +
+                        " is missing. Create android/key.properties with the keys " +
+                        "[storeFile, storePassword, keyAlias, keyPassword] pointing " +
+                        "to your upload keystore. The file must be kept out of version " +
+                        "control (see .gitignore)."
+        )
+    }
+    def props = new Properties()
+    propsFile.withInputStream { stream -> props.load(stream) }
+    return props
+}
+
+def requiredKeyOrFail(Properties props, String key) {
+    def value = props.getProperty(key)
+    if (value == null || value.trim().isEmpty()) {
+        throw new GradleException(
+                "Android release signing is requested but android/key.properties is " +
+                        "missing the required key '" + key + "'. Refusing to fall back " +
+                        "to debug signing. Provide a non-empty value for '" + key + "'."
+        )
+    }
+    return value
+}
+
+// Validate the release signing configuration up front when a release task is
+// requested. Doing this at script-evaluation time (not inside the android
+// block) means the failure surfaces before any plugin / variant has been
+// configured, keeping the error message clear and unrelated to signingConfigs.
+def releaseSigningProps = null
+if (releaseSigningRequested()) {
+    def androidRootDir = rootProject.projectDir
+    def signingProps = loadReleaseSigningProps(androidRootDir)
+    def storeFilePath = requiredKeyOrFail(signingProps, "storeFile")
+    requiredKeyOrFail(signingProps, "storePassword")
+    requiredKeyOrFail(signingProps, "keyAlias")
+    requiredKeyOrFail(signingProps, "keyPassword")
+
+    def keystoreFile = new File(androidRootDir, storeFilePath)
+    if (!keystoreFile.exists()) {
+        throw new GradleException(
+                "Android release signing is requested but the keystore referenced by " +
+                        "android/key.properties (storeFile='" + storeFilePath +
+                        "') does not exist on disk. Refusing to fall back to debug " +
+                        "signing."
+        )
+    }
+    releaseSigningProps = signingProps
+    // Intentionally do NOT echo storePassword / keyPassword / keyAlias to any
+    // log; only the resolved file path is included above, and the keystore
+    // existence check provides the actionable signal to the developer.
+}
+
 android {
     namespace = "com.yupi.ukulele"
     compileSdk = flutter.compileSdkVersion
@@ -28,11 +107,34 @@ android {
         versionName = flutter.versionName
     }
 
+    if (releaseSigningProps != null) {
+        // Props have already been validated at script-evaluation time. Reuse
+        // the parsed map to wire signingConfigs.release.
+        def androidRootDir = rootProject.projectDir
+        def storeFilePath = releaseSigningProps.getProperty("storeFile")
+        def storePassword = releaseSigningProps.getProperty("storePassword")
+        def keyAlias = releaseSigningProps.getProperty("keyAlias")
+        def keyPassword = releaseSigningProps.getProperty("keyPassword")
+
+        signingConfigs {
+            release {
+                storeFile new File(androidRootDir, storeFilePath)
+                storePassword storePassword
+                keyAlias keyAlias
+                keyPassword keyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.debug
+            // T020: release must NOT unconditionally fall back to the debug
+            // signing config. When a release task is requested, key.properties
+            // has already been validated by the guard at the top of this
+            // file, and signingConfigs.release is registered above. When no
+            // release task is requested, we keep the existing debug behavior
+            // for build types that reference it (e.g. IDE inspections).
+            signingConfig = releaseSigningProps != null ? signingConfigs.release : signingConfigs.debug
         }
     }
 }

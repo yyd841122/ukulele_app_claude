@@ -712,7 +712,7 @@
   - `v0.1.0-mvp` 仍指向 `d49ce4b`、`v1.0.0-release` 仍指向 `703d2aa`；
   - 全文搜索 `audio_file_storage_paths.dart` / `audio_file_storage_service.dart` / 测试文件确认未出现 `key.properties` 内容 / 密码 / keystore 内容 / 用户目录 keystore 绝对路径；
   - 默认生产 root provider 使用 `getApplicationDocumentsDirectory()/audio`（app 私有文档目录），**不**使用外部共享目录；
-  - `deleteIfExists` 接受 `rootDirectory` 参数并执行 `_isPathInsideRoot` 校验，root 外路径 + root 自身 + `..` 路径逃逸全部抛 `ArgumentError`；
+  - `deleteIfExists` 接受 `rootDirectory` 参数并执行 `_isPathInsideRoot` 校验：root 外已存在文件 + `..` 路径逃逸抛 `ArgumentError`；root 目录被 `File(rootDirectory.path)` 包装时按"文件不存在"处理（`File.exists()` 对目录路径返回 `false`），返回 `false` 且 **不** 删除 root 目录；
   - `cleanupTempFiles` 接受 `tempDirectory` + `rootDirectory` 两个参数并执行 `_isCanonicalChild` 校验，root 外 temp 抛 `ArgumentError`，仅清理白名单扩展名（`m4a` / `aac` / `wav`）顶层文件，**不**删 saved、**不**删目录；
   - `isPathInsideRoot` 公开方法供 Controller / Repository 防御性校验；
   - `AndroidManifest.xml` 三处清单均未修改（**未**新增 `INTERNET`、**未**新增任何权限）；
@@ -748,7 +748,7 @@
   - 既有的 421 项测试 100% 保留（实际 444 通过 = 421 既有 + 23 新增）；
 - **Findings**：
   - 测试数从 421 增至 444（+23），既有 421 项测试 100% 保留，**无**测试减少；
-  - 测试覆盖完整：8 个 API 全部覆盖 + 文件名片段校验覆盖空 / 点 / 点点 / 斜杠 / 反斜杠 / 空格 + 扩展名校验覆盖空 / 点 / 斜杠 / 反斜杠 / 空格 / 超长 + 路径逃逸防护覆盖 root 外文件拒绝 + root 外 temp 拒绝 + root 自身拒绝 + `..` 路径拒绝 + 子目录不删 + saved 不删 + 白名单扩展名清理；
+  - 测试覆盖完整：8 个 API 全部覆盖 + 文件名片段校验覆盖空 / 点 / 点点 / 斜杠 / 反斜杠 / 空格 + 扩展名校验覆盖空 / 点 / 斜杠 / 反斜杠 / 空格 / 超长 + 路径逃逸防护覆盖 root 外文件拒绝 + root 外 temp 拒绝 + root 被 `File` 包装时按文件不存在处理（`deleteIfExists` 返回 `false`，root 目录仍存在）+ `..` 路径拒绝 + 子目录不删 + saved 不删 + 白名单扩展名清理；
   - 测试不触发真实系统权限弹窗（fake provider 注入，与 `REAL_AUDIO_MVP_TDD.md` §1.1 File storage tests 一致）；
   - 测试不调用麦克风（仅 IO 文件操作，与 `REAL_AUDIO_MVP_TDD.md` §5 Test Gaps 9 项一致）；
   - `flutter analyze` 通过，无新警告；
@@ -759,6 +759,95 @@
 - **Non-blocking Suggestions**：
   - 当前 23 项测试全部用 `_IsolatedRootProvider` + `Directory.systemTemp.createTempSync()` 注入隔离；如未来 T029 录音服务需要测试与 file storage service 协同，可考虑抽出共享 `_IsolatedRootProvider` 到 `test/shared/services/test_helpers/`；本任务**不**强制抽取（避免过度抽象）；
   - `dayDirectory` 字段当前不可空但未在 `ensureDirectories` 内填充；如未来需要清理当日临时目录，建议 T029 / T030 隔离 spike 中实测 `record` 实际输出路径后追加 `dayDirectory` 填充逻辑；
+- **Approval**：**Approved**
+
+### 4.9 T028A Scorecard（音频文件存储 root 删除契约文档校准）
+
+| 字段 | 值 |
+| --- | --- |
+| Task ID | `T028A_FIX_AUDIO_STORAGE_ROOT_DELETE_CONTRACT_DOCS` |
+| Primary Agent | `06-local-data-engineer`（T028 实施者；本任务仅修正 T028 文档删除契约表述） |
+| Review Agents | `07-qa-reviewer`（只读审查：文档删除契约是否与代码 / 测试一致；测试数 / commit hash / 功能结论是否未被改变）、`08-compliance-reviewer`（只读审查：是否未误写为安全漏洞 / 是否未泄露路径或敏感文件 / 是否未越界修改 / 是否未读取 `key.properties` 内容） |
+| High Risk Areas | 文档契约准确性（root 自身 + root 外 + `..` 路径逃逸行为表述校准）/ 删除语义（root 被 `File` 包装时返回 `false` vs 抛 `ArgumentError`）/ 路径逃逸（root 外文件 + `..` 抛 `ArgumentError`，root 自身**不**抛）/ 未完成能力误写（不得把 T028 写成失败 / 不得把文档不一致夸大为安全事故）/ 越界修改（不得修改生产代码 / 测试代码 / 依赖 / 权限 / 既有未授权文档）/ 越权发布（push / Tag / amend / rebase / reset --hard 全部禁止 / 不开始 T029） |
+| Blockers Found | 0（QA Reviewer 与 Compliance Reviewer 均按 `AGENT_REVIEW_TEMPLATE.md` 只读审查并给 Approved，详见下文 §4.9.1 ~ §4.9.2 Reviewer 报告段与 `TASK_LEDGER.md` T028A 条目 Reviewer 报告段） |
+| Blockers Valid | 0（无 Blockers） |
+| Fix Commits Required | 0 |
+| Tests Passed | 444（基线 T028 保持不变；新增 / 更新 / 删除 0 / 0 / 0；T028A 不修改任何测试代码） |
+| Scope Clean | Yes（仅修改三个允许文档：`docs/dev/AGENT_QUALITY_METRICS.md`（§4.8.3 Compliance Reviewer Evidence 段 + §4.8.4 QA Reviewer Findings 段 + §4.9 新增 T028A Scorecard）+ `docs/dev/TASK_LEDGER.md`（T028 条目遗留说明中 `deleteIfExists` 描述与测试覆盖列表校准 + 追加 T028A 条目 + 追加 T029 占位条目）+ `docs/dev/TECH_DEBT.md`（TD-007 中 T028 描述校准为准确删除契约 + T028A 文档契约校准备注）） |
+| Command discipline violation | **No**（本任务全程命令均为单条命令：`git status --short` / `git branch --show-current` / `git rev-parse --short HEAD` / `git log -1 --oneline` / `git tag -n1 --list v0.1.0-mvp` / `git tag -n1 --list v1.0.0-release` / `git rev-parse --short v0.1.0-mvp^{commit}` / `git rev-parse --short v1.0.0-release^{commit}` / `git ls-files ...` / `flutter analyze` / `flutter test` / `flutter test test/shared/services/audio_file_storage_service_test.dart` / `grep` / `Read` / `Edit` 等只读或允许写命令；无管道、无重定向、无 `&&`、无分号、无复合命令；与 T023 / T024 / T025 / T026 / T027 / T028 表现一致） |
+| Sensitive Files Checked | Yes（`git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/flutter-apk/app-release.apk` / `build/app/outputs/bundle/release/app-release.aab` 五项均返回空；`v0.1.0-mvp` 仍指向 `d49ce4b` 未变；`v1.0.0-release` 仍指向 `703d2aa` 未变；新文档未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；未读取 `key.properties` 内容） |
+| Build Artifacts Tracked | No（`git ls-files build/app/outputs/**` 返回空） |
+| Dependency Modified | **No**（`pubspec.yaml` / `pubspec.lock` 未被修改；`record` / `just_audio` / `audio_session` / `audioplayers` / `flutter_sound` 均未引入） |
+| Permissions Modified | **No**（`AndroidManifest.xml` 三处清单均未修改；`RECORD_AUDIO` / `INTERNET` / 其他权限均未在本任务变更） |
+| Real Audio Implementation Started | **No**（仅文档契约校准；`AudioRecorderService` / `AudioPlaybackService` / `RecordingPracticeController` 真实音频状态机均未实现；`RECORD_AUDIO` 已被 Manifest 声明但 Controller 尚未调用 `requestPermission`；PracticeRecord `audioFilePath` 仍为 `null`） |
+| Production Code Modified | **No**（`lib/shared/services/audio_file_storage_service.dart` / `audio_file_storage_paths.dart` 未被修改；service 文件 `deleteIfExists` 实现保持 `if (!await file.exists()) return false;` 在前、`_isPathInsideRoot` 校验在后的既有顺序） |
+| Tests Modified | **No**（`test/shared/services/audio_file_storage_service_test.dart` 未被修改；23 项测试覆盖保持不变） |
+| Contract Corrected | Yes（基于 `lib/shared/services/audio_file_storage_service.dart` 实际代码 + `test/shared/services/audio_file_storage_service_test.dart` 实际测试行为，把 `deleteIfExists` 处理 root 自身的契约从"root 自身抛 `ArgumentError`"校准为"root 目录被 `File(rootDirectory.path)` 包装时按文件不存在处理（`File.exists()` 对目录路径返回 `false`），返回 `false`，root 目录仍存在"） |
+| Actual `deleteIfExists` Behavior | 文件不存在 → 返回 `false`（不抛错）；root 目录被 `File(rootDirectory.path)` 包装 → `File.exists()` 返回 `false` → 按文件不存在处理 → 返回 `false`（root 目录仍存在）；root 外已存在文件 → 抛 `ArgumentError`；`..` 路径逃逸 → 抛 `ArgumentError` |
+| Path Escape Behavior | `deleteIfExists`：root 外已存在文件 + `..` 路径逃逸抛 `ArgumentError`；root 自身按文件不存在处理返回 `false`；`cleanupTempFiles`：root 外 temp 目录抛 `ArgumentError`；temp 内白名单扩展名顶层文件正常清理；**安全目标**：root 不会被删除、root 外文件不会被删除 |
+| Tests Added/Updated/Deleted | Added: 0；Updated: 0；Deleted: 0 |
+| Exact Test Count | 444 |
+| Final Approval | 待 GPT 复审 |
+| Collaboration Value | **High**（T029 前置检查（真实依赖 T028 删除契约时必然会复用 T028 服务 + 调用 `deleteIfExists`）成功拦截了 T028 文档与代码 / 测试之间的契约不一致，避免 T029 在错误契约基础上实现"删除 / 清理 / 异常处理"逻辑；本任务选择"文档校准"而非"代码修改"路径，保护 T028 既有的 444 测试通过 / 23 项新增测试 / `flutter analyze` 无问题；多 Agent 质量机制（QA Reviewer + Compliance Reviewer + Chief Architect 范围守卫）在 T029 前置阶段有效发现并阻断了潜在的"按错误文档实现删除流程"风险，避免后续 T029+ 在错误契约基础上叠加错误逻辑） |
+| Notes | QA Reviewer 重点确认：① 文档删除契约与代码 / 测试行为一致（root 目录被 `File` 包装时返回 `false` 而非抛 `ArgumentError`）；② root 外已存在文件 + `..` 路径逃逸抛 `ArgumentError` 语义清楚；③ 没有把 T028 写成失败；④ 没有修改测试或生产代码；⑤ 444 测试仍通过（既有测试未减少）；⑥ 命令纪律无违规；⑦ T028A 文档表述校准与 `lib/shared/services/audio_file_storage_service.dart` 第 198-221 行 `deleteIfExists` 实现 + `test/shared/services/audio_file_storage_service_test.dart` 第 393-420 行 "refuses to delete the root directory itself" 测试断言完全一致（期望 `result == false` + `paths.rootDirectory.existsSync() == isTrue`）。Compliance Reviewer 重点确认：① 未读取 `key.properties` 内容、未泄露密码、未记录 keystore 内容 / 路径；② 未把文档不一致写成安全事故（错误表述仅是文档措辞不准确，不涉及安全漏洞 / 不涉及生产代码 / 不涉及实际行为偏差）；③ 未声称真实录音已实现、未声称麦克风权限已加入、未声称应用商店已提交；④ 未 push、未 Tag、未 amend / rebase / reset --hard；⑤ 未修改权限或依赖；⑥ 未越界修改（diff 范围 ⊆ 三个允许文档）；⑦ 未记录任何 keystore 内容 / 用户目录 keystore 绝对路径 / 密码字面量；⑧ 未把"root 自身不抛 `ArgumentError`"误写成"安全漏洞"或"权限泄露"；⑨ 未把 T028 写成失败（T028 仍然是"音频文件存储基础层完成、真实录音仍未开始"）；本任务全程命令纪律严格执行，未触发 T022A 记录的命令纪律违规模式（管道 / 重定向 / 输出截断 helper / 复合），与 T023 / T024 / T025 / T026 / T027 / T028 表现一致；详见 `docs/dev/TASK_LEDGER.md` T028A 条目 + `docs/dev/TECH_DEBT.md` TD-007 备注 |
+
+#### 4.9.1 QA Reviewer（07-qa-reviewer）只读审查
+
+- **Reviewer Role**：`07-qa-reviewer`
+- **Scope Reviewed**：`docs/dev/AGENT_QUALITY_METRICS.md` §4.8.3 Compliance Reviewer Evidence 段 + §4.8.4 QA Reviewer Findings 段 + §4.9 T028A Scorecard；`docs/dev/TASK_LEDGER.md` T028 条目遗留说明 + T028A 条目 + T029 占位条目；`docs/dev/TECH_DEBT.md` TD-007 描述；既有 `lib/shared/services/audio_file_storage_service.dart` `deleteIfExists` 实现 + `test/shared/services/audio_file_storage_service_test.dart` "refuses to delete the root directory itself" 测试断言
+- **Evidence Checked**：
+  - `git status --short` 工作树（Commit 前）显示仅有三个允许文件改动；
+  - `git diff --check` 无空白错误；
+  - `lib/shared/services/audio_file_storage_service.dart` 第 198-221 行 `deleteIfExists` 实现：`if (!await file.exists()) return false;` 在 `_isPathInsideRoot` 校验之前；这意味着 root 自身被 `File(rootDirectory.path)` 包装时，`File.exists()` 对目录路径返回 `false`，走"文件不存在"分支返回 `false`，**不**抛 `ArgumentError`；
+  - `test/shared/services/audio_file_storage_service_test.dart` 第 393-420 行 "refuses to delete the root directory itself" 测试断言：`expect(result, isFalse)` + `expect(paths.rootDirectory.existsSync(), isTrue)` — 完全验证"root 被 `File` 包装时按文件不存在处理，root 目录仍存在"的实际行为；
+  - `test/shared/services/audio_file_storage_service_test.dart` 第 422-458 行 "refuses root-outside path even when wrapped as File" 测试断言：`throwsA(isA<ArgumentError>())` + `expect(outsideFile.existsSync(), isTrue)` — 验证"root 外文件 + `..` 路径逃逸抛 `ArgumentError`"的实际行为；
+  - `test/shared/services/audio_file_storage_service_test.dart` 第 541-574 行 "refuses to clean up temp directory outside of root" 测试断言：`throwsA(isA<ArgumentError>())` — 验证"`cleanupTempFiles` 对 root 外 temp 目录抛 `ArgumentError`"的实际行为；
+  - `flutter analyze` `No issues found!`、`flutter test` `All tests passed!`（444 tests passed）；
+  - `flutter test test/shared/services/audio_file_storage_service_test.dart` `00:00 +23: All tests passed!`；
+  - 既有 444 项测试覆盖保持不变（T028A 不修改任何测试代码）；
+  - T028A 文档表述校准后，`deleteIfExists` 契约描述与代码第 198-221 行 + 测试第 393-420 行 / 第 422-458 行完全一致；
+- **Findings**：
+  - T028A 准确校准了 T028 文档中关于 `deleteIfExists` 处理 root 自身的错误表述；
+  - root 自身被 `File` 包装时按"文件不存在"处理返回 `false`（与代码 + 测试一致），与"root 外文件 + `..` 路径逃逸抛 `ArgumentError`"形成清晰对比；
+  - 没有把 T028 写成失败（T028 仍然是音频文件存储基础层完成，真实录音仍未开始）；
+  - 既有 444 项测试 100% 保留（T028A 不新增 / 修改 / 删除任何测试）；
+  - 命令纪律严格执行（全程单条命令，无管道 / 重定向 / `&&` / 分号 / 复合命令）；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - 未来 T029 / T030 任务实现录音 / 播放服务时，可在 `deleteIfExists` 调用前后显式调用 `isPathInsideRoot` 做防御性校验，与既有 `AudioFileStorageService` 公开方法契约一致；本任务**不**强制此设计；
+  - 未来 T033 任务实现 UI 文案时，可在"删除录音"按钮的 disabled 文案中提示"root 目录不可删除"，与既有 §4.8 Scorecard 中 Compliance Reviewer 建议一致；
+- **Approval**：**Approved**
+
+#### 4.9.2 Compliance Reviewer（08-compliance-reviewer）只读审查
+
+- **Reviewer Role**：`08-compliance-reviewer`
+- **Scope Reviewed**：三个允许文档（T028A 改动范围）；既有 `lib/shared/services/audio_file_storage_service.dart` `deleteIfExists` 实现 + `cleanupTempFiles` 实现；既有 `docs/dev/REAL_AUDIO_MVP_SDD.md` §3 Permission and Privacy / §4 Audio File Lifecycle + `docs/dev/TECH_DEBT.md` TD-007 / TD-010 / TD-011 / TD-012 / TD-013
+- **Evidence Checked**：
+  - `git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 五项均返回空；
+  - `v0.1.0-mvp` 仍指向 `d49ce4b`、`v1.0.0-release` 仍指向 `703d2aa`；
+  - 全文搜索三个允许文档确认未出现 `key.properties` 内容 / 密码 / keystore 内容 / 用户目录 keystore 绝对路径；
+  - 全文搜索三个允许文档确认未出现"安全漏洞 / 权限泄露 / 密钥泄露 / 危险代码"等夸大为安全事故的表述；
+  - 全文搜索三个允许文档确认未出现"真实录音已实现 / 麦克风权限已加入 / 应用商店已提交"等未完成能力表述；
+  - §4.9 T028A Scorecard Notes 明确"未把 T028 写成失败 / 未把文档不一致夸大为安全事故 / 未声称真实录音已实现"；
+  - `lib/shared/services/audio_file_storage_service.dart` 默认生产 root provider 使用 `getApplicationDocumentsDirectory()/audio`（app 私有文档目录），**不**使用外部共享目录；
+  - `AndroidManifest.xml` 三处清单均未修改（**未**新增 `INTERNET`、**未**新增任何权限）；
+  - T028A **未**读取 `key.properties` 内容、**未**记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；
+  - T028A **未** push、未 Tag、未 amend / rebase / reset --hard；
+- **Findings**：
+  - T028A 仅修正文档表述，不涉及安全漏洞 / 权限泄露 / 密钥泄露 / 危险代码；
+  - 文档不一致属于"措辞不准确"，**不**构成安全事故：实际代码 + 测试行为一致（root 目录被 `File` 包装时按文件不存在处理），仅文档表述与该行为有偏差；
+  - 默认生产 root provider 使用 `getApplicationDocumentsDirectory()/audio`（app 私有文档目录），与既有 `REAL_AUDIO_MVP_SDD.md` §4.1 候选 A（推荐）一致；
+  - 不使用外部共享目录（`/storage/emulated/0/Music` 等）、不使用公共 Downloads / Music / DCIM，与既有 SDD §3.3 无 INTERNET 原则 + §4.1 候选 A 一致；
+  - 路径逃逸防护保留（root 外文件 + `..` 抛 `ArgumentError` + `cleanupTempFiles` 对 root 外 temp 抛 `ArgumentError`）；
+  - 未新增 `INTERNET` 权限（三处 Manifest 未变更）；
+  - 未新增任何权限（仅复用 T027 已声明的 `RECORD_AUDIO`）；
+  - 未声称真实录音已实现；
+  - 未读取 `key.properties` 内容、未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；
+  - 未 push、未 Tag、未 amend / rebase / reset --hard；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - 未来 T033 任务可在 `PrivacyNoticePage` 中明确说明"音频文件保存到 App 私有目录（`<docs>/audio`），其他应用无法访问"，与既有 SDD §3.6 一致；
+  - 本任务 T028A 文档契约校准完成；建议 T029 / T030 / T032 等后续任务执行前在 Primary Agent Findings 中显式引用"deleteIfExists 仅允许删除 root 之下普通文件 + root 外文件抛 `ArgumentError` + root 被 File 包装返回 false"的契约，避免后续任务再次出现表述不一致；
 - **Approval**：**Approved**
 
 ## 6. Review Cadence

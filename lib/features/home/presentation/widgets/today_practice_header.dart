@@ -73,15 +73,6 @@ class TodayPracticeHeader extends StatelessWidget {
               color: theme.colorScheme.onPrimaryContainer,
             ),
           ),
-          const SizedBox(height: 8),
-          Text(
-            'T007 临时实现：installDate 后续由 T013 本地设置持久化。',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onPrimaryContainer.withValues(
-                alpha: 0.7,
-              ),
-            ),
-          ),
         ],
       ),
     );

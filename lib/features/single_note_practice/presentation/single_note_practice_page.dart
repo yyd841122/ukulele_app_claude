@@ -165,6 +165,21 @@ class _Progress extends StatelessWidget {
 }
 
 /// Row of three actions: prev, toggle-practiced, next.
+///
+/// T015C_FIX_DEVICE_COPY_AND_LARGE_TEXT_LAYOUT scope:
+/// - The previous single-row `Row` with `Expanded` buttons wrapped
+///   vertically ("上/一/个") at 320px width with
+///   `textScaler = 1.4` because each Chinese label was forced into
+///   ~1/4 of the screen width and Flutter broke it character by
+///   character. To keep the labels horizontally readable on every
+///   supported screen, the controls are now stacked into two rows:
+///     * Top row: prev / next (icon + short label, 1:1).
+///     * Bottom row: the primary "toggle practiced" action as a
+///       full-width button.
+///   This layout is intentionally simple — it stays readable at
+///   320px × 1.4 text scale and on tablets alike, and it never
+///   has to choose between shrinking the label or letting it
+///   wrap mid-word.
 class _Controls extends StatelessWidget {
   const _Controls({
     required this.state,
@@ -181,30 +196,37 @@ class _Controls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool isPracticed = state.isCurrentPracticed;
-    return Row(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        Expanded(
-          child: OutlinedButton.icon(
-            onPressed: onPrevious,
-            icon: const Icon(Icons.chevron_left),
-            label: const Text('上一个'),
-          ),
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: onPrevious,
+                icon: const Icon(Icons.chevron_left),
+                label: const Text('上一个', maxLines: 1, softWrap: false),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: onNext,
+                icon: const Icon(Icons.chevron_right),
+                label: const Text('下一个', maxLines: 1, softWrap: false),
+              ),
+            ),
+          ],
         ),
-        const SizedBox(width: 12),
-        Expanded(
-          flex: 2,
-          child: FilledButton.icon(
-            onPressed: onTogglePracticed,
-            icon: Icon(isPracticed ? Icons.check_circle : Icons.check),
-            label: Text(isPracticed ? '取消已练习' : '标记已练习'),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: OutlinedButton.icon(
-            onPressed: onNext,
-            icon: const Icon(Icons.chevron_right),
-            label: const Text('下一个'),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          onPressed: onTogglePracticed,
+          icon: Icon(isPracticed ? Icons.check_circle : Icons.check),
+          label: Text(
+            isPracticed ? '取消已练习' : '标记已练习',
+            maxLines: 1,
+            softWrap: false,
+            overflow: TextOverflow.visible,
           ),
         ),
       ],

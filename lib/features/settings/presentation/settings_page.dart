@@ -18,7 +18,7 @@ class SettingsPage extends StatelessWidget {
         children: <Widget>[
           const _Section(
             title: '默认设置',
-            child: Text('节拍器默认 BPM（80）、节拍器音量将在后续任务接入。'),
+            child: Text('节拍器默认速度为 80 BPM。'),
           ),
           const SizedBox(height: 16),
           const _Section(

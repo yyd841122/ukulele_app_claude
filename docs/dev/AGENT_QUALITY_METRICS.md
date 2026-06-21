@@ -379,6 +379,137 @@
 
 > 详细路由见 `docs/dev/AGENT_ROUTING_MATRIX.md` §6 Future Audio MVP Routing；T026-T037 任务边界以 GPT 首席架构师独立 Prompt 为准。
 
+### 4.6 T026 Scorecard（真实音频依赖研究 Spike）
+
+| 字段 | 值 |
+| --- | --- |
+| Task ID | `T026_REAL_AUDIO_DEPENDENCY_RESEARCH_SPIKE` |
+| Primary Agent | `04-audio-engineer`（依赖候选评估 / 版本兼容性 / 平台要求 / 风险与推荐组合主导） |
+| Review Agents | `02-flutter-architect`（Flutter / Dart / Android 工程边界 / pubspec 未修改 / 后续接入路径审查）、`08-compliance-reviewer`（权限与隐私 / 无 INTERNET 原则 / 官方文档引用 / 未完成能力表述 / 敏感文件边界审查）、`07-qa-reviewer`（Spike 结论可验证性 / 后续测试策略 / T027-T036 路径审查）、`06-local-data-engineer`（path_provider / 文件路径 / 后续 Drift 记录与文件生命周期一致性审查） |
+| High Risk Areas | 依赖选型（`record` 7.1.0 / `just_audio` 0.10.5 / `permission_handler` 12.0.3 / `path_provider` 2.1.6 / `audio_session` 0.2.3 / `audioplayers` 6.7.1 / `flutter_sound` 9.30.0 候选评估）、官方文档准确性（Context7 + pub.dev WebFetch 双向验证）、权限影响（`RECORD_AUDIO` 加入时机 / `INTERNET` 不得声明 / iOS `NSMicrophoneUsageDescription` 预留）、平台兼容（`minSdk = 24` / `compileSdk = 36` / Flutter 3.44.2 / Dart 3.12.2 / JDK 17）、未完成能力误写（不得把"Spike 完成"写成"已添加依赖" / 不得把候选版本写成已写入 `pubspec.yaml`）、敏感文件边界（不读取 `key.properties` 内容 / 不记录密码 / keystore 内容 / 用户目录 keystore 绝对路径）、命令纪律（单条命令 / 无管道 / 无重定向 / 无 `&&` / 无分号 / 无复合）、越权（push / Tag / amend / rebase / reset --hard 全部禁止 / 不修改 `pubspec.yaml` / `pubspec.lock` / AndroidManifest.xml / Drift schema） |
+| Blockers Found | 0（四个 Reviewer 均按 `AGENT_REVIEW_TEMPLATE.md` 只读审查，未发现阻断项；详见下文 §4.6.1 ~ §4.6.4 Reviewer 报告段与 `TASK_LEDGER.md` T026 条目 Reviewer 报告段） |
+| Blockers Valid | 0（无 Blockers） |
+| Fix Commits Required | 0 |
+| Tests Passed | 407（基线保持；新增 / 更新 / 删除 0 / 0 / 0；本任务不新增测试代码、不运行 build_runner、不构建 APK / AAB、不修改任何依赖） |
+| Scope Clean | Yes（仅新建 `docs/dev/REAL_AUDIO_DEPENDENCY_SPIKE.md`；仅修改 `docs/dev/TASK_LEDGER.md` 追加 T026 条目 + `docs/dev/TECH_DEBT.md` 校准 TD-007 / TD-010 + 新增 TD-013 + `docs/dev/AGENT_QUALITY_METRICS.md` §4.6 追加 T026 Scorecard） |
+| Command discipline violation | **No**（本任务全程命令均为单条命令：`git status --short` / `git branch --show-current` / `git rev-parse --short HEAD` / `git log -1 --oneline` / `git remote -v` / `git tag -n1 --list v0.1.0-mvp` / `git tag -n1 --list v1.0.0-release` / `git rev-parse --short v0.1.0-mvp^{commit}` / `git rev-parse --short v1.0.0-release^{commit}` / `git ls-files ...` / `git grep "7038d2aa"` / `flutter analyze` / `flutter test` / `Read` / `Write` / `Edit` / Context7 `mcp__context7__resolve-library-id` / `mcp__context7__query-docs` / WebFetch 等只读或允许写命令；无管道、无重定向、无 `&&`、无分号、无复合命令） |
+| Sensitive Files Checked | Yes（`git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/flutter-apk/app-release.apk` / `build/app/outputs/bundle/release/app-release.aab` 五项均返回空；`v0.1.0-mvp` 仍指向 `d49ce4b` 未变；`v1.0.0-release` 仍指向 `703d2aa` 未变；`git grep "7038d2aa"` 0 命中，笔误检查通过；新文档未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径） |
+| Build Artifacts Tracked | No（`git ls-files build/app/outputs/**` 返回空） |
+| Dependency Modified | **No**（`pubspec.yaml` / `pubspec.lock` 未被修改；`record` / `just_audio` / `permission_handler` / `audio_session` / `audioplayers` / `flutter_sound` 均未引入；仅 `path_provider ^2.1.6` 已存在） |
+| Permissions Modified | **No**（`AndroidManifest.xml` 三处清单均未修改；`RECORD_AUDIO` / `INTERNET` / 其他权限均未声明） |
+| Real Audio Implementation Started | **No**（仅研究候选；`AudioRecorderService` / `AudioPlaybackService` / `PermissionService` / `AudioFileStorageService` 均未实现；`RECORD_AUDIO` 未申请） |
+| Final Approval | 待 GPT 复审 |
+| Collaboration Value | **Medium**（四个 Reviewer 均按模板只读审查并给 Approved；本任务为依赖研究 / Spike，证据来自 Context7 + pub.dev WebFetch 双向验证，未发现重大缺陷；Reviewer 主要做规范性检查 + 范围守卫 + 依赖选型完整性核对 + 未完成能力表述隔离 + 敏感信息未泄露确认 + 路径与文件生命周期一致性 + 测试策略隔离边界确认，未拦截真实 Bug；与 T022 / T024 / T025 类似属于"偏流程化 + 文档设计审查"，但仍是真实音频阶段必经的"依赖选型门禁"，避免后续 T029 / T030 在无 Spike 共识下启动；协作价值以"完整 Context7 + WebFetch 双向验证 + 7 个候选评估 + 推荐组合 + 风险识别 + 后续 T027-T037 任务依赖映射"为主要产出） |
+| Notes | Flutter Architect Reviewer 重点确认：① `REAL_AUDIO_DEPENDENCY_SPIKE.md` §3 Candidate Evaluation Table 列出 7 个候选（`record` / `just_audio` / `audioplayers` / `flutter_sound` / `permission_handler` / `path_provider` / `audio_session`）的版本 / 优点 / 风险 / Android / iOS / 额外配置 / 测试影响 / MVP 推荐 / Next action；② §4 Recommended Dependency Direction 给出推荐组合（`record ^7.1.0` + `just_audio ^0.10.5` + `permission_handler ^12.0.3` + `path_provider ^2.1.6`），但**未**修改 `pubspec.yaml` / `pubspec.lock` / `AndroidManifest.xml`；③ 推荐组合适配当前 Flutter 3.44.2 / Dart 3.12.2 / Android `minSdk = 24` / `compileSdk = 36` 工程；④ §6 Build / Platform Risk 覆盖 Gradle / AGP / Kotlin / JDK / Native plugin / R8 / iOS / Windows / CI 全部 8 类风险；⑤ §9 Follow-up Tasks 映射 T027-T037，每个任务明确依赖引入节奏（**不**合并 commit）；⑥ §10 References 完整列出 Context7 Library IDs + pub.dev URL；⑦ `pubspec.yaml` 当前已包含 `path_provider ^2.1.6` 但**未**包含其他 5 个候选；⑧ `record` 7.1.0 `AudioEncoder.aacLc` 重命名需要在 T029 隔离 spike 中实测。Compliance Reviewer 重点确认：① 未读取 `android/key.properties` 内容、未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；② 未声称真实录音已实现、未声称麦克风权限已加入、未声称应用商店已提交；③ §5 Permission Impact 准确表述（依赖本身**不等于**声明 `RECORD_AUDIO`、T027 必须修改三处清单、`INTERNET` 不得声明）；④ iOS `NSMicrophoneUsageDescription` 文案已在 SDD §3.5 预留，T026 不重复声明；⑤ 隐私政策更新由 T033 任务执行，本任务**不**写入用户隐私；⑥ 真实音频阶段无 INTERNET 原则保留（`just_audio` 仅使用 file:// 路径播放本地 m4a）；⑦ `git grep "7038d2aa"` 0 命中，仓库中无 T025 报告笔误；⑧ 未 push、未 Tag、未 amend / rebase / reset --hard；⑨ `audio_session` 仅作 fallback，**未**进入 MVP 主路径。Local Data Reviewer 重点确认：① `path_provider` 已存在（`^2.1.6`）；② T028 实现 `AudioFileStorageService` 时路径命名候选 `<docs>/recordings/<yyyy-MM-dd>/<recordId>.m4a`，与既有 Drift 数据库路径（默认 `<docs>` 子目录）需在 T028 决定；③ `path_provider` 与 `getApplicationDocumentsDirectory()` 卸载自动清除行为与 SDD §3.7 一致；④ 测试中 mock `getApplicationDocumentsDirectory()` 返回 `Directory.systemTemp.createTempSync()` 路径物理隔离；⑤ T028 / T032 / T034 任务必须由 Local Data Reviewer 重点审查（与既有 §5.1.5 真实音频 Reviewer 重点启用建议一致）。QA Reviewer 重点确认：① §7 Testing Impact 完整覆盖 7 个测试层（pure unit / controller / repository / drift migration / file storage / permission behavior / widget）；② §7.2 真实麦克风隔离边界明确（自动测试**不**触发真实麦克风）；③ §7.3 T035 自动测试设计原则强调 fake service 注入；④ §9 Follow-up Tasks 完整映射 T027-T037 共 11 个任务；⑤ T036 真机验收必须由用户本人完成，Agent **不**得代写"通过"；⑥ T035 测试数 ≥ 既有 407 不得下降；⑦ §8 Decision 七个候选均有明确 Decision（4 个 Recommended for MVP / 1 个 Recommended as fallback / 2 个 Not recommended for MVP）；⑧ §2 Research Sources 完整透明（Context7 + WebFetch 双向验证 + 查询限制披露）；⑨ `git grep "7038d2aa"` 0 命中；本任务全程命令纪律严格执行，未触发 T022A 记录的命令纪律违规模式（管道 / 重定向 / 输出截断 helper / 复合），与 T023 / T024 / T025 表现一致；详见 `docs/dev/TASK_LEDGER.md` T026 条目 + `docs/dev/REAL_AUDIO_DEPENDENCY_SPIKE.md` 全文 |
+
+#### 4.6.1 Flutter Architect Reviewer（02-flutter-architect）只读审查
+
+- **Reviewer Role**：`02-flutter-architect`
+- **Scope Reviewed**：`docs/dev/REAL_AUDIO_DEPENDENCY_SPIKE.md` 全文（重点 §3 Candidate Evaluation Table / §4 Recommended Dependency Direction / §5 Permission Impact / §6 Build Platform Risk / §7 Testing Impact / §9 Follow-up Tasks）；既有 `pubspec.yaml` + `docs/TECH_STACK.md` §6.1 / §7 / §10 + `docs/ARCHITECTURE.md` §3 / §7
+- **Evidence Checked**：
+  - `git status --short` 工作树（Commit 前）显示仅有允许文件改动；
+  - `git diff --check` 无空白错误；
+  - `pubspec.yaml` 未被修改（既有版本号 `1.0.0+2` / `path_provider ^2.1.6` 不变）；
+  - `pubspec.lock` 未被修改；
+  - `AndroidManifest.xml` 未被修改（既有 `RECORD_AUDIO` 未声明不变）；
+  - `docs/dev/REAL_AUDIO_DEPENDENCY_SPIKE.md` §3.1 - §3.7 候选评估表完整列出 7 个候选的版本 / 优点 / 风险 / Android / iOS / 额外配置 / 测试影响 / MVP 推荐 / Next action；
+  - §4.1 推荐组合 `record ^7.1.0` + `just_audio ^0.10.5` + `permission_handler ^12.0.3` + `path_provider ^2.1.6`（已存在）覆盖 MVP 全部需求；
+  - §6 Build / Platform Risk 覆盖 8 类风险（Gradle / AGP / Kotlin / Android minSdk / Java JDK / Native plugin / R8 / iOS / Windows / CI）；
+  - §9 Follow-up Tasks 完整映射 T027-T037 共 11 个任务，每个任务明确依赖引入节奏；
+  - §10 References 列出 Context7 10 个 Library IDs + 7 个 pub.dev URL；
+- **Findings**：
+  - 所有依赖仅作为研究候选，未直接写入 `pubspec.yaml` / `pubspec.lock` / `AndroidManifest.xml`；
+  - 推荐组合适配当前 Flutter 3.44.2 / Dart 3.12.2 / Android `minSdk = 24` / `compileSdk = 36` / JDK 17 / Gradle 8.7 / AGP 8.6.0；
+  - `record` 7.1.0 与既有 `TECH_STACK.md` §6.1 / `REAL_AUDIO_MVP_SDD.md` §5.1 候选决策一致；`just_audio` 0.10.5 与 §6.1 / §5.3 一致；`permission_handler` 12.0.3 与 §6.1 / §5.5 一致；
+  - `audio_session` 0.2.3 仅作 fallback，**未**进入 MVP 主路径，符合 MVP 简单性原则；
+  - `audioplayers` 6.7.1 / `flutter_sound` 9.30.0 既有决策排除（与 `TECH_STACK.md` §10 + `REAL_AUDIO_MVP_SDD.md` §5.2 / §5.4 一致）；
+  - 依赖引入节奏清晰（T027 / T029 / T030 三个独立任务，**不**合并 commit）；
+  - 12 个后续任务边界清晰，依赖关系正确（T026 → T027 → T028 → T029 → T030 → T031 → T032 → T033 → T034 → T035 → T036 → T037）；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - `pubspec.yaml` 当前**未声明** `environment.flutter` 字段；如未来 Flutter SDK 升级需锁定版本，建议 T027 任务执行前评估是否补充 `environment.flutter: ">=3.44.0 <4.0.0"`；
+  - `record` 7.x `AudioEncoder.aacLc` 重命名（4.x 引入）与既有命名差异需在 T029 隔离 spike 中实测确认；
+- **Approval**：**Approved**
+
+#### 4.6.2 Compliance Reviewer（08-compliance-reviewer）只读审查
+
+- **Reviewer Role**：`08-compliance-reviewer`
+- **Scope Reviewed**：`docs/dev/REAL_AUDIO_DEPENDENCY_SPIKE.md` 全文（重点 §1.4 关键事实 / §4.1 推荐组合 / §5 Permission Impact / §6 Build Platform Risk / §9 Follow-up Tasks）；既有 `docs/dev/REAL_AUDIO_MVP_SDD.md` §3 Permission and Privacy + `docs/dev/TECH_DEBT.md` TD-007 / TD-010 / TD-011 / TD-012 / TD-013
+- **Evidence Checked**：
+  - `git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 五项均返回空；
+  - `git tag -n1 --list v0.1.0-mvp` 仍指向 `d49ce4b`、`git tag -n1 --list v1.0.0-release` 仍指向 `703d2aa`；
+  - `git grep "7038d2aa"` 0 命中（笔误检查通过）；
+  - 全文搜索 `REAL_AUDIO_DEPENDENCY_SPIKE.md` 确认未出现 `key.properties` 内容 / 密码 / keystore 内容 / 用户目录 keystore 绝对路径；
+  - §5.1 明确表述"引入依赖**不等于**声明 `RECORD_AUDIO`"；
+  - §5.4 无 INTERNET 原则保留（`just_audio` 仅使用 file:// 路径）；
+  - §5.5 隐私政策更新由 T033 任务执行；
+  - §5.6 真实音频阶段合规清单完整 7 项（不读取 key.properties / 不记录密码 / 不申请 RECORD_AUDIO / 不申请 INTERNET / 不声称真实录音已实现 / 不声称麦克风权限已加入 / 不声称应用商店已提交）；
+- **Findings**：
+  - 引入依赖与权限声明关系表述准确（依赖本身**不**等于 `RECORD_AUDIO` 声明，需 T027 任务显式写入 AndroidManifest.xml 三处清单）；
+  - 无 INTERNET 原则保留（`just_audio` 本项目仅播放本地 m4a，不声明 `INTERNET`）；
+  - iOS `NSMicrophoneUsageDescription` 文案已在 `REAL_AUDIO_MVP_SDD.md` §3.5 预留，T026 **不**重复声明；
+  - 隐私政策更新责任清晰归属 T033 任务；
+  - 未声称真实录音已实现、未声称麦克风权限已加入、未声称应用商店已提交；
+  - 未读取 `key.properties` 内容、未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；
+  - 未 push、未 Tag、未 amend / rebase / reset --hard；
+  - `git grep "7038d2aa"` 0 命中，仓库中无 T025 报告笔误；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - `audio_session` 0.2.3 暂不引入的决策合理；如 T036 真机验收发现音频焦点冲突 / 来电中断问题，由 GPT 首席架构师评估是否引入；本任务**不**写入 `pubspec.yaml`；
+  - 隐私政策更新由 T033 任务执行，本任务仅提供设计原则；
+- **Approval**：**Approved**
+
+#### 4.6.3 QA Reviewer（07-qa-reviewer）只读审查
+
+- **Reviewer Role**：`07-qa-reviewer`
+- **Scope Reviewed**：`docs/dev/REAL_AUDIO_DEPENDENCY_SPIKE.md` 全文（重点 §2 Research Sources / §3 Candidate Evaluation Table / §7 Testing Impact / §8 Decision / §9 Follow-up Tasks）；既有 `docs/dev/REAL_AUDIO_MVP_TDD.md` §1 Test Strategy / §2 Test Matrix / §5 Test Gaps + `docs/dev/AGENT_REVIEW_TEMPLATE.md` QA Checklist
+- **Evidence Checked**：
+  - `flutter analyze` `No issues found! (ran in 3.5s)`、`flutter test` `All tests passed!`（407 tests passed）；
+  - §2 Research Sources 完整透明（Context7 + WebFetch 双向验证 + 查询限制披露）；
+  - §3 Candidate Evaluation Table 列出 7 个候选的测试影响；
+  - §7 Testing Impact 完整覆盖 7 个测试层（pure unit / controller / repository / drift migration / file storage / permission behavior / widget）；
+  - §7.2 真实麦克风隔离边界明确（自动测试**不**触发真实麦克风，真实音频输入质量由 T036 真机用户验收）；
+  - §7.3 T035 自动测试设计原则强调 fake service 注入 + 测试数 ≥ 既有 407；
+  - §8 Decision 7 个候选均有明确 Decision；
+  - §9 Follow-up Tasks 完整映射 T027-T037 共 11 个任务；
+  - `git grep "7038d2aa"` 0 命中；
+- **Findings**：
+  - Spike 结论可验证（Context7 + pub.dev WebFetch 双向验证，最新稳定版本与平台要求均有官方来源）；
+  - Testing Impact 覆盖 fake service / widget /真机边界（T035 自动测试 + T036 真机验收 + T036 真机用户确认音质）；
+  - 自动测试**不**依赖真实麦克风（与 `REAL_AUDIO_MVP_TDD.md` §5 Test Gaps 9 项一致）；
+  - 后续 T035 / T036 验收路径清楚（fake service + Widget / Controller / Repository / Drift migration + T036 用户本人真机）；
+  - **未**把 Spike 写成实现完成（`§1 Document Status` 明确"依赖研究完成，未实现"；§4.1 推荐方向**不**修改 `pubspec.yaml`）；
+  - 既有 407 测试数保持不变（基线 407，新增 / 更新 / 删除 0 / 0 / 0）；
+  - `git grep "7038d2aa"` 0 命中，仓库中无 T025 报告笔误；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - §7 Testing Impact 中 7 个测试层与 `REAL_AUDIO_MVP_TDD.md` §1.1 一致，建议 T035 任务把 30+ 测试用例映射到具体测试文件路径；
+  - T036 真机验收必须由用户本人完成，Agent **不**得代写"通过"（与既有 `REAL_AUDIO_MVP_TDD.md` §3 22 项 Manual Acceptance Checklist + §5 Test Gaps 一致）；
+- **Approval**：**Approved**
+
+#### 4.6.4 Local Data Reviewer（06-local-data-engineer）只读审查
+
+- **Reviewer Role**：`06-local-data-engineer`
+- **Scope Reviewed**：`docs/dev/REAL_AUDIO_DEPENDENCY_SPIKE.md` 全文（重点 §3.6 path_provider / §4.1 推荐组合 / §9 Follow-up Tasks）；既有 `docs/dev/REAL_AUDIO_MVP_SDD.md` §4 Audio File Lifecycle / §6 Data and Schema Design + `docs/dev/REAL_AUDIO_MVP_TDD.md` §2.6 Data Migration / §2.7 Filesystem / §2.8 旧模拟记录兼容
+- **Evidence Checked**：
+  - `pubspec.yaml` 当前已包含 `path_provider ^2.1.6`（T005 阶段已引入）；
+  - §3.6 path_provider 推荐版本 `^2.1.6` 与当前 `pubspec.yaml` 完全一致，**无需**新增依赖；
+  - §4.1 推荐组合中 `path_provider` 已存在标记为"已存在"；
+  - §9 Follow-up Tasks 明确 T028 由 `06-local-data-engineer` 实现 `AudioFileStorageService`；
+  - T028 / T032 / T034 三个 Local Data 主导任务在既有 §5.1.5 真实音频 Reviewer 重点启用建议中已明确必含 Local Data Reviewer；
+  - 测试中 mock `getApplicationDocumentsDirectory()` 返回 `Directory.systemTemp.createTempSync()` 路径物理隔离（与 `REAL_AUDIO_MVP_TDD.md` §1.1 Repository tests 一致）；
+- **Findings**：
+  - `path_provider ^2.1.6` 与既有 Drift 数据库路径（默认 `<docs>` 子目录）共存，无路径冲突；
+  - T028 实现 `AudioFileStorageService` 时路径命名候选 `<docs>/recordings/<yyyy-MM-dd>/<recordId>.m4a` 与 Drift 数据库路径命名约定一致；
+  - `getApplicationDocumentsDirectory()` 卸载自动清除行为与 SDD §3.7 一致；
+  - 测试中真实路径与临时路径物理隔离明确；
+  - T028 / T032 / T034 任务边界清晰（与既有 §5.1.5 一致）；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - T028 任务最终路径命名待 `04-audio-engineer` + `06-local-data-engineer` 联签（与 `REAL_AUDIO_MVP_SDD.md` §4.3 末段一致）；
+  - T032 任务最终字段列表待 `06-local-data-engineer` + `04-audio-engineer` 联签（与 `REAL_AUDIO_MVP_SDD.md` §6.2 候选字段一致）；
+- **Approval**：**Approved**
+
 ## 6. Review Cadence
 
 > 不追求每周复盘；以"每 5 个任务 + 每个阶段结束"为节奏。

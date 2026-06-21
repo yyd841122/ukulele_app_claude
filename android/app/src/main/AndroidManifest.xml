@@ -1,5 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- MVP: no INTERNET permission. Offline only. -->
     <!-- MVP: no RECORD_AUDIO. Tuner and recording are simulated only. -->
 
@@ -34,9 +33,4 @@
             android:name="flutterEmbedding"
             android:value="2" />
     </application>
-
-    <!-- MVP: explicitly remove the RECORD_AUDIO permission that the `record`
-         plugin injects via manifest merge. The MVP simulates recording and
-         never accesses the microphone. -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
 </manifest>

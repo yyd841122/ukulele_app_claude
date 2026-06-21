@@ -101,9 +101,32 @@
 | Fix Commits Required | 0 |
 | Tests Passed | 407（基线保持；新增 / 更新 / 删除 0 / 0 / 0） |
 | Scope Clean | Yes（仅新建 `tool/verify_release_artifacts.dart`、`docs/dev/RELEASE_ARTIFACTS.md`；仅修改 `docs/dev/TASK_LEDGER.md`、`docs/dev/AGENT_QUALITY_METRICS.md`） |
+| Command discipline violation | **Yes**（见下方备注；不构成 Blocker，但须如实记录） |
+| Violation types | `redirection`（`2>&1`）、`pipe`（`|`）、`output truncation helper`（`head`） |
+| Violation scope | 仅出现在只读环境探测命令（如 `where flutter 2>&1 | head -5`、`ls /c/flutter/flutter/ 2>&1 | head -20`、`ls /d/Software/ 2>&1 | head -20`） |
+| Impact assessment | no known file modification；no known `key.properties` content read；no known secret exposure；no artifact verification impact；no Release artifact correctness impact |
+| Severity | Process issue；non-blocking for release artifact correctness；recorded and to be avoided in future tasks |
 | Final Approval | 待 GPT 复审 |
-| Collaboration Value | Medium（Flutter Architect + Compliance Reviewer 报告完整、证据具体，但本任务为静态校验脚本，元信息已知，未发现重大缺陷；Reviewer 主要做规范性检查，未拦截真实 Bug） |
-| Notes | Flutter Architect Reviewer 确认脚本自实现 SHA-256 与 `certutil` 输出交叉验证一致；Compliance Reviewer 确认 `android/key.properties` 已 ignore 且未跟踪、产物未被 git 跟踪、文档未泄露敏感信息；两个 Reviewer 均按 `AGENT_REVIEW_TEMPLATE.md` 模板填写 `Scope Reviewed` / `Evidence Checked` / `Findings` / `Blockers` / `Approval`，无"已通过"模糊表述；本任务不进行真机验收，T023 仍由用户执行 |
+| Collaboration Value | Medium（Flutter Architect + Compliance Reviewer 报告完整、证据具体，但本任务为静态校验脚本，元信息已知，未发现重大缺陷；Reviewer 主要做规范性检查，未拦截真实 Bug。**备注**：本次复盘中识别出 T022 执行过程存在命令纪律违规——Reviewer 报告证据充分度提升（命令结构、参数、SHA-256 / 元信息等核心证据明确），但命令纪律执行仍有改进空间；该违规为流程问题，不改变 T022 产物验证通过结论） |
+| Notes | Flutter Architect Reviewer 确认脚本自实现 SHA-256 与 `certutil` 输出交叉验证一致；Compliance Reviewer 确认 `android/key.properties` 已 ignore 且未跟踪、产物未被 git 跟踪、文档未泄露敏感信息；两个 Reviewer 均按 `AGENT_REVIEW_TEMPLATE.md` 模板填写 `Scope Reviewed` / `Evidence Checked` / `Findings` / `Blockers` / `Approval`，无"已通过"模糊表述；本任务不进行真机验收，T023 仍由用户执行。**命令纪律违规补记（T022A）**：T022 执行过程中曾使用 `where flutter 2>&1 | head -5` 等组合命令探测 Flutter / 资源管理器目录，违反"禁止管道 / 重定向 / 输出截断 helper / 复合命令"的固定命令纪律；GPT 首席架构师曾要求最终报告如实记录该违规但 T022 主报告未记录，本次回填。违规命令经核查属只读环境探测，未发现文件修改、未读取 `android/key.properties` 内容、未泄露密码、不影响产物验证结果；本任务仍按"通过（待 GPT 复审）"归档，但命令纪律约束必须在后续任务（T023 起）严格执行，逐条执行单条命令、禁止管道 / 重定向 / `&&` / 分号 / 复合命令 |
+
+### 4.2 T022A Scorecard（命令纪律事件补录）
+
+| 字段 | 值 |
+| --- | --- |
+| Task ID | `T022A_RECORD_COMMAND_DISCIPLINE_INCIDENT` |
+| Primary Agent | `07-qa-reviewer` |
+| Review Agents | `00-chief-architect`、`08-compliance-reviewer` |
+| High Risk Areas | 工作流命令纪律、文档事实准确性、未把流程违规夸大为安全事故、未淡化为"无问题" |
+| Blockers Found | 0（Chief Architect Reviewer + Compliance Reviewer 均给 `Approved`，未发现阻断项） |
+| Blockers Valid | 0（无 Blockers） |
+| Fix Commits Required | 0 |
+| Tests Passed | 407（基线保持；新增 / 更新 / 删除 0 / 0 / 0） |
+| Scope Clean | Yes（仅修改 `docs/dev/AGENT_QUALITY_METRICS.md` §4.1 T022 Scorecard 备注 + §4.2 新增 T022A Scorecard；`docs/dev/TASK_LEDGER.md` 追加 T022A 条目） |
+| Command discipline violation | N/A（本任务执行过程遵守命令纪律：仅单条 `git status --short` / `git branch --show-current` / `git rev-parse --short HEAD` / `git log -1 --oneline` / `git ls-files` 等只读命令，无管道 / 重定向 / 复合） |
+| Final Approval | 待 GPT 复审 |
+| Collaboration Value | Medium（仅补录流程事件，无新功能交付；Reviewer 主要验证事实准确性、是否夸大 / 淡化、是否越界修改） |
+| Notes | Chief Architect Reviewer 确认 T022 主结论（产物静态验证通过、APK/AAB 元信息已落盘）保持不变、T022 Scorecard 仅新增违规字段与备注、Scorecard 协作价值未降级；Compliance Reviewer 确认本任务未读取 `android/key.properties` 内容、未记录密码 / keystore 内容 / 用户目录 keystore 路径、未把违规写成密钥泄露 / 产物失败 / T022 不通过、未修改生产代码 / 测试 / 验证脚本 / Release 产物 / 签名配置；详见 `docs/dev/TASK_LEDGER.md` T022A 条目 |
 
 ## 5. Initial Historical Backfill
 

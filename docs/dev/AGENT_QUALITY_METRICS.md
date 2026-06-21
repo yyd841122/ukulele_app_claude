@@ -156,6 +156,26 @@
 | Collaboration Value | **High**（Mobile UI Reviewer 确认 18 项覆盖完整性 + 大字体 / 溢出检查独立成项 + 模拟录音文案与 SDD/TDD 一致；Compliance Reviewer 在签名不兼容的关键高风险点上独立审查了用户授权证据链（"确认卸载，允许继续"），确认未读取 `key.properties` 内容、未记录 keystore 路径 / 密码、未 push / Tag / amend / rebase / reset --hard；两个 Reviewer 报告均按 `AGENT_REVIEW_TEMPLATE.md` 模板填写 `Scope Reviewed` / `Evidence Checked` / `Findings` / `Blockers` / `Approval`，无"已通过"模糊表述；协作机制把"用户手工验收"严格隔离为 `User confirmed` 来源、把"启动 / 安装"隔离为 `adb observed` 来源，避免 Agent 代写"通过"；Chief Architect 范围守卫确认 diff 仅含允许文件） |
 | Notes | Mobile UI Reviewer 重点确认冒烟项 #3-#14 覆盖首页 / 和弦 / 单音 / 节拍器 / 调音器 / 录音 / 记录 / 设置等主要页面、冒烟项 #15 独立要求用户确认大字体 / 溢出检查、模拟录音文案与 SDD/TDD 一致未误导为真实录音；Compliance Reviewer 重点确认用户在签名不兼容时已明确授权（"确认卸载，允许继续"）、卸载在授权后执行、未自动卸载或清除数据、未读取 `key.properties` 内容、未记录 keystore 路径 / 密码、未声称真实录音已实现、未 push / Tag / amend / rebase / reset --hard；T023 涉及的高风险命令纪律项（卸载 / 安装 / 启动验证 / 用户验收）均严格执行单条命令纪律，未触发 T022A 记录的命令纪律违规模式（管道 / 重定向 / 输出截断 helper / 复合）；详见 `docs/dev/TASK_LEDGER.md` T023 条目 + `docs/dev/RELEASE_DEVICE_ACCEPTANCE.md` 全文 |
 
+### 4.4 T024 Scorecard（Release 验收检查点）
+
+| 字段 | 值 |
+| --- | --- |
+| Task ID | `T024_RELEASE_DOCS_AND_CHECKPOINT` |
+| Primary Agent | `00-chief-architect` |
+| Review Agents | `07-qa-reviewer`、`08-compliance-reviewer` |
+| High Risk Areas | 阶段结论夸大（把 Release 工程化写成应用商店发布）、未完成能力误写（把全新安装写成数据迁移通过 / 把单台真机写成多设备适配 / 把静态验证写成真机验收 / 把真实录音写成已完成）、敏感信息泄露（`key.properties` 内容 / 密码 / keystore 内容 / 用户目录 keystore 绝对路径）、Release / 真机证据一致性（构建产物 SHA-256 / 字节大小 / 证书指纹 / 18 项冒烟验收来源标注）、越权发布（push / Tag / amend / rebase / reset --hard） |
+| Blockers Found | 0（QA Reviewer + Compliance Reviewer 均按 `AGENT_REVIEW_TEMPLATE.md` 只读审查，未发现阻断项；详见 `docs/dev/RELEASE_ACCEPTANCE.md` §Multi-Agent Evidence 节 Reviewer Findings 与 `TASK_LEDGER.md` T024 条目 Reviewer 报告段） |
+| Blockers Valid | 0（无 Blockers） |
+| Fix Commits Required | 0 |
+| Tests Passed | 407（基线保持；新增 / 更新 / 删除 0 / 0 / 0；本任务不重新构建 APK / AAB、不修改生产代码 / 测试代码 / 依赖 / Android 配置） |
+| Scope Clean | Yes（仅新建 `docs/dev/RELEASE_ACCEPTANCE.md`；仅修改 `docs/dev/TASK_LEDGER.md` 追加 T024 条目 + `docs/dev/TECH_DEBT.md` 校准 TD-002 / TD-004 状态 + `docs/dev/AGENT_QUALITY_METRICS.md` §4.4 追加 T024 Scorecard + §5 追加 Release 工程化阶段小结） |
+| Command discipline violation | **No**（本任务全程命令均为单条命令：`git status --short` / `git branch --show-current` / `git rev-parse --short HEAD` / `git log -1 --oneline` / `git tag -n1 --list v0.1.0-mvp` / `git ls-files ...` / `dart run tool/verify_release_artifacts.dart` / `flutter analyze` / `flutter test` / `grep -c ...` / `Read` / `Write` / `Edit` 等只读或允许写命令；无管道、无重定向、无 `&&`、无分号、无复合命令） |
+| Sensitive Files Checked | Yes（`git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 四项均返回空；`v0.1.0-mvp` 仍指向 `d49ce4b` 未变；无 `key.properties` 内容被读取） |
+| Build Artifacts Tracked | No（`git ls-files build/app/outputs/flutter-apk/app-release.apk` / `build/app/outputs/bundle/release/app-release.aab` 返回空） |
+| Final Approval | 待 GPT 复审 |
+| Collaboration Value | **Medium**（QA Reviewer 与 Compliance Reviewer 均按模板只读审查并给 Approved；本任务为文档收口，证据来自既有 `RELEASE_ARTIFACTS.md` §1-§3 与 `RELEASE_DEVICE_ACCEPTANCE.md` §Device / §User Smoke Acceptance，元信息已知，未发现重大缺陷；Reviewer 主要做规范性检查 + 范围守卫 + 证据一致性核对 + 未完成能力表述隔离 + 敏感信息未泄露确认，未拦截真实 Bug；与 T022 静态校验类似属于"偏流程化审查"，但仍是 Release 阶段必含 Reviewer 验收的一环；协作价值仍以"严格门禁 + 证据完整 + 范围清洁"为主要产出） |
+| Notes | QA Reviewer 重点确认：① Release 证据完全来自 `RELEASE_ARTIFACTS.md` 与 `RELEASE_DEVICE_ACCEPTANCE.md` 而非编造；② 未把静态验证写成真机验收、未把全新安装写成数据迁移通过、未把单台真机写成多设备适配；③ 407 测试数与 `flutter test` 实际输出精确一致（基线 407，无新增 / 更新 / 删除测试）；④ T020-T023 任务链完整（T020 + 三条 FIX + T021 + T021A + T022 + T022A + T023）；⑤ T024 文档满足进入下一阶段条件（明确"不替代真实音频阶段设计" + 等待 GPT 首席架构师复审 + 不 push / 不创建 Tag）；Compliance Reviewer 重点确认：① 未读取 `key.properties` 内容、未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；② 未声称真实录音已实现、未声称麦克风权限已加入、未声称应用商店已提交；③ 未 push、未 Tag、未 amend / rebase / reset --hard；④ 权限表述准确（无 `RECORD_AUDIO` / 无 `INTERNET`，与 `aapt dump permissions` 一致）；本任务全程命令纪律严格执行，未触发 T022A 记录的命令纪律违规模式（管道 / 重定向 / 输出截断 helper / 复合），与 T023 表现一致；详见 `docs/dev/TASK_LEDGER.md` T024 条目 + `docs/dev/RELEASE_ACCEPTANCE.md` 全文 |
+
 ## 5. Initial Historical Backfill
 
 > 仅回填**有可靠来源**的历史事实，不虚构未知内容。
@@ -171,6 +191,47 @@
 | 早期 Release assert、UUID、Android embedding 等问题 | 历史 commit | 多处 `assert` / UUID / Android embedding 修复 | 通过 commit 历史可追溯 | Medium |
 
 > 后续每完成 5 个任务或每个阶段结束，必须追加新的回填行。
+
+### 5.1 Release 工程化阶段小结（T019-T024）
+
+> 本节是 T019-T024 阶段结束时的**阶段级**复盘，由 T024 任务追加。汇总多 Agent 协作机制在该阶段的有效性与局限，明确下一阶段真实音频应重点启用的 Reviewer 角色。
+
+#### 5.1.1 阶段背景
+
+- 阶段范围：Android Release 工程化（T019 设计 / T020 签名 + 三条 FIX / T021 重启构建 / T021A 激活多 Agent / T022 产物静态验证 / T022A 命令纪律事件 / T023 真机安装 + 用户冒烟 / T024 文档收口）
+- 阶段产出：Release APK 58,558,487 bytes / AAB 57,332,407 bytes 构建成功 + 单台真机 18 项用户冒烟全部 Passed + 静态验证全部通过 + 命令纪律严格执行
+
+#### 5.1.2 多 Agent 协作价值评估
+
+- **整体协作价值**：以 Medium 为主，T023 阶段达到 High；T024 阶段为 Medium（属于文档收口与流程合规验证，证据已知，偏规范性审查）
+- **形式主义风险**：T022 与 T024 阶段 Reviewer 主要做规范性检查与证据一致性核对，未拦截真实 Bug；这是该类任务（静态校验 / 文档收口）的本质，但需明确记录，避免协作价值被误读为"无价值"
+- **真实拦截案例**：T022A 命令纪律事件回填由 GPT 复审触发，属于"流程合规性拦截"，证明协作机制对流程纪律有约束力
+
+#### 5.1.3 Reviewer 实际产出
+
+| 阶段任务 | Primary Agent | Reviewer | Reviewer 实际产出 | 协作价值 |
+| --- | --- | --- | --- | --- |
+| T022 产物静态验证 | 07-qa-reviewer | 02-flutter-architect + 08-compliance-reviewer | 两个 Reviewer 确认脚本自实现 SHA-256 与 `certutil` 交叉验证一致、确认 `key.properties` 已 ignore 且未跟踪、产物未被 git 跟踪、文档未泄露敏感信息 | Medium（静态校验，元信息已知，未发现重大缺陷） |
+| T022A 命令纪律事件 | 07-qa-reviewer | 00-chief-architect + 08-compliance-reviewer | 两个 Reviewer 确认 T022 主结论保持不变、T022 Scorecard 仅新增违规字段与备注、Scorecard 协作价值未降级、未把违规写成密钥泄露 / 产物失败 / T022 不通过 | Medium（仅补录流程事件，无新功能交付） |
+| T023 真机验收 | 07-qa-reviewer | 03-mobile-ui-engineer + 08-compliance-reviewer | Mobile UI Reviewer 确认 18 项覆盖完整性 + 大字体 / 溢出检查独立成项 + 模拟录音文案与 SDD/TDD 一致；Compliance Reviewer 在签名不兼容的关键高风险点上独立审查了用户授权证据链（"确认卸载，允许继续"） | High（真实拦截了"Agent 替用户勾选通过"的潜在形式主义风险） |
+| T024 文档收口 | 00-chief-architect | 07-qa-reviewer + 08-compliance-reviewer | QA Reviewer 确认证据来源、未夸大未完成能力、407 测试数一致；Compliance Reviewer 确认未读取敏感信息、未声称未实现能力、未 push / Tag | Medium（文档收口，证据已知，偏规范性审查） |
+
+#### 5.1.4 形式主义 Reviewer 识别
+
+- **当前 9 个 Reviewer 角色**（`00-chief-architect` / `07-qa-reviewer` / `08-compliance-reviewer` + 领域 Reviewer）在 Release 工程化阶段实际被启用并产出有据审查的角色主要是 `00-chief-architect`（Chief Architect 范围守卫）/ `02-flutter-architect`（T022 Flutter 架构复审）/ `03-mobile-ui-engineer`（T023 UI 复审）/ `07-qa-reviewer`（T022 / T022A / T023 / T024 Primary）/ `08-compliance-reviewer`（T022 / T022A / T023 / T024 合规复审）。
+- **`01-product-manager` / `04-audio-engineer` / `05-music-domain-expert` / `06-local-data-engineer`** 在本阶段未被启用，原因与本阶段范围（签名 / 构建 / 产物 / 真机验收）一致，不构成形式主义。
+- 长期无产出的 Reviewer 角色清理规则见 §6：本阶段无须清理；进入真实音频阶段后需重新评估 `04-audio-engineer` 的 Primary 与 Reviewer 双重身份。
+
+#### 5.1.5 下一阶段真实音频 Reviewer 重点启用建议
+
+- **音频架构（依赖选型 / 权限方案）**：Primary = `04-audio-engineer`；Required Review = `02-flutter-architect`（依赖与架构边界）+ `08-compliance-reviewer`（权限与隐私）+ `07-qa-reviewer`（测试覆盖）
+- **音频文件生命周期（本地存储 / 清理 / 删除）**：Primary = `04-audio-engineer`；Required Review = `06-local-data-engineer`（Drift schema 升级 / Repository 契约 / 迁移）+ `07-qa-reviewer`（迁移测试）+ `08-compliance-reviewer`（用户可删除 / 不静默占用空间）
+- **权限与隐私（`RECORD_AUDIO` 声明 / 拒绝降级 / 隐私政策）**：Primary = `08-compliance-reviewer`；Required Review = `04-audio-engineer`（权限流程落地）+ `07-qa-reviewer`（拒绝降级测试）+ `02-flutter-architect`（Manifest 边界）
+- **UI 录音体验（页面 / Controller / Wave / 进度）**：Primary = `03-mobile-ui-engineer`；Required Review = `04-audio-engineer`（音频服务边界）+ `07-qa-reviewer`（异常降级测试）
+- **真机弹唱验收**：Primary = 用户本人（真机操作主导）；Required Review = `07-qa-reviewer` + `04-audio-engineer` + `08-compliance-reviewer`；**绝不**允许 Agent 代写"通过"
+- **数据生命周期（录音文件 / 备份 / 删除）**：Primary = `06-local-data-engineer`；Required Review = `04-audio-engineer` + `08-compliance-reviewer` + `07-qa-reviewer`
+
+> 详细路由见 `docs/dev/AGENT_ROUTING_MATRIX.md` §6 Future Audio MVP Routing；本节仅作为 Release 工程化阶段结束时的"下一阶段 Reviewer 重点启用"提示，不重写既有路由表。
 
 ## 6. Review Cadence
 

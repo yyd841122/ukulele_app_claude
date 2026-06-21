@@ -1,6 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- MVP: no INTERNET permission. Offline only. -->
-    <!-- MVP: no RECORD_AUDIO. Tuner and recording are simulated only. -->
+    <!-- T027: RECORD_AUDIO permission foundation for real audio MVP phase.
+         Real recording is NOT implemented yet; this only declares the
+         permission required by permission_handler at runtime. -->
+
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:label="Ukulele"

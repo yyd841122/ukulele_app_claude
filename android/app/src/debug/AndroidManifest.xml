@@ -1,3 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- MVP: no INTERNET permission in debug build. Offline only. -->
+    <!-- T027: RECORD_AUDIO permission foundation for real audio MVP phase. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 </manifest>

@@ -510,6 +510,119 @@
   - T032 任务最终字段列表待 `06-local-data-engineer` + `04-audio-engineer` 联签（与 `REAL_AUDIO_MVP_SDD.md` §6.2 候选字段一致）；
 - **Approval**：**Approved**
 
+### 4.7 T027 Scorecard（真实音频 MVP 权限与 Manifest 基础层实现）
+
+| 字段 | 值 |
+| --- | --- |
+| Task ID | `T027_PERMISSION_AND_MANIFEST_IMPLEMENTATION` |
+| Primary Agent | `04-audio-engineer`（权限依赖接入 / Manifest 权限声明 / 权限服务抽象 / 测试主导） |
+| Review Agents | `02-flutter-architect`（Flutter / Riverpod / 分层结构 / pubspec 变更 / 依赖边界 / 未越界接入录音播放审查）、`08-compliance-reviewer`（RECORD_AUDIO 声明 / 无 INTERNET 原则 / 权限文案 / 敏感文件边界 / 未声称真实录音已完成审查）、`07-qa-reviewer`（测试覆盖 / 权限服务可测性 / 回归测试 / Manifest 权限验证 / 命令纪律审查） |
+| High Risk Areas | `RECORD_AUDIO` 权限声明（main/debug/profile 三处一致）/ 无 `INTERNET` 原则保留 / `permission_handler ^12.0.3` 依赖引入 / 权限服务可测性（fake gateway 解耦 platform channel）/ 未完成能力误写（不得把"权限基础层"写成"真实录音已实现"）/ 敏感文件边界（不读取 `key.properties` 内容 / 不记录密码）/ 命令纪律（单条命令 / 无管道 / 无重定向 / 无 `&&` / 无分号 / 无复合）/ 越权（push / Tag / amend / rebase / reset --hard 全部禁止） |
+| Blockers Found | 0（Flutter Architect + Compliance + QA 三个 Reviewer 均按 `AGENT_REVIEW_TEMPLATE.md` 只读审查，未发现阻断项；详见下文 §4.7.1 ~ §4.7.3 Reviewer 报告段与 `TASK_LEDGER.md` T027 条目 Reviewer 报告段） |
+| Blockers Valid | 0（无 Blockers） |
+| Fix Commits Required | 0 |
+| Tests Passed | 421（407 既有 + 14 新增；既有测试未减少；新增测试 ≥12 满足任务预期） |
+| Scope Clean | Yes（仅修改 4 个允许文件：`pubspec.yaml` 末尾新增 `permission_handler: ^12.0.3` + `pubspec.lock` 自动更新、`android/app/src/main/AndroidManifest.xml` 显式声明 `RECORD_AUDIO` 并更新注释、`android/app/src/debug/AndroidManifest.xml` 显式声明 `RECORD_AUDIO`、`android/app/src/profile/AndroidManifest.xml` 显式声明 `RECORD_AUDIO`；仅新建 5 个允许文件：`lib/shared/services/microphone_permission_status.dart` + `lib/shared/services/microphone_permission_gateway.dart` + `lib/shared/services/permission_handler_microphone_permission_gateway.dart` + `lib/shared/services/microphone_permission_service.dart` + `test/shared/services/microphone_permission_service_test.dart`；仅修改 3 个允许文档：`docs/dev/TASK_LEDGER.md` 追加 T027 条目 + `docs/dev/TECH_DEBT.md` 校准 TD-007（权限基础层完成，真实录音仍未完成） + `docs/dev/TECH_DEBT.md` 校准 TD-010（T027 已完成 `permission_handler ^12.0.3` 引入） + `docs/dev/AGENT_QUALITY_METRICS.md` §4.7 追加 T027 Scorecard） |
+| Command discipline violation | **No**（本任务全程命令均为单条命令：`git status --short` / `git branch --show-current` / `git rev-parse --short HEAD` / `git log -1 --oneline` / `git remote -v` / `git tag -n1 --list v0.1.0-mvp` / `git tag -n1 --list v1.0.0-release` / `git rev-parse --short v0.1.0-mvp^{commit}` / `git rev-parse --short v1.0.0-release^{commit}` / `git ls-files ...` / `flutter pub get` / `flutter analyze` / `flutter test` / `grep -c ...` / `grep -E ...` / `Read` / `Write` / `Edit` 等只读或允许写命令；无管道、无重定向、无 `&&`、无分号、无复合命令） |
+| Sensitive Files Checked | Yes（`git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/flutter-apk/app-release.apk` / `build/app/outputs/bundle/release/app-release.aab` 五项均返回空；`v0.1.0-mvp` 仍指向 `d49ce4b` 未变；`v1.0.0-release` 仍指向 `703d2aa` 未变；新代码未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；未读取 `key.properties` 内容） |
+| Build Artifacts Tracked | No（`git ls-files build/app/outputs/**` 返回空） |
+| Dependency Modified | **Yes**（`pubspec.yaml` 新增 `permission_handler: ^12.0.3`；`pubspec.lock` 自动更新；pub get 解析成功并自动拉入子包 `permission_handler_android 13.0.1` / `permission_handler_apple 9.4.10` / `permission_handler_html 0.1.3+5` / `permission_handler_platform_interface 4.3.0` / `permission_handler_windows 0.2.1`，均为 permission_handler 生态必需子包，无 record / just_audio / audio_session / audioplayers / flutter_sound） |
+| Permissions Modified | **Yes**（`android/app/src/main/AndroidManifest.xml` / `debug/AndroidManifest.xml` / `profile/AndroidManifest.xml` 三处清单均显式声明 `<uses-permission android:name="android.permission.RECORD_AUDIO" />`；**未**声明 `INTERNET`、**未**声明 `READ/WRITE_EXTERNAL_STORAGE`、**未**声明 `MANAGE_EXTERNAL_STORAGE`、**未**声明 `CAMERA`、**未**声明 `BLUETOOTH`） |
+| Real Audio Implementation Started | **No**（仅权限基础层 + 单元测试；`AudioRecorderService` / `AudioPlaybackService` / `AudioFileStorageService` 均未实现；`RECORD_AUDIO` 已被 Manifest 声明但 Controller 尚未调用 `requestPermission`；PracticeRecord `audioFilePath` 仍为 `null`） |
+| Final Approval | 待 GPT 复审 |
+| Collaboration Value | **Medium**（三个 Reviewer 均按模板只读审查并给 Approved；本任务为权限基础层（依赖引入 + Manifest 声明 + 服务抽象 + 单元测试），证据来自 `flutter pub get` 解析输出 + `flutter analyze` 输出 + `flutter test` 14/14 通过 + `grep` 静态 Manifest 检查，未发现重大缺陷；Reviewer 主要做规范性检查 + 范围守卫 + 依赖边界确认 + 无 INTERNET 原则保留确认 + 测试可测性确认 + 未完成能力表述隔离 + 敏感信息未泄露确认 + 命令纪律确认，未拦截真实 Bug；与 T022 / T024 / T025 / T026 类似属于"偏流程化 + 边界校验审查"，但仍是真实音频阶段必经的"权限基础层门禁"，避免后续 T028+ 在无权限服务抽象下启动；协作价值以"完整 `permission_handler ^12.0.3` 引入 + 三处 Manifest 声明 + Gateway 抽象 + Service 注入 + 6 状态 enum 映射 + 14 项单元测试"为主要产出） |
+| Notes | Flutter Architect Reviewer 重点确认：① `pubspec.yaml` 仅新增 `permission_handler: ^12.0.3`，未引入 `record` / `just_audio` / `audio_session` / `audioplayers` / `flutter_sound`；② `pubspec.lock` 自动拉入 5 个 permission_handler 生态子包（`permission_handler_android 13.0.1` / `permission_handler_apple 9.4.10` / `permission_handler_html 0.1.3+5` / `permission_handler_platform_interface 4.3.0` / `permission_handler_windows 0.2.1`），均为 `permission_handler` 必需依赖，无其他新顶层依赖；③ `lib/shared/services/microphone_permission_service.dart` 通过 `MicrophonePermissionGateway` 抽象隔离 platform channel，分层与既有 `lib/shared/services/` 既有约定一致；④ 测试使用 fake gateway 注入（`_FakeMicrophonePermissionGateway`），**不**触发真实系统权限弹窗；⑤ `lib/shared/services/microphone_permission_service.dart` 仅 `import` gateway + status 两个文件，**不**接触 `permission_handler` 平台包本身（platform channel 仅由 `PermissionHandlerMicrophonePermissionGateway` 持有）；⑥ `RecordingPracticeController` 未被修改、Drift schema 未被修改、UI 页面代码未修改；⑦ 既有 407 项测试 100% 保留。Compliance Reviewer 重点确认：① 未读取 `android/key.properties` 内容、未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；② 未声称真实录音已实现、未声称应用商店已提交；③ 三处 AndroidManifest 仅新增 `RECORD_AUDIO`，**未**新增 `INTERNET`、**未**新增 `READ/WRITE_EXTERNAL_STORAGE`、**未**新增 `MANAGE_EXTERNAL_STORAGE`、**未**新增 `CAMERA`、**未**新增 `BLUETOOTH`；④ 无 `INTERNET` 原则保留（与 `REAL_AUDIO_MVP_SDD.md` §3.3 / `REAL_AUDIO_DEPENDENCY_SPIKE.md` §5.4 一致）；⑤ `PermissionStatus.provisional` 在 iOS 临时授权场景下被映射为 `granted`，符合 SDD §3.2 语义；⑥ iOS `NSMicrophoneUsageDescription` 文案已在 SDD §3.5 预留，本任务**不**重复声明（任务范围仅 Android main/debug/profile）；⑦ `MicrophonePermissionStatus` 保留 iOS `limited` / `restricted` 跨平台语义，未识别值兜底为 `unknown`；⑧ 隐私政策文案更新由 T033 任务执行，本任务**不**修改 `PrivacyNoticePage`；⑨ 文档准确说明"权限基础层完成，真实录音调用仍未完成"（`TECH_DEBT.md` TD-007 / TD-010 已校准）；⑩ 未 push、未 Tag、未 amend / rebase / reset --hard。QA Reviewer 重点确认：① 14 项单元测试全部通过（`flutter test test/shared/services/microphone_permission_service_test.dart` 输出 `00:00 +14: All tests passed!`）；② 状态映射覆盖 6 个 `MicrophonePermissionStatus` 值（granted / denied / permanentlyDenied / restricted / limited / unknown），其中 unknown fallback 通过 fake gateway 自定义 raw 值触发，验证 forward-compat；③ 契约不变式测试覆盖：`checkStatus` 不调用 `request`（`checkStatusCallCount = 1 && requestPermissionCallCount = 0`）、`requestPermission` 调用 `request` exactly once（`requestPermissionCallCount = 1 && checkStatusCallCount = 0`）、service 不引用录音 SDK 符号；④ 测试不触发真实系统权限弹窗（fake gateway 注入，无 platform channel 调用）；⑤ 全量 `flutter test` 通过 421 项（407 既有 + 14 新增，既有测试未减少）；⑥ `flutter analyze` 输出 `No issues found! (ran in 4.4s)`；⑦ Manifest 静态检查：`grep -c RECORD_AUDIO` 三处 Manifest 各返回 2（1 行 uses-permission + 1 行注释），`grep -E "uses-permission.*INTERNET"` 三处 Manifest 均返回空，`grep -E "READ_EXTERNAL_STORAGE|WRITE_EXTERNAL_STORAGE|MANAGE_EXTERNAL_STORAGE|CAMERA|BLUETOOTH"` 三处 Manifest 均返回空；⑧ `pubspec.yaml` 单行修改（`uuid: ^4.5.3` 后追加 `permission_handler: ^12.0.3`），无其他变化；⑨ 命令纪律严格执行，未触发 T022A 记录的命令纪律违规模式（管道 / 重定向 / 输出截断 helper / 复合），与 T023 / T024 / T025 / T026 表现一致；详见 `docs/dev/TASK_LEDGER.md` T027 条目 |
+
+#### 4.7.1 Flutter Architect Reviewer（02-flutter-architect）只读审查
+
+- **Reviewer Role**：`02-flutter-architect`
+- **Scope Reviewed**：`pubspec.yaml` / `pubspec.lock` 变更；`lib/shared/services/microphone_permission_status.dart` / `microphone_permission_gateway.dart` / `permission_handler_microphone_permission_gateway.dart` / `microphone_permission_service.dart` 四个新文件；`android/app/src/main/AndroidManifest.xml` / `debug/AndroidManifest.xml` / `profile/AndroidManifest.xml` 三处清单；`test/shared/services/microphone_permission_service_test.dart` 单元测试；既有 `docs/TECH_STACK.md` §6.1 / §7.4 / §10 + `docs/ARCHITECTURE.md` §3 / §7
+- **Evidence Checked**：
+  - `pubspec.yaml` 单行修改（`uuid: ^4.5.3` 后追加 `permission_handler: ^12.0.3`），`pubspec.lock` 仅由 pub 自动更新；
+  - `flutter pub get` 解析成功，输出 `+ permission_handler 12.0.3` + 5 个子包；`pubspec.yaml` 当前**不**包含 `record` / `just_audio` / `audio_session` / `audioplayers` / `flutter_sound`；
+  - `lib/shared/services/microphone_permission_status.dart` 6 个 enum 值（granted / denied / permanentlyDenied / restricted / limited / unknown），注释明确"跨平台语义保留"；
+  - `lib/shared/services/microphone_permission_gateway.dart` 抽象接口 3 个方法（`checkStatus` / `requestPermission` / `openSettings`），与 `REAL_AUDIO_MVP_SDD.md` §7.1 一致；
+  - `lib/shared/services/permission_handler_microphone_permission_gateway.dart` 显式映射 `PermissionStatus` 6 个枚举值到 `MicrophonePermissionStatus`（granted 包含 provisional、permanentlyDenied 单独、restricted 单独、limited 单独、denied 单独），forward-compat 兜底 `unknown`；
+  - `lib/shared/services/microphone_permission_service.dart` 通过构造注入 gateway，3 个只读方法，**不**在 `checkStatus` 时自动申请、**不**调用真实麦克风、**不**依赖 UI、**不**依赖 Riverpod codegen；
+  - `test/shared/services/microphone_permission_service_test.dart` 使用 `_FakeMicrophonePermissionGateway` fake gateway 注入，14 项测试覆盖 6 状态映射 + 3 契约不变式 + 2 openSettings 分支 + 1 service 不引用录音 SDK 符号；
+  - `android/app/src/main/AndroidManifest.xml` / `debug/AndroidManifest.xml` / `profile/AndroidManifest.xml` 三处清单均显式声明 `<uses-permission android:name="android.permission.RECORD_AUDIO" />`；
+  - `lib/features/recording/application/recording_practice_controller.dart` 未被修改（`RecordingPracticeController` 仍硬编码 `audioFilePath: null`）；
+  - `lib/data/database/app_database.dart` 未被修改（schemaVersion 仍为 1）；
+  - `lib/features/recording/presentation/recording_page.dart` / `lib/features/practice_records/presentation/practice_record_detail_page.dart` 等 UI 页面代码未修改；
+- **Findings**：
+  - `pubspec.yaml` 单行修改符合任务预期（仅新增 `permission_handler ^12.0.3`），无其他顶层依赖变更；
+  - 权限服务分层（`shared/services/microphone_permission_*.dart`）与既有 `lib/shared/services/` 约定一致（参考 `install_date_service.dart` / `drift_install_date_service.dart` 的接口 + 实现分离模式）；
+  - `MicrophonePermissionGateway` 抽象隔离 platform channel，测试 fake gateway 注入即可验证映射逻辑，无需 mocktail / mockito（与 T026 §7.3 T035 设计原则一致）；
+  - `PermissionHandlerMicrophonePermissionGateway` 是唯一接触 `permission_handler` 平台包的生产代码，符合"薄包装"原则；
+  - `RecordingPracticeController` 未被修改、Drift schema 未被修改、UI 页面代码未修改，符合任务"权限基础层"边界；
+  - `permission_handler` 12.0.3 满足 `compileSdk ≥ 33` 要求（当前 `compileSdk = 36`），无 `coreLibraryDesugaring` 需求；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - 未来 T033 任务实现 UI 权限体验时，可考虑在 `MicrophonePermissionService` 之上加一层 `MicrophonePermissionNotifier`（Riverpod `AsyncNotifier`）以驱动 UI 状态；本任务**不**强制此设计（避免过度架构）；
+  - `MicrophonePermissionStatus.unknown` 在 Android MVP 不会触发（permission_handler 12.x 枚举已穷尽），保留仅为 forward-compat；如未来 T036 真机验收发现新枚举值，按 unknown 处理即可；
+- **Approval**：**Approved**
+
+#### 4.7.2 Compliance Reviewer（08-compliance-reviewer）只读审查
+
+- **Reviewer Role**：`08-compliance-reviewer`
+- **Scope Reviewed**：`android/app/src/main/AndroidManifest.xml` / `debug/AndroidManifest.xml` / `profile/AndroidManifest.xml` 三处清单权限声明；`lib/shared/services/microphone_permission_status.dart` enum 状态语义；`lib/shared/services/microphone_permission_service.dart` / `permission_handler_microphone_permission_gateway.dart` 权限流程；`test/shared/services/microphone_permission_service_test.dart` 权限行为测试；既有 `docs/dev/REAL_AUDIO_MVP_SDD.md` §3 Permission and Privacy / `docs/dev/TECH_DEBT.md` TD-007 / TD-010
+- **Evidence Checked**：
+  - `git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 五项均返回空；
+  - `v0.1.0-mvp` 仍指向 `d49ce4b`、`v1.0.0-release` 仍指向 `703d2aa`；
+  - 全文搜索 `pubspec.yaml` / `lib/shared/services/microphone_permission_*.dart` / `test/shared/services/microphone_permission_service_test.dart` 确认未出现 `key.properties` 内容 / 密码 / keystore 内容 / 用户目录 keystore 绝对路径；
+  - `grep -c RECORD_AUDIO` 三处 Manifest 各返回 2（1 行 `<uses-permission>` 节点 + 1 行注释行）；
+  - `grep -E "uses-permission.*INTERNET"` 三处 Manifest 均返回空（**未**声明 `INTERNET`）；
+  - `grep -E "READ_EXTERNAL_STORAGE|WRITE_EXTERNAL_STORAGE|MANAGE_EXTERNAL_STORAGE|CAMERA|BLUETOOTH"` 三处 Manifest 均返回空（**未**声明任何存储 / 相机 / 蓝牙权限）；
+  - `MicrophonePermissionStatus` 6 个值权限语义注释明确（granted / denied / permanentlyDenied / restricted / limited / unknown），与 `REAL_AUDIO_MVP_SDD.md` §3.2 决策一致；
+  - `PermissionStatus.provisional`（iOS 临时授权）被映射为 `granted`，符合 SDD §3.2 "在 App 内可继续使用"语义；
+  - `TECH_DEBT.md` TD-007 已校准"权限基础层完成；真实录音调用仍未完成"，未把"已声明 RECORD_AUDIO"写成"真实录音已实现"；
+  - `TECH_DEBT.md` TD-010 已校准"T027 已完成 `permission_handler ^12.0.3` 引入"，明确 `record ^7.1.0` 与 `just_audio ^0.10.5` 仍**未**写入 `pubspec.yaml`；
+  - 真实音频阶段无 `INTERNET` 原则保留（与 `REAL_AUDIO_MVP_SDD.md` §3.3 / `REAL_AUDIO_DEPENDENCY_SPIKE.md` §5.4 一致）；
+  - iOS `NSMicrophoneUsageDescription` 文案已在 `REAL_AUDIO_MVP_SDD.md` §3.5 预留，本任务**不**重复声明（任务范围仅 Android main/debug/profile）；
+- **Findings**：
+  - 权限声明范围与 `REAL_AUDIO_MVP_SDD.md` §3.1 设计一致：T027 在三处 AndroidManifest 显式声明 `RECORD_AUDIO`；
+  - 无 `INTERNET` 原则保留：三处 Manifest **未**声明 `INTERNET`，`PermissionHandlerMicrophonePermissionGateway` 仅调用 `Permission.microphone` platform channel（无任何网络 API 调用）；
+  - 状态映射语义正确：`PermissionStatus.denied` / `permanentlyDenied` / `restricted` / `limited` / `granted` 各自对应 `MicrophonePermissionStatus` 同名值；`provisional`（iOS 临时授权）映射为 `granted`；forward-compat `unknown` 兜底；
+  - 未声称真实录音已实现：`TECH_DEBT.md` TD-007 / TD-010 已显式标注"权限基础层完成"而非"真实录音完成"；
+  - 未读取 `android/key.properties` 内容、未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；
+  - 未 push、未 Tag、未 amend / rebase / reset --hard；
+  - 隐私政策更新由 T033 任务执行，本任务**不**修改 `PrivacyNoticePage`（符合 T033 任务边界）；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - `PermissionStatus.grantedLimited` 在 permission_handler 12.0.3 实际并不存在（仅有 6 个枚举值），`PermissionHandlerMicrophonePermissionGateway._mapStatus` 已正确删除该 case；如未来 permission_handler 13.x 引入新枚举值（如 `grantedLimited` / 部分授权），按 unknown fallback 即可，无需阻塞当前任务；
+  - 建议 T033 任务实现 UI 权限体验时，`MicrophonePermissionStatus.restricted` 文案可与 `permanentlyDenied` 区分（前者为"系统级限制"，如家长控制 / MDM；后者为"用户永久拒绝"），避免文案误导；
+- **Approval**：**Approved**
+
+#### 4.7.3 QA Reviewer（07-qa-reviewer）只读审查
+
+- **Reviewer Role**：`07-qa-reviewer`
+- **Scope Reviewed**：`test/shared/services/microphone_permission_service_test.dart` 单元测试；`flutter analyze` / `flutter test` 实际输出；`flutter pub get` 解析结果；Manifest 静态检查结果；既有 `docs/dev/AGENT_REVIEW_TEMPLATE.md` QA Checklist
+- **Evidence Checked**：
+  - `flutter analyze` `No issues found! (ran in 4.4s)`；
+  - `flutter test test/shared/services/microphone_permission_service_test.dart` 输出 `00:00 +14: All tests passed!`（14 项测试 100% 通过）；
+  - `flutter test` 全量输出 `00:13 +421: All tests passed!`（421 = 407 既有 + 14 新增，既有测试未减少，新增 ≥12 满足任务预期）；
+  - `flutter pub get` 解析成功，输出 `+ permission_handler 12.0.3` + 5 个子包；
+  - 14 项测试覆盖：① checkStatus maps granted；② checkStatus maps denied；③ checkStatus maps permanentlyDenied；④ checkStatus maps restricted；⑤ checkStatus maps limited；⑥ checkStatus maps unknown fallback；⑦ requestPermission maps granted；⑧ requestPermission maps denied；⑨ requestPermission maps permanentlyDenied；⑩ checkStatus does not call request；⑪ requestPermission calls request exactly once；⑫ service does not call microphone recording APIs（契约测试：service 文件**不**引用 record / just_audio / audio_session 符号）；⑬ openSettings returns true when gateway opens settings；⑭ openSettings returns false when gateway fails to open settings；
+  - 全部 14 项测试使用 `_FakeMicrophonePermissionGateway` fake gateway 注入，**不**触发真实 platform channel / **不**触发真实系统权限弹窗；
+  - `unknown` fallback 通过 fake gateway 自定义 `MicrophonePermissionStatus.unknown` 返回值触发，验证 forward-compat；
+  - `grep -c RECORD_AUDIO` 三处 Manifest 各返回 2（1 行 `<uses-permission>` 节点 + 1 行注释行）；
+  - `grep -E "uses-permission.*INTERNET"` 三处 Manifest 均返回空；
+  - `grep -E "READ_EXTERNAL_STORAGE|WRITE_EXTERNAL_STORAGE|MANAGE_EXTERNAL_STORAGE|CAMERA|BLUETOOTH"` 三处 Manifest 均返回空；
+  - `pubspec.yaml` 单行修改（`uuid: ^4.5.3` 后追加 `permission_handler: ^12.0.3`），无其他变化；
+- **Findings**：
+  - 测试数从 407 增至 421（+14），既有 407 项测试 100% 保留，**无**测试减少；
+  - 测试覆盖完整：6 状态映射 + 3 契约不变式 + 2 openSettings 分支 + 1 录音 SDK 符号未引用契约测试，14 项测试 = 12 状态映射/契约 + 2 openSettings（任务最低要求 12 项，已超额）；
+  - 测试不触发真实系统权限弹窗（fake gateway 注入，与 `REAL_AUDIO_MVP_TDD.md` §1.1 Permission behavior tests 一致）；
+  - `flutter analyze` 通过，无新警告；
+  - Manifest 权限验证通过：三处 `RECORD_AUDIO` 声明 + 三处无 `INTERNET` + 三处无任何存储 / 相机 / 蓝牙权限；
+  - 既有 407 项测试 100% 保留（基线 T024 锁定，本任务**未**修改任何既有测试代码 / 既有生产代码 / Drift schema / Android Gradle 配置 / `pubspec.yaml` 其他字段 / `pubspec.lock` 既有部分）；
+  - 命令纪律严格执行：本任务全程命令均为单条命令，无管道 / 重定向 / `&&` / 分号 / 复合命令，与 T023 / T024 / T025 / T026 表现一致；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - `PermissionStatus.grantedLimited` 映射分支在初版曾被加入 `PermissionHandlerMicrophonePermissionGateway._mapStatus`，但 permission_handler 12.0.3 实际**不**存在该枚举值，编译失败后已删除；如未来 permission_handler 13.x 引入新枚举值（如 `grantedLimited` / `partial`），可在 T028+ 任务按 unknown fallback 即可；
+  - `unknown` fallback 当前通过 fake gateway 自定义 raw 值触发，未在生产代码中显式覆盖（permission_handler 12.x switch 已穷尽，dead code 已被 `// ignore: dead_code` 标注保留 forward-compat）；如未来 permission_handler 升级引入新枚举值，按 unknown 处理无需修改本任务代码；
+- **Approval**：**Approved**
+
 ## 6. Review Cadence
 
 > 不追求每周复盘；以"每 5 个任务 + 每个阶段结束"为节奏。

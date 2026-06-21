@@ -64,6 +64,44 @@ plugins {
 def androidRootDir = rootProject.projectDir
 def propsFile = new File(androidRootDir, "key.properties")
 
+// T020_FIX_RELEASE_SIGNING_ABSOLUTE_STORE_FILE_PATH:
+// `key.properties` may legitimately hold an absolute path to a keystore that
+// lives OUTSIDE the repository (e.g. `C:/Users/.../.android-keys/upload.jks`
+// on Windows, or `/Users/.../.android-keys/upload.jks` on macOS/Linux). It
+// may also hold a path relative to the `android/` Gradle root project, which
+// is the original `rootProject.projectDir` layout used by T020.
+//
+// We must therefore:
+//   1. trim the value (Windows key.properties files commonly contain `\r`
+//      line endings that would otherwise leak into the path);
+//   2. detect Windows drive-rooted paths (`^[A-Za-z]:[\\/].*`),
+//      Windows UNC paths (`^\\\\.*`), and Unix absolute paths (`^/.*`);
+//   3. fall back to `androidRootDir` as the base ONLY for relative paths.
+//
+// The helper deliberately accepts only `(androidRootDir, storeFilePath)` and
+// never sees `storePassword` / `keyPassword` / `keyAlias`, so it can be used
+// from error-reporting code paths without ever printing secrets.
+def resolveReleaseStoreFile = { File androidRoot, String rawPath ->
+    def storeFilePath = (rawPath == null) ? "" : rawPath.toString().trim()
+    if (storeFilePath.isEmpty()) {
+        return [file: null, isAbsolute: false, originalPath: storeFilePath]
+    }
+    // Windows drive absolute (e.g. `C:/...` or `C:\...`).
+    def isWindowsDrive = storeFilePath ==~ /^[A-Za-z]:[\\/].*/
+    // Windows UNC absolute (e.g. `\\server\share\file.jks`).
+    def isWindowsUnc = storeFilePath.startsWith("\\\\")
+    // Unix absolute (e.g. `/Users/foo/upload.jks`).
+    def isUnixAbsolute = storeFilePath.startsWith("/")
+    boolean isAbsolute = isWindowsDrive || isWindowsUnc || isUnixAbsolute
+    File resolved
+    if (isAbsolute) {
+        resolved = new File(storeFilePath)
+    } else {
+        resolved = new File(androidRoot, storeFilePath)
+    }
+    return [file: resolved.absoluteFile, isAbsolute: isAbsolute, originalPath: storeFilePath]
+}
+
 def releaseSigningProps = null
 def releaseSigningError = null
 
@@ -109,14 +147,27 @@ if (!propsFile.exists()) {
                     "non-empty value for each missing key."
         } else {
             def storeFilePath = loaded.getProperty("storeFile")
-            def keystoreFile = new File(androidRootDir, storeFilePath)
-            if (!keystoreFile.exists()) {
+            def resolved = resolveReleaseStoreFile(androidRootDir, storeFilePath)
+            def keystoreFile = resolved.file as File
+            if (keystoreFile == null) {
+                // Defensive: trimmed value is empty even though the key
+                // was reported as present. This branch is currently
+                // unreachable because `missingKeys` already catches
+                // empty values, but kept for future-proofing.
+                releaseSigningError = "Android release signing is requested " +
+                        "but the keystore referenced by " + propsFile.path +
+                        " (storeFile='" + resolved.originalPath +
+                        "') is empty. Refusing to fall back to debug signing."
+            } else if (!keystoreFile.exists()) {
                 // We mention the configured storeFile path so the developer
                 // can locate the offending entry, but we never echo any
-                // password or the key alias.
+                // password or the key alias. Note: `storeFile` in
+                // `key.properties` is a path, not a secret, so echoing it
+                // is safe and required for diagnostics.
                 releaseSigningError = "Android release signing is requested " +
                         "but the keystore referenced by " + propsFile.path +
                         " (storeFile='" + storeFilePath +
+                        "', resolved='" + keystoreFile.absolutePath +
                         "') does not exist on disk. Refusing to fall back " +
                         "to debug signing."
             } else {
@@ -173,16 +224,34 @@ android {
         // Props have already been validated at script-evaluation time. Reuse
         // the parsed map to wire signingConfigs.release.
         def storeFilePath = releaseSigningProps.getProperty("storeFile")
-        def storePassword = releaseSigningProps.getProperty("storePassword")
-        def keyAlias = releaseSigningProps.getProperty("keyAlias")
-        def keyPassword = releaseSigningProps.getProperty("keyPassword")
+        // T020_FIX_RELEASE_SIGNING_ABSOLUTE_STORE_FILE_PATH: keep the
+        // password/alias values under short, non-conflicting names so that
+        // Groovy's `String.metaClass.call` interception (triggered by
+        // values containing `@`) cannot shadow the AGP setter dispatch
+        // inside the `signingConfigs { release { ... } }` closure.
+        def sp = releaseSigningProps.getProperty("storePassword")
+        def ka = releaseSigningProps.getProperty("keyAlias")
+        def kp = releaseSigningProps.getProperty("keyPassword")
+
+        // T020_FIX_RELEASE_SIGNING_ABSOLUTE_STORE_FILE_PATH: use the same
+        // resolver that validated the keystore at script-evaluation time.
+        // This keeps Windows drive paths, Windows UNC paths, Unix absolute
+        // paths, and `android/`-relative paths consistent between the
+        // existence check above and the actual File handed to AGP.
+        def resolvedStoreFile = resolveReleaseStoreFile(androidRootDir, storeFilePath).file as File
 
         signingConfigs {
             release {
-                storeFile new File(androidRootDir, storeFilePath)
-                storePassword storePassword
-                keyAlias keyAlias
-                keyPassword keyPassword
+                storeFile resolvedStoreFile
+                // Explicit method-call syntax with distinct local variable
+                // names (`sp` / `ka` / `kp`) prevents Groovy's
+                // `String.metaClass.call` interception from shadowing the
+                // AGP setter dispatch when the underlying value contains
+                // `@`. Without this, evaluation of `android {}` fails on
+                // every build (including `assembleDebug`).
+                storePassword(sp)
+                keyAlias(ka)
+                keyPassword(kp)
             }
         }
     }

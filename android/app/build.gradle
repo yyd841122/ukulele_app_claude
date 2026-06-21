@@ -5,7 +5,7 @@ plugins {
     id "dev.flutter.flutter-gradle-plugin"
 }
 
-// --- T020_FIX_REMOVE_DEBUG_SIGNING_FALLBACK -------------------------------
+// --- T020_FIX_AGGREGATE_SIGNING_CONFIGURATION ---------------------------
 // The release build reads its signing material from `android/key.properties`,
 // which is owned by the local developer (never committed). When a release
 // task is requested — directly (e.g. `assembleRelease`, `flutter build apk
@@ -14,20 +14,35 @@ plugins {
 // keystore that does not exist on disk, the build must fail fast with a clear
 // message instead of silently falling back to the debug key.
 //
-// Two complementary guards enforce this:
+// The signing configuration is discovered and validated INDEPENDENTLY of
+// `gradle.startParameter.taskNames`. Previously the configuration-phase probe
+// was guarded by a CLI-name check, which meant that aggregate tasks such as
+// `build` (whose own name does not contain "release" but which depend on
+// `assembleRelease`) would never load a valid `key.properties`, leaving the
+// release signing config unset and the task-graph guard correctly but
+// frustratingly reporting a false-positive missing-config failure.
 //
-//   1. Configuration-phase guard. When `gradle.startParameter.taskNames`
-//      already mentions a release task (the common, direct case), we eagerly
-//      validate `key.properties` at script-evaluation time so the developer
-//      gets the failure before any plugin config runs.
+// We now maintain TWO independent state values at script-evaluation time:
 //
-//   2. Execution-phase guard. We register a `taskGraph.whenReady` listener
-//      that inspects the *actual* resolved task graph. This catches aggregate
-//      entry points (`build`, `assemble`, `check`, …) whose own name does
-//      not contain `release` but which depend on `assembleRelease` /
-//      `bundleRelease`. The check runs after evaluation but before any
-//      release task executes, so it cannot be bypassed by routing the
-//      release through a meta-task.
+//   1. `releaseSigningProps` — non-null ONLY when the configuration has been
+//      fully and successfully validated. This is the single source of truth
+//      for "is a release signing config available right now?".
+//
+//   2. `releaseSigningError` — a safe, developer-facing description of why
+//      the configuration is unavailable. Holds the reason whether the file
+//      is missing, malformed, missing required keys, or references a
+//      keystore that does not exist on disk. Never contains keystore
+//      passwords, the key alias, or any keystore material.
+//
+// Both guards consult the same state:
+//
+//   * Configuration-phase guard (direct release request): when `key.properties`
+//     is missing or invalid AND the CLI requests a release task, fail with
+//     `releaseSigningError` immediately.
+//
+//   * Execution-phase guard (aggregate task): when the resolved task graph
+//     contains a release-artifact task AND `releaseSigningProps` is null,
+//     fail with `releaseSigningError` before any task executes.
 //
 // `buildTypes.release` never references `signingConfigs.debug` anywhere in
 // this file. When signing material is present we bind the release build
@@ -36,12 +51,88 @@ plugins {
 // sure no release task actually runs.
 //
 // Debug builds (`assembleDebug`, `flutter run`, `flutter test`,
-// `flutter analyze`) are unaffected: neither guard produces a release
-// request, and `signingConfigs.debug` is created by AGP on its own.
+// `flutter analyze`) are unaffected: no probe failure raises during normal
+// debug configuration, and `signingConfigs.debug` is created by AGP on its
+// own.
 //
 // In a standard Flutter Android project the Gradle rootProject is the
 // `android/` directory itself, so `key.properties` and the keystore sit at
 // `<rootProject>/key.properties` and `<rootProject>/<storeFile>` respectively.
+
+// --- Configuration discovery ------------------------------------------------
+
+def androidRootDir = rootProject.projectDir
+def propsFile = new File(androidRootDir, "key.properties")
+
+def releaseSigningProps = null
+def releaseSigningError = null
+
+if (!propsFile.exists()) {
+    // "Configuration missing" state. We DO NOT throw here — debug builds
+    // must remain runnable even when no release keystore is configured.
+    // The two guards below will surface this state only when a release
+    // artifact is actually being produced.
+    releaseSigningError = "Android release signing is not configured: " +
+            propsFile.path + " is missing. Create the file with the keys " +
+            "[storeFile, storePassword, keyAlias, keyPassword] pointing to " +
+            "your upload keystore. The file must be kept out of version " +
+            "control (see .gitignore)."
+} else {
+    // File exists — try to read and validate it. Any failure produces a
+    // safe error message and leaves `releaseSigningProps` as null.
+    def loaded
+    try {
+        loaded = new Properties()
+        propsFile.withInputStream { stream -> loaded.load(stream) }
+    } catch (Exception e) {
+        releaseSigningError = "Android release signing configuration at " +
+                propsFile.path + " could not be parsed: " + e.getClass().getSimpleName() +
+                ". Refusing to fall back to debug signing."
+    }
+
+    if (loaded != null) {
+        def missingKeys = []
+        ["storeFile", "storePassword", "keyAlias", "keyPassword"].each { String k ->
+            def v = loaded.getProperty(k)
+            if (v == null || v.trim().isEmpty()) {
+                missingKeys << k
+            }
+        }
+        if (!missingKeys.isEmpty()) {
+            // Note: we intentionally name the MISSING key names here (they are
+            // not secrets). We never echo the values of any key, including
+            // the alias or passwords.
+            releaseSigningError = "Android release signing configuration at " +
+                    propsFile.path + " is missing required key(s): " +
+                    missingKeys.join(", ") +
+                    ". Refusing to fall back to debug signing. Provide a " +
+                    "non-empty value for each missing key."
+        } else {
+            def storeFilePath = loaded.getProperty("storeFile")
+            def keystoreFile = new File(androidRootDir, storeFilePath)
+            if (!keystoreFile.exists()) {
+                // We mention the configured storeFile path so the developer
+                // can locate the offending entry, but we never echo any
+                // password or the key alias.
+                releaseSigningError = "Android release signing is requested " +
+                        "but the keystore referenced by " + propsFile.path +
+                        " (storeFile='" + storeFilePath +
+                        "') does not exist on disk. Refusing to fall back " +
+                        "to debug signing."
+            } else {
+                releaseSigningProps = loaded
+            }
+        }
+    }
+}
+
+// --- Configuration-phase guard (direct release request) -------------------
+//
+// Even though we now probe independently of the CLI task name, we still need
+// a fast failure for the common case where the developer runs
+// `assembleRelease` / `bundleRelease` / `flutter build apk --release` and
+// the configuration is unavailable. Failing at script-evaluation time keeps
+// the error message clear and unrelated to signingConfigs.
 def releaseSigningRequestedByCli() {
     def requested = gradle.startParameter.taskNames ?: []
     return requested.any { String name ->
@@ -51,61 +142,8 @@ def releaseSigningRequestedByCli() {
     }
 }
 
-def loadReleaseSigningProps(File androidRootDir) {
-    def propsFile = new File(androidRootDir, "key.properties")
-    if (!propsFile.exists()) {
-        throw new GradleException(
-                "Android release signing is requested but " + propsFile.path +
-                        " is missing. Create android/key.properties with the keys " +
-                        "[storeFile, storePassword, keyAlias, keyPassword] pointing " +
-                        "to your upload keystore. The file must be kept out of version " +
-                        "control (see .gitignore)."
-        )
-    }
-    def props = new Properties()
-    propsFile.withInputStream { stream -> props.load(stream) }
-    return props
-}
-
-def requiredKeyOrFail(Properties props, String key) {
-    def value = props.getProperty(key)
-    if (value == null || value.trim().isEmpty()) {
-        throw new GradleException(
-                "Android release signing is requested but android/key.properties is " +
-                        "missing the required key '" + key + "'. Refusing to fall back " +
-                        "to debug signing. Provide a non-empty value for '" + key + "'."
-        )
-    }
-    return value
-}
-
-// Eagerly validate the release signing configuration when the CLI itself
-// names a release task. Doing this at script-evaluation time (not inside
-// the android block) means the failure surfaces before any plugin / variant
-// has been configured, keeping the error message clear and unrelated to
-// signingConfigs.
-def releaseSigningProps = null
-if (releaseSigningRequestedByCli()) {
-    def androidRootDir = rootProject.projectDir
-    def signingProps = loadReleaseSigningProps(androidRootDir)
-    def storeFilePath = requiredKeyOrFail(signingProps, "storeFile")
-    requiredKeyOrFail(signingProps, "storePassword")
-    requiredKeyOrFail(signingProps, "keyAlias")
-    requiredKeyOrFail(signingProps, "keyPassword")
-
-    def keystoreFile = new File(androidRootDir, storeFilePath)
-    if (!keystoreFile.exists()) {
-        throw new GradleException(
-                "Android release signing is requested but the keystore referenced by " +
-                        "android/key.properties (storeFile='" + storeFilePath +
-                        "') does not exist on disk. Refusing to fall back to debug " +
-                        "signing."
-        )
-    }
-    releaseSigningProps = signingProps
-    // Intentionally do NOT echo storePassword / keyPassword / keyAlias to any
-    // log; only the resolved file path is included above, and the keystore
-    // existence check provides the actionable signal to the developer.
+if (releaseSigningRequestedByCli() && releaseSigningProps == null) {
+    throw new GradleException(releaseSigningError)
 }
 
 android {
@@ -134,7 +172,6 @@ android {
     if (releaseSigningProps != null) {
         // Props have already been validated at script-evaluation time. Reuse
         // the parsed map to wire signingConfigs.release.
-        def androidRootDir = rootProject.projectDir
         def storeFilePath = releaseSigningProps.getProperty("storeFile")
         def storePassword = releaseSigningProps.getProperty("storePassword")
         def keyAlias = releaseSigningProps.getProperty("keyAlias")
@@ -152,7 +189,7 @@ android {
 
     buildTypes {
         release {
-            // T020_FIX_REMOVE_DEBUG_SIGNING_FALLBACK: `buildTypes.release`
+            // T020_FIX_AGGREGATE_SIGNING_CONFIGURATION: `buildTypes.release`
             // must never reference `signingConfigs.debug`. When signing
             // material has been validated we wire the release build type to
             // the dedicated `signingConfigs.release`. When the material is
@@ -167,13 +204,18 @@ android {
     }
 }
 
-// Execution-phase guard: inspect the resolved task graph for any
-// release-artifact-producing task (`assembleRelease`, `bundleRelease`,
-// `packageRelease`). When present, the build must have a fully validated
-// release signing configuration; otherwise we throw a GradleException before
-// any task in the graph executes. This closes the gap left by the
-// `gradle.startParameter.taskNames` check, which is bypassed by aggregate
-// tasks such as `build`, `assemble`, or `check`.
+// --- Execution-phase guard (aggregate task) ------------------------------
+//
+// Inspect the resolved task graph for any release-artifact-producing task
+// (`assembleRelease`, `bundleRelease`, `packageRelease`). When present, the
+// build must have a fully validated release signing configuration; otherwise
+// we throw a GradleException using `releaseSigningError` (the SAME safe
+// description the configuration-phase guard would have used) before any
+// task in the graph executes. This closes the gap where the
+// `gradle.startParameter.taskNames` check is bypassed by aggregate tasks
+// such as `build`, `assemble`, or `check`, while ALSO ensuring that a
+// valid `key.properties` (probed at script-evaluation time) is honored
+// for those same aggregate tasks.
 gradle.taskGraph.whenReady { taskGraph ->
     def hasReleaseArtifactTask = taskGraph.allTasks.any { task ->
         def name = task.name.toLowerCase()
@@ -182,21 +224,10 @@ gradle.taskGraph.whenReady { taskGraph ->
                 name == "packagerelease"
     }
     if (hasReleaseArtifactTask && releaseSigningProps == null) {
-        // Build the failed-guard message without echoing any keystore
-        // value. We deliberately do not include the names of missing keys
-        // beyond the file path, and we never print alias / password.
-        def androidRootDir = rootProject.projectDir
-        def propsFile = new File(androidRootDir, "key.properties")
-        throw new GradleException(
-                "Android release signing is required because the resolved " +
-                        "task graph includes a release-artifact task " +
-                        "(assembleRelease / bundleRelease / packageRelease), " +
-                        "but " + propsFile.path + " is missing or invalid. " +
-                        "Refusing to fall back to debug signing. Create " +
-                        "android/key.properties with the keys " +
-                        "[storeFile, storePassword, keyAlias, keyPassword] " +
-                        "pointing to your upload keystore, then re-run."
-        )
+        // `releaseSigningError` was prepared at script-evaluation time and
+        // already strips passwords and the key alias. Re-throw it here so
+        // both guards give the developer the same actionable message.
+        throw new GradleException(releaseSigningError)
     }
 }
 

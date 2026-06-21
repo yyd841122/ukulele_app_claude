@@ -1,0 +1,142 @@
+# Agent 协作质量度量 (AGENT_QUALITY_METRICS)
+
+> 本文档定义多 Agent 协作的**质量度量**与**复盘节奏**，用于判断多 Agent 机制是否产生真实价值、是否沦为形式主义。
+> 是 `docs/MULTI_AGENT_WORKFLOW.md` 定义的协作流程的**效果评估层**落地。
+
+## 1. Document Status
+
+| 字段 | 值 |
+| --- | --- |
+| Task ID | `T021A_ACTIVATE_MULTI_AGENT_ROLE_SYSTEM` |
+| 基线 Commit | `d7bac44` |
+| 当前状态 | 协作机制（轻量级） |
+| 是否引入自动化度量平台 | 否（人工台账 + 主观等级） |
+| 是否修改生产代码 | 否 |
+| 是否修改 `agents/*.md` 角色原文 | 否 |
+
+## 2. Why Measure
+
+度量目的：
+
+1. **判断多 Agent 是否真有价值**：区分"拦截真实缺陷的协作"与"只走流程的形式主义"。
+2. **区分有效审查与形式主义**：通过 `Blockers Valid` / `Blockers Found` 比值衡量 Reviewer 的实际产出。
+3. **为后续项目复用机制**：积累可移植的多 Agent 协作经验与失败教训。
+4. **驱动角色清理**：长期无产出的 Reviewer 必须删除；高产出 Reviewer 必须保留并明确职责。
+
+> 原则：先做轻量台账，不引入复杂自动化度量平台。任何"为了度量而度量"的指标必须删除。
+
+## 3. Metrics
+
+> 不追求复杂仪表盘；先以"每任务一行台账"形式记录。
+
+### 3.1 缺陷拦截类（按拦截来源分类）
+
+| 指标 | 含义 | 数据来源 |
+| --- | --- | --- |
+| Defects caught by GPT review | GPT 首席架构师复审拦截的缺陷 | GPT 复审记录 |
+| Defects caught by QA Reviewer | QA Reviewer 拦截的缺陷 | Reviewer 报告 + 后续修复 commit |
+| Defects caught by Compliance Reviewer | Compliance Reviewer 拦截的缺陷 | Reviewer 报告 + 后续修复 commit |
+| Defects caught by domain-specific Reviewer | 领域 Reviewer（如 Flutter Architect、Audio Engineer）拦截的缺陷 | Reviewer 报告 + 后续修复 commit |
+| Total defects caught by reviewers | 上述四类之和 | 上述加总 |
+
+### 3.2 流程类
+
+| 指标 | 含义 | 数据来源 |
+| --- | --- | --- |
+| Rework count | 任务被打回 / 重做的次数 | GPT 复审结论 / 任务台账 |
+| Prompt violations | 违反 Prompt 规则（如未声明 Primary Agent、未声明 Review Agents） | 任务报告 |
+| Command discipline violations | 违反命令纪律（管道 / 重定向 / `&&` / 复合命令 / 强 push / amend） | 任务报告与 `git log` 校对 |
+| Scope violations | 修改了任务未明确允许的文件 | `git diff --stat` 与任务允许范围比对 |
+| Test count accuracy | 报告测试计数与实际 `flutter test` 是否一致 | 任务报告与 `flutter test` 输出校对 |
+| False confidence incidents | 报告把"用户手工验收"写成"自动通过"或类似 | 任务报告与实际 `TASK_LEDGER` 校对 |
+
+### 3.3 Reviewer 质量类
+
+| 指标 | 含义 | 数据来源 |
+| --- | --- | --- |
+| Reviewer blocker accuracy | Reviewer 给出的 Blockers 中实际成立的比例 | 后续修复 commit 与 Blockers 比对 |
+| Reviewer report completeness | Reviewer 报告是否包含 Scope Reviewed / Evidence Checked / Findings / Blockers / Approval | 任务报告 |
+| Time / complexity overhead | 多 Agent 协作带来的时间与复杂度开销（先以主观等级 Low / Medium / High 记录） | 任务报告中的实际耗时与流程步骤数 |
+
+### 3.4 数据纪律
+
+- 所有数据来自**任务报告 / Commit 历史 / `flutter test` / `git diff`** 的可验证事实。
+- 任何字段无可靠来源时写"待补录"，不得猜测。
+- `Time / complexity overhead` 先用主观等级，不引入计时工具。
+
+## 4. Per-Task Scorecard
+
+> 每个任务完成后，在任务报告中追加以下表格（也可在 `TASK_LEDGER` 中维护）。
+
+| 字段 | 说明 |
+| --- | --- |
+| Task ID | 任务编号 |
+| Primary Agent | 主执行 Agent |
+| Review Agents | 实际审查的 Agent 列表 |
+| High Risk Areas | 本任务触达的高风险面（密钥 / 权限 / schema / 版本号 / 构建产物） |
+| Blockers Found | Reviewer 报告中的 Blockers 总数 |
+| Blockers Valid | 实际成立、被后续修复或修改解决的 Blockers 数 |
+| Fix Commits Required | 修复 Blockers 需要的额外 commit 数 |
+| Tests Passed | 实际 `flutter test` 通过数 |
+| Scope Clean | 是否仅修改允许文件（Yes / No） |
+| Final Approval | GPT 首席架构师复审结论（通过 / 打回 / 待复审） |
+| Collaboration Value | Low / Medium / High（主观评估） |
+| Notes | 其他观察（如"Reviewer 报告证据不足"） |
+
+> 评估 `Collaboration Value` 的简易规则：
+> - **High**：Reviewer 拦截了真实缺陷，且未显著拖慢任务进度。
+> - **Medium**：Reviewer 报告完整但未发现重大问题，仅做规范性检查。
+> - **Low**：Reviewer 报告缺失 / 模糊 / 形式主义，或 Reviewer 自身引入偏差。
+
+## 5. Initial Historical Backfill
+
+> 仅回填**有可靠来源**的历史事实，不虚构未知内容。
+> 来源限定：`git log` / `TASK_LEDGER.md` / 任务报告原文。
+
+| 任务 / 阶段 | Reviewer / 来源 | 拦截内容 | 后续修复 | 协作价值评估 |
+| --- | --- | --- | --- | --- |
+| T020_RELEASE_SIGNING_AND_SENSITIVE_FILE_GUARD 期间 debug signing fallback | GPT 复审 | `buildTypes.release.signingConfig` 残留 `signingConfigs.debug` 回退 | T020_FIX_REMOVE_DEBUG_SIGNING_FALLBACK 移除 debug 回退 + 任务图守卫 | High |
+| T020 期间 aggregate signing path bug | GPT 复审 | 聚合任务（`build` / `assemble` / `check`）可绕过 `gradle.startParameter.taskNames` 检查 | T020_FIX_REMOVE_DEBUG_SIGNING_FALLBACK 新增 `gradle.taskGraph.whenReady` 守卫 | High |
+| T020 期间 absolute path / Groovy DSL 敏感泄露风险 | 任务验证发现 | 闭包内 `String.metaClass.call` 拦截导致密码值出现在 Gradle 异常日志 | T020_FIX_RELEASE_SIGNING_ABSOLUTE_STORE_FILE_PATH 改为显式方法调用 + 路径解析 helper | High |
+| T021 期间 | Reviewer 证据 | Release 构建成功，但多 Agent 报告的 Reviewer 证据不完整 | 本任务（T021A）建立 Review Template 标准化 | Medium |
+| 早期权限 / 音频依赖清理 | 历史 commit | 移除无实际使用的音频依赖与权限声明（见历史 Task） | 通过 commit 历史可追溯 | Medium |
+| 早期 Release assert、UUID、Android embedding 等问题 | 历史 commit | 多处 `assert` / UUID / Android embedding 修复 | 通过 commit 历史可追溯 | Medium |
+
+> 后续每完成 5 个任务或每个阶段结束，必须追加新的回填行。
+
+## 6. Review Cadence
+
+> 不追求每周复盘；以"每 5 个任务 + 每个阶段结束"为节奏。
+
+1. **每 5 个任务复盘一次**：
+   - 检查 `Per-Task Scorecard` 中 `Collaboration Value = Low` 的比例。
+   - 检查 `Blockers Valid` / `Blockers Found` 比值，淘汰低于阈值的 Reviewer 角色。
+   - 检查 `Time / complexity overhead` 是否过高，决定是否简化流程。
+
+2. **每个阶段结束复盘一次**：
+   - 阶段示例：MVP 验收阶段、T019-T024 Release 工程化阶段、未来 Audio MVP 阶段。
+   - 复盘报告追加到 `AGENT_QUALITY_METRICS.md` 的"Initial Historical Backfill"小节。
+
+3. **角色清理规则**：
+   - 长期无产出（连续 5 个任务以上 Blockers Found = 0 且未发现规范性问题）→ 删除或合并。
+   - 高产出（持续发现真实问题）→ 明确职责并保留。
+
+4. **不删除** `00-chief-architect`（GPT 复审职责是协作模式核心）、`07-qa-reviewer`（必含 Reviewer）、`08-compliance-reviewer`（高风险任务必含 Reviewer）。
+
+## 7. Anti-Patterns（必须主动识别并避免）
+
+| 反模式 | 表现 | 应对 |
+| --- | --- | --- |
+| 形式主义 Reviewer | Reviewer 报告只写"已审查、未发现问题"无证据 | 强制使用 `AGENT_REVIEW_TEMPLATE.md`，要求 `Scope Reviewed` / `Evidence Checked` 必须具体 |
+| 把"未审查"当"通过" | Reviewer 跳过审查直接给 Approval | 在 `Final Decision Block` 增加"Reviewer 缺失证据"判定为 `Blocked` |
+| 一人多角 | Primary Agent 同时充当多个 Reviewer | `Multi-Agent Roles Used` 必须显式声明 Review Agents 数量 |
+| 角色膨胀 | 为"多 Agent 感"加无意义 Reviewer | 严格遵循 `AGENT_ROUTING_MATRIX.md`，新增角色必须能产生可观察证据 |
+| 自动化承诺 | 声称已接入 Octopus / MCP / CI 自动 Reviewer | 仓库实现为准；未实现不得声称 |
+| 把用户验收写成自动通过 | Agent 在报告中写"真机验收通过" | 强制模板中 `User Approval Required` + 单独"用户真机确认"小节 |
+
+## 8. References
+
+- `docs/MULTI_AGENT_WORKFLOW.md`：多 Agent 协作流程总览
+- `docs/dev/AGENT_ROUTING_MATRIX.md`：任务路由矩阵
+- `docs/dev/AGENT_REVIEW_TEMPLATE.md`：任务报告与审查模板
+- `docs/dev/TASK_LEDGER.md`：任务台账（Per-Task Scorecard 来源）

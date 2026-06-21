@@ -435,3 +435,93 @@ T024 通过后 → 用户手动 push + 创建 Tag（不在 Agent 范围）
 |------|------|----------|
 | 0.1 | 2026-06-19 | 初始版本 |
 | 0.2 | 2026-06-21 | T019 追加：Release 阶段协作机制（§8），明确角色 / 铁律 / 责任表 / 任务流；保留既有 Level 1 → Level 2 → Level 3 分级与 9 个 Agent 角色定义 |
+| 0.3 | 2026-06-21 | T021A 追加：§10 协作四层模型，明确本项目多 Agent 协作是"轻量角色路由 + 只读 Reviewer + GPT 复审"，不是自动化调度系统；保留既有 §0-§9 |
+
+## 10. 协作四层模型（T021A 追加）
+
+> 本节是 T021A 在保留既有 §0-§9 全部内容基础上追加的**协作四层模型**，将既有"Level 1 → Level 2 协作模式"在文档层面进一步分层。**不引入自动化调度、不引入新运行器、不要求联网**。
+
+### 10.1 当前阶段判定（重申）
+
+- 当前所处阶段：**Level 1 → Level 2 过渡阶段**。
+- 协作本质：**轻量角色路由 + 只读 Reviewer + GPT 复审**，由用户在多轮 Prompt 中显式触发。
+- 不是自动化多 Agent 调度系统。
+- Reviewer 是**角色化只读审查协议**，不是真实独立进程。
+
+### 10.2 四层模型总览
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  L1 角色规范层：agents/*.md                                  │
+│      9 个 Agent 角色的职责、Out of Scope、报告格式           │
+├─────────────────────────────────────────────────────────────┤
+│  L2 任务路由层：docs/dev/AGENT_ROUTING_MATRIX.md             │
+│      任务类型 → Primary Agent / Review Agents / 证据 / 停止条件 │
+├─────────────────────────────────────────────────────────────┤
+│  L3 报告协议层：docs/dev/AGENT_REVIEW_TEMPLATE.md            │
+│      每个任务最终报告必须按统一结构输出（含 Reviewer Report）  │
+├─────────────────────────────────────────────────────────────┤
+│  L4 效果评估层：docs/dev/AGENT_QUALITY_METRICS.md            │
+│      每任务 Scorecard + 阶段复盘 + Reviewer 清理               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 10.3 各层职责与边界
+
+| 层 | 文档 | 职责 | **不**做什么 |
+| --- | --- | --- | --- |
+| L1 角色规范层 | `agents/*.md` | 定义 9 个 Agent 的职责、Out of Scope、报告格式 | 不规定"哪个任务由谁做"；不规定"报告怎么写才算通过" |
+| L2 任务路由层 | `docs/dev/AGENT_ROUTING_MATRIX.md` | 任务类型 → Primary / Review Agents / 可写范围 / 证据 / 停止条件 | 不重写角色职责；不充当报告模板 |
+| L3 报告协议层 | `docs/dev/AGENT_REVIEW_TEMPLATE.md` | 任务最终报告的强制结构（含 Primary + Reviewer Report） | 不规定任务路由；不规定度量方法 |
+| L4 效果评估层 | `docs/dev/AGENT_QUALITY_METRICS.md` | 每任务 Scorecard + 阶段复盘 + Reviewer 清理 | 不充当路由表；不充当报告模板 |
+
+### 10.4 Prompt 强制要求（T022 起）
+
+T022 开始，所有开发 Prompt 必须显式声明：
+
+1. **Primary Agent**：主执行 Agent 角色。
+2. **Required Review Agents**：本任务必须参与的 Reviewer 列表（高风险任务必须含 `07-qa-reviewer` + `08-compliance-reviewer`）。
+3. **User Approval Required**：是否需要用户确认（高风险操作必须 Yes）。
+4. **Writable Scope**：本任务允许修改的文件路径。
+5. **Readonly Review Scope**：Reviewer 实际审查的范围。
+
+任一字段缺失视为 Prompt 不完整，Agent 必须**立即停止**并请求 GPT 首席架构师补齐。
+
+### 10.5 Reviewer 默认只读（重申）
+
+- QA / Compliance / 领域 Reviewer **不操作工作树**。
+- 任何文件修改必须由 Primary Agent 在 `Files Modified` 中显式记录。
+- Reviewer 必须按 `AGENT_REVIEW_TEMPLATE.md` 填写 `Scope Reviewed` / `Evidence Checked` / `Findings` / `Blockers` / `Approval`，不得用"已通过"等模糊表述代替证据。
+
+### 10.6 多 Agent 协作与项目安全边界
+
+多 Agent 协作机制**不能凌驾于项目安全边界之上**：
+
+1. **不**因为引入 Reviewer 而降低密钥保护、敏感文件未跟踪、工作树基线核对等安全要求。
+2. **不**因为引入 Reviewer 而允许 Agent push、创建 Tag、amend、rebase、reset --hard。
+3. **不**因为引入 Reviewer 而允许 Agent 把"用户手工验收"写成"自动通过"。
+4. **不**因为引入 Reviewer 而允许 Agent 越权审批 Scope 变更。
+5. **不**因为引入 Reviewer 而把"无证据报告"包装成"已审查通过"。
+
+### 10.7 与既有 §0-§9 的衔接
+
+- §0-§2（执行模式分级 + 角色总览 + 分工边界）继续作为协作基础。
+- §3-§4（任务分配 / Handoff 流程）继续作为执行流程参考。
+- §5（审核流程）继续作为 Chief Architect / QA / Compliance 审核职责的依据。
+- §6（冲突解决）继续作为 Scope 冲突 / 技术冲突的升级路径。
+- §7（Agent 通信规范）继续作为报告格式与禁止事项的依据。
+- §8（Release 阶段协作机制）继续作为 Release 阶段任务（T019-T024）的执行规则。
+- §9（文档版本）继续记录版本变更。
+- **§10（本文）**仅新增"四层模型"和"Prompt 强制要求"，不重写既有内容。
+
+### 10.8 不在本节范围
+
+- ❌ 接入真实 Octopus 自动调度
+- ❌ 接入 MCP 自动 Reviewer
+- ❌ 接入 CI 自动 Reviewer
+- ❌ 引入外部 Agent 运行器
+- ❌ 引入并发写入 Agent
+- ❌ 要求联网
+- ❌ 修改既有 `agents/*.md` 角色原文（本节不重写，引用即可）
+
+如未来需引入上述能力，必须**单独开任务**并经 GPT 首席架构师拆解，不在本任务范围。

@@ -1031,3 +1031,177 @@
 - `docs/dev/AGENT_ROUTING_MATRIX.md`：任务路由矩阵
 - `docs/dev/AGENT_REVIEW_TEMPLATE.md`：任务报告与审查模板
 - `docs/dev/TASK_LEDGER.md`：任务台账（Per-Task Scorecard 来源）
+
+### 4.11 T030 Scorecard（真实音频 MVP 播放服务基础层实现）
+
+| 字段 | 值 |
+| --- | --- |
+| Task ID | `T030_REAL_PLAYBACK_SERVICE` |
+| Primary Agent | `04-audio-engineer`（音频架构 / just_audio 0.10.5 API 接入 / 状态机 / Stream 订阅管理 / 资源生命周期 / fake gateway 单测主导） |
+| Review Agents | `02-flutter-architect`（just_audio 0.10.5 API / Provider 边界 / 依赖边界审查）、`04-audio-engineer` Reviewer（播放完成 / 暂停恢复 / seek / 状态转换审查）、`06-local-data-engineer`（文件存在性 / root 边界 / 只读文件行为审查）、`07-qa-reviewer`（测试覆盖 / 异步竞争 / 异常恢复 / 回归风险审查）、`08-compliance-reviewer`（权限边界 / Manifest / 敏感文件 / 依赖与功能表述边界审查） |
+| High Risk Areas | `just_audio ^0.10.5` API 接入（Context7 验证）/ Provider 边界（构造时**不**访问麦克风 / **不**触发权限 / **不**调用 platform channel / **不**加载任何音频文件）/ 隐式权限请求（`PackageJustAudioPlaybackGateway` **不**调用任何麦克风相关 platform channel）/ 状态机正确性（8 状态 idle / loading / ready / playing / paused / completed / stopping / disposed）/ Stream 订阅管理（`_ensureSubscriptions` + dispose 时统一取消 + 多次 dispose 幂等）/ 自然完成事件（依赖 `playerStateStream` 而非 `play()` future 监听，避免与 playerStateStream 事件处理逻辑竞争）/ 路径安全（root 外 / `..` 路径逃逸 / 目录自身 / 不支持扩展名 / 空路径 / 相对路径 / 不存在文件，全部由 Service 路径校验拒绝）/ 异常路径恢复（loadFile / play / pause / seek / stop gateway 异常后状态恢复或翻译）/ `INTERNET` 权限（`just_audio` 本项目仅使用 file:// 路径播放，**不**触发）/ 测试不触发真实播放 / 既有 464 项测试不减少 / 不修改 RecordingController / 不修改 Drift schema / 不修改三处 Manifest / 不引入 `audio_session` 作为顶层依赖 / 不引入 `audioplayers` / 不引入 `flutter_sound` / 不 push / 不 Tag |
+| Blockers Found | 0（五个 Reviewer 均按 `AGENT_REVIEW_TEMPLATE.md` 只读审查并给 Approved，详见下文 §4.11.1 ~ §4.11.5 Reviewer 报告段与 `TASK_LEDGER.md` T030 条目 Reviewer 报告段） |
+| Blockers Valid | 0（无 Blockers） |
+| Fix Commits Required | 0 |
+| Tests Passed | 506（464 既有 + 42 新增；既有测试未减少；新增测试 ≥30 满足任务预期；既有 464 项测试 100% 保留） |
+| Tests Added/Updated/Deleted | Added: 42；Updated: 0；Deleted: 0 |
+| Scope Clean | Yes（仅修改 4 个允许文件：`pubspec.yaml` 末尾新增 `just_audio: ^0.10.5` + `pubspec.lock` 自动更新、`docs/dev/TASK_LEDGER.md` 追加 T030 条目 + `docs/dev/TECH_DEBT.md` 校准 TD-007 / TD-010 + `docs/dev/AGENT_QUALITY_METRICS.md` §4.11 追加 T030 Scorecard；仅新建 7 个允许文件：`lib/shared/services/audio_playback_state.dart` + `lib/shared/services/audio_playback_exception.dart` + `lib/shared/services/audio_playback_gateway.dart` + `lib/shared/services/real_audio_playback_service.dart` + `lib/shared/providers/real_audio_playback_service_provider.dart` + `test/shared/services/fake_audio_playback_gateway.dart` + `test/shared/services/real_audio_playback_service_test.dart`） |
+| Command discipline violation | **No**（本任务全程命令均为单条命令：`git status --short` / `git branch --show-current` / `git rev-parse HEAD` / `git log -1 --oneline` / `git remote -v` / `git tag -n1 --list v0.1.0-mvp` / `git tag -n1 --list v1.0.0-release` / `git rev-list -n 1 v0.1.0-mvp` / `git rev-list -n 1 v1.0.0-release` / `git ls-files ...` / `git diff ...` / `flutter pub get` / `dart format ...` / `flutter analyze` / `flutter test ...` / `flutter test` / `Read` / `Write` / `Edit` / Context7 `mcp__context7__resolve-library-id` / `mcp__context7__query-docs` 等只读或允许写命令；无管道、无重定向、无 `&&`、无分号、无复合命令） |
+| Sensitive Files Checked | Yes（`git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 四项均返回空；`v0.1.0-mvp` 仍指向 `d49ce4b` 未变；`v1.0.0-release` 仍指向 `703d2aa` 未变；新代码未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；未读取 `key.properties` 内容） |
+| Build Artifacts Tracked | No（`git ls-files build/app/outputs/**` 返回空） |
+| Dependency Modified | **Yes**（`pubspec.yaml` 新增 `just_audio: ^0.10.5`；`pubspec.lock` 自动更新；`flutter pub get` 解析成功并自动拉入 5 个传递依赖：`audio_session 0.2.3`（与 T026 Spike §3.7 一致，由 just_audio 自动带入）/ `just_audio_platform_interface 4.6.0` / `just_audio_web 0.4.16` / `rxdart 0.28.0` / `synchronized 3.4.1`；**未**主动引入 `audio_session` 作为顶层依赖（沿用 T026 Spike 决策：MVP 不引入 audio_session）；**未**引入 `audioplayers` / `flutter_sound`） |
+| Permissions Modified | **No**（`AndroidManifest.xml` 三处清单均未修改；T027 已声明 `RECORD_AUDIO` 不变；**未**声明 `INTERNET`；**未**新增任何权限） |
+| Real Audio Implementation Started | **Partial**（`AudioPlaybackService` / `PackageJustAudioPlaybackGateway` 真实 `just_audio 0.10.5` 实现 + `realAudioPlaybackServiceProvider` 真实 Provider 已就位；**未**接入 `RecordingPracticeController` / **未**实现 `Controller` 级录音与播放互斥状态机 / **未**保存 `PracticeRecord` / **未**修改 Drift schema / **未**修改 `recording_page.dart` / **未**真机验收） |
+| Test Count | 506（实测 `flutter test` 全量输出 `00:15 +506: All tests passed!`） |
+| Final Approval | 待 GPT 复审 |
+| Collaboration Value | **High**（五个 Reviewer 均按模板只读审查并给 Approved；本任务为播放服务基础层（依赖引入 + Gateway 抽象 + 状态机 + 异常层次 + Stream 订阅管理 + 单元测试）；Self-Critique 修复记录拦截了 2 个真实 bug：① Windows 平台 `Platform.pathSeparator` 与 `_canonicalPath` 的 `/` 分隔符不匹配导致 11 项路径安全测试全部失败；② `play()` Future 完成事件与 `playerStateStream` 的 `completed` 事件双重处理导致状态在 await play() 后立刻变成 `completed`；两个 bug 均在 Self-Critique 阶段通过单元测试运行发现并修正，未进入 Reviewer 阶段；协作价值以"完整 `just_audio ^0.10.5` 引入 + 7 个新文件 + 8 状态枚举 + 6 异常子类 + 5 stream/value getter + 42 项单元测试 + Stream 生命周期管理 + 既有 464 项测试 100% 保留 + Self-Critique 拦截 2 个真实 bug"为主要产出） |
+| Notes | Flutter Architect Reviewer 重点确认：① `pubspec.yaml` 单行修改（`record: ^7.1.0` 后追加 `just_audio: ^0.10.5`），**未**主动引入 `audio_session` 作为顶层依赖（与 T026 Spike §3.7 决策一致，由 just_audio 自动带入）；② `PackageJustAudioPlaybackGateway` 直接代理 `AudioPlayer` 6 个核心方法（`setFilePath` / `play` / `pause` / `seek` / `stop` / `dispose`）+ 3 stream getter + 2 值 getter，与 Context7 验证的 `just_audio 0.10.5` 真实 API 完全一致；③ `realAudioPlaybackServiceProvider` 手动 `Provider<RealAudioPlaybackService>`，构造时**不**触发 platform channel（`AudioPlayer()` 是 Dart 包装类，构造时无 IO，与 `record 7.1.0` 的 `AudioRecorder()` 行为类似）；④ `RecordingPracticeController` 未被修改（grep 验证 0 命中 `just_audio` / `AudioPlayer` / `realAudioPlaybackServiceProvider` / `MicrophonePermission`）；⑤ T028 storage service 表面未变（仅复用 `isPathInsideRoot` 做路径校验，不修改 `AudioFileStorageService` 内部）。Audio Engineer Reviewer 重点确认：① `PlaybackPlayerState` / `PlaybackProcessingState` 把 just_audio 的 `PlayerState`（`playing` bool + `ProcessingState` 5 值）投影到应用侧最小化模型（`buffering` 合并到 `loading`）；② 状态机严格按 SDD §7.1 + 本任务设计实现（8 状态 + 终止 `disposed` + 非法状态转换抛 `InvalidPlaybackStateException`）；③ 自然播放完成**仅**依赖 `playerStateStream` 的 `processingState == completed` 事件驱动，**不**通过 `play()` future 完成监听（避免与 playerStateStream 事件处理逻辑竞争，与 just_audio 0.10.5 真实行为一致）；④ Stream 订阅生命周期管理（`_ensureSubscriptions` 在首次 `loadFile` 后建立，`dispose` 时统一取消，多个 `dispose` 调用幂等）；⑤ `_stopInternal` 在 `loadFile` 内被调用做"加载前先 stop 旧文件"逻辑，避免旧文件抢占 decoder。Local Data Reviewer 重点确认：① `_validatePath` 复用 `AudioFileStorageService.isPathInsideRoot` + `ensureDirectories` 做路径校验，**不**自行创建第二套音频根目录；② 路径校验覆盖：非空 + 绝对路径 + 在 audio root 内（temp 或 saved 下文件）+ 目录自身拒绝（root / temp / saved 目录自身）+ 实际存在 + `.m4a` 扩展名；③ `..` 路径逃逸由 `isPathInsideRoot` 防御性校验拒绝；④ Service **不**调用 `deleteIfExists` / `cleanupTempFiles` 等删除 API（只读访问音频文件）；⑤ Service **不**修改 / 移动 / 重命名音频文件。QA Reviewer 重点确认：① 42 项单元测试 100% 通过（`flutter test test/shared/services/real_audio_playback_service_test.dart` 输出 `00:00 +42: All tests passed!`）；② 状态机覆盖完整：idle → loading → ready / load 失败恢复 / play from ready / play without load / repeated play / pause from playing / pause from non-playing / resume from paused / resume from non-paused / seek 合法 / seek 负数 / seek 超出 duration / seek without loaded file / stop from playing + position 保留 / stop from idle / 自然完成 → completed / completed → play 重新播放 / 播放中加载新文件停止旧文件 / gateway play 异常 / gateway pause 异常 / gateway seek 异常 / gateway stop 异常 / duration by gateway / position stream 更新 / duration stream 更新 / dispose while playing / dispose 幂等 / dispose 后调用被拒绝 / 不删除 / 移动 / 重命名音频文件 / 不申请麦克风权限 / 不保存 PracticeRecord / 不调用 Drift；③ 测试不触发真实播放 / **不**调用 just_audio 平台通道 / **不**申请权限 / **不**保存 `PracticeRecord` / **不**触发录音（fake gateway 注入 + temp root 隔离）；④ `flutter test` 全量输出 `00:15 +506: All tests passed!`（506 = 464 既有 + 42 新增，既有测试未减少）；⑤ 既有 464 项测试 100% 保留；⑥ Manifest 静态检查通过（三处 `RECORD_AUDIO` 仍存在 + 三处**未**声明 `INTERNET` + 三处**未**新增任何权限）；⑦ Self-Critique 拦截 2 个真实 bug（路径分隔符不匹配 + play future 双重事件处理），均已修复并验证。Compliance Reviewer 重点确认：① Service **不**调用 `MicrophonePermissionGateway`（grep 验证 0 命中实际调用点，仅注释中显式声明"不调用"）；② `RecordingPracticeController` 未被修改（`git diff` 空）；③ Drift schema 未被修改（`schemaVersion = 1` 不变）；④ **未**主动引入 `audio_session` 作为顶层依赖（与 T026 Spike 决策一致）；⑤ **未**引入 `audioplayers` / `flutter_sound`；⑥ `AndroidManifest.xml` 三处清单未修改（T027 `RECORD_AUDIO` 声明不变）；⑦ `git ls-files android/key.properties` / `*.jks` / `*.keystore` 三项均返回空；⑧ `v0.1.0-mvp` 仍指向 `d49ce4b`、`v1.0.0-release` 仍指向 `703d2aa`；⑨ Service / Provider 文档明确"不接 UI / 不隐式调用权限 / 不保存 PracticeRecord / 不触发录音 / 不实现 Controller 级互斥状态机 / 不删除音频文件"；⑩ 未 push / 未 Tag / 未 amend / rebase / reset --hard；⑪ 无 key.properties 内容 / 密码 / keystore 内容 / 用户目录 keystore 绝对路径泄露；⑫ `just_audio` 本项目仅使用 file:// 路径播放本地 m4a，**不**触发 `INTERNET` 权限；⑬ 边界条件测试覆盖：dispose 后调用被拒绝（6 项 API 全覆盖）+ dispose 幂等（3 次 dispose）+ dispose while playing；详见 `docs/dev/TASK_LEDGER.md` T030 条目 |
+
+#### 4.11.1 Flutter Architect Reviewer（02-flutter-architect）只读审查
+
+- **Reviewer Role**：`02-flutter-architect`
+- **Scope Reviewed**：T030 新增的 4 个服务文件 + 1 个 Provider + 1 个 fake gateway + 1 个测试文件；`pubspec.yaml` / `pubspec.lock` 变更；既有 `lib/shared/services/` 既有约定（参考 `install_date_service.dart` / `microphone_permission_service.dart` / `audio_file_storage_service.dart` / `real_audio_recorder_service.dart` 的接口 + 实现分离模式）；既有 `docs/TECH_STACK.md` §6.1 / §7 / §10 + `docs/ARCHITECTURE.md` §3 / §7 + `docs/dev/REAL_AUDIO_MVP_SDD.md` §7.1 / §7.5 / §8 + `docs/dev/REAL_AUDIO_DEPENDENCY_SPIKE.md` §3.2
+- **Evidence Checked**：
+  - `pubspec.yaml` 单行修改（`record: ^7.1.0` 后追加 `just_audio: ^0.10.5`），`pubspec.lock` 仅由 pub 自动更新；
+  - `flutter pub get` 解析成功，输出 `+ just_audio 0.10.5` + 5 个传递依赖 `audio_session 0.2.3` / `just_audio_platform_interface 4.6.0` / `just_audio_web 0.4.16` / `rxdart 0.28.0` / `synchronized 3.4.1`；`pubspec.yaml` 当前**不**包含 `audio_session` 作为顶层依赖（与 T026 Spike §3.7 决策一致）；
+  - `lib/shared/services/audio_playback_gateway.dart` 抽象 5 个核心方法（`loadFile(String) → Duration?` / `play()` / `pause()` / `seek(Duration?)` / `stop()` / `dispose()`）+ 3 stream getter（`playerStateStream` / `positionStream` / `durationStream`）+ 2 值 getter（`position` / `duration`），与 Context7 验证的 `just_audio 0.10.5` 真实 API 完全一致；
+  - `PackageJustAudioPlaybackGateway`（`audio_playback_gateway.dart` 第 197-260 行）直接代理 `AudioPlayer` 6 个方法 + 3 stream getter + 2 值 getter，**不**调用任何麦克风相关 platform channel；
+  - `lib/shared/services/audio_playback_state.dart` 8 状态枚举（`idle` / `loading` / `ready` / `playing` / `paused` / `completed` / `stopping` / `disposed`）+ 不可变 `AudioPlaybackStopResult` 值类型（4 个字段 `path` / `position` / `duration` / `isCompleted`）；
+  - `lib/shared/services/audio_playback_exception.dart` sealed class `AudioPlaybackException` + 6 个具体子类（`PlaybackLoadFailedException` / `PlaybackOperationFailedException` / `AudioFileNotFoundException` / `InvalidPlaybackStateException` / `PlaybackIOFailedException` / `PlaybackConfigException`），每个携带 `message` + 可选 `cause`，**不复用 T029 录音专属异常**；
+  - `lib/shared/services/real_audio_playback_service.dart` 构造注入 `AudioPlaybackGateway` + `AudioFileStorageService`，状态机严格按 SDD §7.1 + 本任务设计（8 状态 + 终止 `disposed` + 非法状态转换抛 `InvalidPlaybackStateException`）；
+  - `lib/shared/providers/real_audio_playback_service_provider.dart` 手动 `Provider<RealAudioPlaybackService>`，构造时**不**触发 platform channel（`AudioPlayer()` 是 Dart 包装类，构造时无 IO，与 `record 7.1.0` 的 `AudioRecorder()` 行为类似）；
+  - `test/shared/services/fake_audio_playback_gateway.dart` 纯 Dart fake gateway，记录每次调用的 path + position + 调用次数，支持故障注入（`nextLoadException` / `nextLoadResult` / `nextPlayException` / `nextPauseException` / `nextSeekException` / `nextStopException` / `nextDisposeException` + `completeOnNextPlay` / `noOpNextPause` / `noOpNextStop`）；
+  - `test/shared/services/real_audio_playback_service_test.dart` 42 项测试使用 fake gateway + temp root 隔离，**不**触发真实 platform channel / **不**调用 `AudioPlayer()` 构造 / **不**申请权限 / **不**保存 `PracticeRecord` / **不**触发录音；
+  - `lib/features/recording/application/recording_practice_controller.dart` 未被修改（grep 验证 0 命中 `just_audio` / `AudioPlayer` / `realAudioPlaybackServiceProvider` / `MicrophonePermission`）；
+  - `lib/data/database/app_database.dart` 未被修改（`schemaVersion = 1` 不变）；
+- **Findings**：
+  - `pubspec.yaml` 单行修改符合任务预期（仅新增 `just_audio ^0.10.5`），无其他顶层依赖变更；
+  - `just_audio ^0.10.5` API 接入正确（Context7 验证 6 个方法签名 + 3 stream getter + 2 值 getter完全匹配）；
+  - 状态机严格按 SDD §7.1 + 本任务设计实现（8 状态 + 终止 `disposed` + 非法状态转换抛 `InvalidPlaybackStateException`）；
+  - Provider 边界正确（手动 `Provider` + 构造时无 platform channel 触发 + 测试隔离模式保留）；
+  - `RecordingPracticeController` 未被修改，符合任务"播放服务基础层"边界；
+  - `just_audio 0.10.5` 满足 Flutter 3.44.2 + Dart 3.12.2 + AGP 8.6.0 + Android API 24-36 兼容（无需 R8 keep 规则）；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - `_stopInternal` 方法当前有两个调用方（公开 `stop` 路径 + `loadFile` 内的清理路径），参数 `emitIdleAfter` 当前是 `false`（loadFile 清理路径）的简化调用，可考虑后续提取更明确的语义命名（如 `_stopAndUnload` / `_stopForReload`）；
+  - `AudioPlaybackStopResult.isCompleted` 字段当前仅在 `stop` 调用前状态为 `completed` 时被设置为 `true`，未来可考虑增加 `wasPaused` / `wasPlaying` 字段以更明确表达停止前状态（cosmetic only）；
+- **Approval**：**Approved**
+
+#### 4.11.2 Audio Engineer Reviewer（04-audio-engineer）只读审查
+
+- **Reviewer Role**：`04-audio-engineer`
+- **Scope Reviewed**：`lib/shared/services/real_audio_playback_service.dart` 状态机 + Stream 订阅管理 + 自然播放完成事件 + 异常恢复；`lib/shared/services/audio_playback_state.dart` 8 状态枚举 + `AudioPlaybackStopResult` 值类型；`lib/shared/services/audio_playback_gateway.dart` 抽象 + `PackageJustAudioPlaybackGateway`；`test/shared/services/real_audio_playback_service_test.dart` 42 项测试
+- **Evidence Checked**：
+  - `real_audio_playback_service.dart:218-258` `play()` 当前状态必须为 `ready` / `paused` / `completed`，抛 `InvalidPlaybackStateException`（重复 play / disposed 后 / 未加载文件 / 非法状态）；
+  - `real_audio_playback_service.dart:260-283` `pause()` 当前状态必须为 `playing`，状态切到 `paused`，gateway 异常翻译为 `PlaybackOperationFailedException`；
+  - `real_audio_playback_service.dart:285-302` `resume()` 当前状态必须为 `paused`，内部调用 `play()`；
+  - `real_audio_playback_service.dart:304-345` `seek(position)` 接受任意状态（除 disposed 外），负数抛 `PlaybackConfigException`，超出 duration 由 just_audio 自行 clamp（**不**在 Service 层 clamp，避免与底层行为漂移），gateway 异常翻译为 `PlaybackOperationFailedException`；
+  - `real_audio_playback_service.dart:347-403` `stop()` 状态可从 `ready` / `playing` / `paused` / `completed` / `loading`，返回 `AudioPlaybackStopResult`，状态回 `idle`，position 保留（与 SDD §8.2 "停止后恢复播放" 一致）；
+  - `real_audio_playback_service.dart:430-456` `dispose()` 幂等、状态切到 `disposed`、best-effort stop + dispose、不抛错；
+  - `real_audio_playback_service.dart:592-600` `_ensureSubscriptions` 在首次 `loadFile` 后建立 stream subscriptions（`??=` 避免重复），dispose 时统一取消；
+  - `real_audio_playback_service.dart:602-619` `_onPlayerState` 翻译 `playerStateStream` 事件为应用侧状态（`idle` no-op / `loading` 切到 loading / `ready + playing` 切到 playing / `ready + !playing` 在 playing 状态切到 paused / `completed` 切到 completed）；
+  - 自然播放完成**仅**通过 `playerStateStream` 的 `processingState == completed` 事件驱动，**不**通过 `play()` future 完成监听（避免与 playerStateStream 事件处理逻辑竞争，与 just_audio 0.10.5 真实行为一致）；
+- **Findings**：
+  - 8 状态枚举严格按 SDD §7.1 + 本任务设计实现，状态机完整覆盖 idle / loading / ready / playing / paused / completed / stopping / disposed + 终止 `disposed`；
+  - Stream 订阅生命周期管理正确（`??=` 单例建立 + dispose 时统一取消 + 多次 dispose 幂等）；
+  - 自然播放完成事件**仅**依赖 `playerStateStream` 的 `processingState == completed` 事件，避免双源事件处理竞争；
+  - 异常路径恢复完整（gateway play / pause / seek / stop 异常翻译 + 状态恢复 + Service 不抛原生异常）；
+  - dispose 幂等性保证（多次 dispose 调用安全，`gateway.dispose` 仅调用一次）；
+  - 播放中 dispose 路径完整（best-effort stop + dispose + state 切到 disposed）；
+  - 状态转换非法操作抛 `InvalidPlaybackStateException`（重复 play / 非法 pause / 非法 resume / disposed 后调用）；
+  - `seek` 边界处理（负数拒绝 + 超出 duration 转发给 just_audio）；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - `_playCompletion` Completer 字段在 `play()` 中创建但在 `dispose()` 中通过 `complete()` 而非 `completeError` 关闭，可能在 dispose 期间有正在进行的 play future 时丢失错误信号；当前测试覆盖足够，但未来如有更复杂的 dispose 场景可考虑增加 dispose 期间 play future 异常的测试；
+  - `_onPlayerState` 当前把 `buffering` 与 `loading` 合并，但 just_audio 0.10.5 真实场景中 `buffering` 状态会持续多次（每次缓冲都触发），可能产生高频状态切换；当前应用侧状态机已合并为 `loading`，UI 层无需区分；如果未来 UI 需要显示"缓冲中"独立状态，可考虑在 `PlaybackProcessingState` 中拆分 `buffering` 与 `loading`；
+- **Approval**：**Approved**
+
+#### 4.11.3 Local Data Reviewer（06-local-data-engineer）只读审查
+
+- **Reviewer Role**：`06-local-data-engineer`
+- **Scope Reviewed**：`lib/shared/services/real_audio_playback_service.dart` 路径校验 + 只读访问；`lib/shared/services/audio_file_storage_service.dart` T028 既有契约；`test/shared/services/real_audio_playback_service_test.dart` 42 项测试
+- **Evidence Checked**：
+  - `real_audio_playback_service.dart:478-575` `_validatePath` 复用 `AudioFileStorageService.isPathInsideRoot` + `ensureDirectories` 做路径校验，**不**自行创建第二套音频根目录；
+  - 路径校验覆盖：非空（line 479-483）+ 绝对路径（line 484-489）+ `.m4a` 扩展名（line 490-498）+ 在 audio root 内（line 511-552）+ 目录自身拒绝（root / temp / saved 目录自身 line 538-547）+ 实际存在（line 561-573）；
+  - `_canonicalPath` 用 `p.normalize` + `replaceAll('\\', '/')` 跨平台规范化路径，与 T028 `AudioFileStorageService._canonicalPath` 行为一致；
+  - `..` 路径逃逸由 `isPathInsideRoot` 防御性校验拒绝（path safety 测试覆盖）；
+  - Service **不**调用 `deleteIfExists` / `cleanupTempFiles` 等删除 API（只读访问音频文件）；
+  - Service **不**修改 / 移动 / 重命名音频文件（test #29 "service does not delete / move / rename audio files" 显式断言 `File(path).existsSync() == isTrue` 在完整播放周期后）；
+  - `real_audio_playback_service.dart:133-173` `loadFile` 加载前如有正在播放 / 加载的文件，先 stop（避免旧文件抢占 decoder）；
+- **Findings**：
+  - `_validatePath` 复用 `AudioFileStorageService.isPathInsideRoot` + `ensureDirectories`，**不**绕过 T028 既有路径校验；
+  - 路径校验覆盖：root 外 / `..` 路径逃逸 / 目录自身（root / temp / saved）/ 不支持扩展名 / 空路径 / 相对路径 / 不存在文件，全部由 Service 路径校验拒绝；
+  - 11 项路径安全测试覆盖所有路径校验分支；
+  - Service **不**调用任何 `deleteIfExists` / `cleanupTempFiles` / 任何 IO 写入 API（只读访问音频文件）；
+  - `..` 路径逃逸由 `isPathInsideRoot` 防御性校验拒绝（path safety test #4 覆盖）；
+  - 加载前先 stop 旧文件逻辑保留（避免旧文件抢占 decoder）；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - `_validatePath` 当前对 `unsaved` 子目录（如 `root/temp/subdir/foo.m4a`）的拒绝逻辑目前是按"必须在 temp/ 或 saved/ 直接子目录下"实现，与 T028 `createTempFile` 实际生成的路径（`<temp>/<takeId>.m4a`）一致；如果未来 T031/T032 引入日期目录（如 `root/saved/2026-06-21/<recordId>.m4a`），`_isCanonicalChild` 仍可工作（递归下钻），无需修改；
+  - `_validatePath` 中 `File.exists()` 调用对 root / temp / saved 目录路径返回 `false`，与 T028 `deleteIfExists` 对 root 目录按"文件不存在"处理的行为一致；该一致性测试已在 `audio_file_storage_service_test.dart` 第 393-420 行覆盖；
+- **Approval**：**Approved**
+
+#### 4.11.4 QA Reviewer（07-qa-reviewer）只读审查
+
+- **Reviewer Role**：`07-qa-reviewer`
+- **Scope Reviewed**：`test/shared/services/real_audio_playback_service_test.dart` 42 项单元测试；`test/shared/services/fake_audio_playback_gateway.dart`；`flutter analyze` / `flutter test` 实际输出；既有 `docs/dev/AGENT_REVIEW_TEMPLATE.md` QA Checklist + `docs/dev/REAL_AUDIO_MVP_TDD.md` §2.3 Test Matrix TC-PB01~PB04
+- **Evidence Checked**：
+  - `flutter analyze` `No issues found! (ran in 4.7s)`；
+  - `flutter test test/shared/services/real_audio_playback_service_test.dart` 输出 `00:00 +42: All tests passed!`（42 项测试 100% 通过）；
+  - `flutter test` 全量输出 `00:15 +506: All tests passed!`（506 = 464 既有 + 42 新增，既有测试未减少，新增 ≥30 满足任务预期）；
+  - 42 项测试覆盖：① loadFile path safety 11 项（temp 内 / saved 内 / root 外拒绝 / `..` 路径逃逸 / root 自身 / temp 自身 / saved 自身 / 不存在文件 / 不支持扩展名 / 空路径 / 相对路径）；② state transitions 9 项（idle → loading → ready / load 失败恢复 / play from ready / play without load / repeated play / pause from playing / pause from non-playing / resume from paused / resume from non-paused）；③ seek 4 项（合法 / 负数 / 超出 duration / without loaded file）；④ stop 2 项（playing stop + position 保留 / idle stop 拒绝）；⑤ natural completion 2 项（自然完成 → completed / completed → play 重新播放）；⑥ reload 1 项（播放中加载新文件停止旧文件）；⑦ gateway errors 4 项（play / pause / seek / stop 异常翻译）；⑧ duration + position 3 项（duration by gateway / position stream / duration stream）；⑨ lifecycle 3 项（playing dispose / dispose 幂等 / dispose 后调用拒绝）；⑩ read-only contract 3 项（不删除 / 不申请权限 / 不保存 PracticeRecord）；
+  - 全部 42 项测试使用 `FakeAudioPlaybackGateway` 注入 + `Directory.systemTemp` 临时根目录，**不**触发真实 platform channel / **不**调用 `AudioPlayer()` 构造 / **不**申请权限；
+  - `package:just_audio/just_audio.dart` 在测试文件中**仅**用于 `PlaybackPlayerState` / `PlaybackProcessingState` 类型引用（fake gateway 不实例化真实 `AudioPlayer`）；
+  - `grep -c RECORD_AUDIO` 三处 Manifest 各返回 1 行 `<uses-permission>` 节点（T027 既有声明不变）；
+  - `grep -E "uses-permission.*INTERNET"` 三处 Manifest 均返回空；
+  - `pubspec.yaml` 单行修改（`just_audio: ^0.10.5`），无其他变化；
+  - 命令纪律严格执行（全程单条命令，无管道 / 重定向 / `&&` / 分号 / 复合命令）；
+  - **Self-Critique 修复记录**：① Windows 平台 `Platform.pathSeparator` 与 `_canonicalPath` 的 `/` 分隔符不匹配导致 11 项路径安全测试全部失败，修复后改用 `/` 分隔符拼接，路径校验全部通过；② `play()` Future 完成事件与 `playerStateStream` 的 `completed` 事件双重处理导致状态在 await play() 后立刻变成 `completed`，修复后改为**仅**通过 `playerStateStream` 事件驱动，5 项相关测试全部通过；
+- **Findings**：
+  - 测试数从 464 增至 506（+42），既有 464 项测试 100% 保留，**无**测试减少；
+  - 测试覆盖完整：路径安全 11 项 + 状态机 9 项 + seek 4 项 + stop 2 项 + 自然完成 2 项 + reload 1 项 + gateway errors 4 项 + duration/position 3 项 + lifecycle 3 项 + 只读契约 3 项 = 42 项（≥30 满足任务预期）；
+  - 测试不触发真实播放（fake gateway 注入，与 `REAL_AUDIO_MVP_TDD.md` §1.1 File storage tests 一致）；
+  - 测试不调用麦克风（仅 fake gateway 调用计数 + temp root IO + 路径校验，与 `REAL_AUDIO_MVP_TDD.md` §5 Test Gaps 9 项一致）；
+  - `flutter analyze` 通过，无新警告；
+  - Manifest 权限验证通过：三处 `RECORD_AUDIO` 声明 + 三处无 `INTERNET` + 三处无任何存储 / 相机 / 蓝牙权限；
+  - 既有 464 项测试 100% 保留（基线 T029 锁定，本任务**未**修改任何既有测试代码 / 既有生产代码 / Drift schema / Android Gradle 配置 / `pubspec.yaml` 其他字段 / `pubspec.lock` 既有部分）；
+  - Self-Critique 拦截 2 个真实 bug 并修复（Windows 路径分隔符不匹配 + play future 双重事件处理）；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - 当前 42 项测试全部用 fake gateway + `Directory.systemTemp` 注入隔离；如未来 T031 Controller 集成需要测试 recorder 与 playback 协同，可考虑抽出共享 `_IsolatedRootProvider` 到 `test/shared/services/test_helpers/`（与 T029 一致）；本任务**不**强制抽取（避免过度抽象）；
+  - `gateway play error is translated` / `gateway pause error is translated` 等异常测试当前仅验证一次异常注入，可考虑补充"异常后状态恢复 + 后续操作仍可工作"的测试场景；
+- **Approval**：**Approved**
+
+#### 4.11.5 Compliance Reviewer（08-compliance-reviewer）只读审查
+
+- **Reviewer Role**：`08-compliance-reviewer`
+- **Scope Reviewed**：T030 7 个新文件（4 服务 + 1 Provider + 1 fake + 1 test）+ `pubspec.yaml` / `pubspec.lock` 变更；`android/app/src/main/AndroidManifest.xml` / `debug` / `profile` 三处清单权限声明；既有 `docs/dev/REAL_AUDIO_MVP_SDD.md` §3 Permission and Privacy + `docs/dev/TECH_DEBT.md` TD-007 / TD-010 / TD-013
+- **Evidence Checked**：
+  - `git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 四项均返回空；
+  - `git rev-list -n 1 v0.1.0-mvp` = `d49ce4b`、`git rev-list -n 1 v1.0.0-release` = `703d2aa`（Tag 完整性验证通过）；
+  - 全文搜索 T030 新增 7 个文件确认未出现 `key.properties` 内容 / 密码 / keystore 内容 / 用户目录 keystore 绝对路径；
+  - `lib/shared/services/real_audio_playback_service.dart` grep `MicrophonePermission | hasPermission | requestPermission` 0 命中实际调用点（仅注释中显式声明"不调用"）；
+  - `lib/shared/services/audio_playback_gateway.dart` grep `_player\.hasPermission` 0 命中（仅 `_player.setFilePath/play/pause/seek/stop/dispose` 6 处调用 + 3 stream getter + 2 值 getter）；
+  - `lib/shared/providers/real_audio_playback_service_provider.dart` grep 0 命中实际权限调用点（仅注释中显式声明"不调用"）；
+  - `git diff lib/features/recording/application/recording_practice_controller.dart` 空（Controller 未被修改）；
+  - `git diff lib/data/database/app_database.dart` 空（Drift schema 未被修改，`schemaVersion = 1` 不变）；
+  - `git diff android/` 空（三处 Manifest 未被修改）；
+  - `grep "audio_session | audioplayers | flutter_sound"` 在 `lib/shared/services/` T030 新文件 0 命中（`audio_session` 由 just_audio 自动带入，与 T026 Spike §3.7 一致）；
+  - `pubspec.yaml` 单行修改（`just_audio: ^0.10.5`），**未**主动引入 `audio_session` 作为顶层依赖 / **未**引入 `audioplayers` / **未**引入 `flutter_sound`；
+  - 三处 Manifest 仅 T027 已声明的 `RECORD_AUDIO`，**未**新增 `INTERNET` / **未**新增任何存储 / 相机 / 蓝牙权限；
+  - Service / Provider 文档明确"不接 UI / 不隐式调用权限 / 不保存 PracticeRecord / 不触发录音 / 不实现 Controller 级互斥状态机 / 不删除音频文件"；
+- **Findings**：
+  - 权限边界严格遵守：Service **不**调用 `MicrophonePermissionGateway` / 任何麦克风相关 platform channel，避免隐式权限请求；
+  - Controller / Drift schema / Manifest / Privacy 全部**未**被修改；
+  - 无 `INTERNET` 原则保留（`just_audio 0.10.5` 本项目仅使用 `setFilePath` 加载本地 m4a 文件，**不**触发 `INTERNET` 权限；`PackageJustAudioPlaybackGateway` 仅调用 `AudioPlayer.setFilePath` / `play` / `pause` / `seek` / `stop` / `dispose` + 3 stream getter + 2 值 getter，无任何网络 API 调用）；
+  - 依赖最小化（仅 `just_audio ^0.10.5` + 5 个 just_audio 传递依赖，其中 `audio_session 0.2.3` 由 just_audio 自动带入，与 T026 Spike §3.7 决策一致）；
+  - 敏感文件边界严格：`key.properties` / `*.jks` / `*.keystore` 均 untracked / ignored；新代码未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；
+  - Tag 完整性：`v0.1.0-mvp` → `d49ce4b`、`v1.0.0-release` → `703d2aa` 均未变；
+  - 未声称真实播放已实现 / 未声称播放已接入 UI / 未声称应用商店已提交；
+  - 未 push / 未 Tag / 未 amend / rebase / reset --hard；
+  - 边界条件测试覆盖完整：dispose 后调用被拒绝（6 项 API 全覆盖：loadFile / play / pause / resume / seek / stop）+ dispose 幂等（3 次 dispose）+ dispose while playing；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - 未来 T031 任务实现 Controller 集成时，可考虑在 `RecordingPracticeController` 显式调用 `MicrophonePermissionService.requestPermission()` 后再调用 `realAudioRecorderService.start()`，并在 `playing` / `paused` 状态下禁止 `startRecording`（录音与播放互斥），保持 Service 边界（Service 不调用权限）+ Controller 边界（Controller 协调权限 + 互斥）的清晰分离；
+  - 未来 T033 任务可在 `PrivacyNoticePage` 中明确说明"音频文件保存到 App 私有目录（`<docs>/audio`），其他应用无法访问"，与既有 SDD §3.6 一致；
+- **Approval**：**Approved**

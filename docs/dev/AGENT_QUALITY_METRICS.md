@@ -511,7 +511,6 @@
 - **Approval**：**Approved**
 
 ### 4.7 T027 Scorecard（真实音频 MVP 权限与 Manifest 基础层实现）
-
 | 字段 | 值 |
 | --- | --- |
 | Task ID | `T027_PERMISSION_AND_MANIFEST_IMPLEMENTATION` |
@@ -621,6 +620,145 @@
 - **Non-blocking Suggestions**：
   - `PermissionStatus.grantedLimited` 映射分支在初版曾被加入 `PermissionHandlerMicrophonePermissionGateway._mapStatus`，但 permission_handler 12.0.3 实际**不**存在该枚举值，编译失败后已删除；如未来 permission_handler 13.x 引入新枚举值（如 `grantedLimited` / `partial`），可在 T028+ 任务按 unknown fallback 即可；
   - `unknown` fallback 当前通过 fake gateway 自定义 raw 值触发，未在生产代码中显式覆盖（permission_handler 12.x switch 已穷尽，dead code 已被 `// ignore: dead_code` 标注保留 forward-compat）；如未来 permission_handler 升级引入新枚举值，按 unknown 处理无需修改本任务代码；
+- **Approval**：**Approved**
+
+### 4.8 T028 Scorecard（真实音频 MVP 音频文件存储基础层实现）
+
+| 字段 | 值 |
+| --- | --- |
+| Task ID | `T028_AUDIO_FILE_STORAGE_SERVICE` |
+| Primary Agent | `06-local-data-engineer`（音频文件路径 / 命名 / 临时与已保存目录 / 安全删除 / 测试主导） |
+| Review Agents | `04-audio-engineer`（文件格式 / 临时文件 / 保存路径 / 未来 record / just_audio 接入契约审查）、`02-flutter-architect`（Flutter / path_provider / service 分层 / 测试隔离 / 未越界接入 UI 或 Controller 审查）、`08-compliance-reviewer`（不使用外部共享目录 / 不泄露隐私路径 / 不引入 INTERNET / 未误写真实录音已完成审查）、`07-qa-reviewer`（测试覆盖 / 文件系统边界 / 异常场景 / 回归测试 / 命令纪律审查） |
+| High Risk Areas | 路径逃逸（`..` / 绝对路径 / `audio/../etc/passwd`）/ 误删 root 外文件 / 外部共享目录（`/storage/emulated/0/Music` 等）/ 测试隔离（不污染真实 `getApplicationDocumentsDirectory`）/ 未完成能力误写（不得把"文件存储基础层"写成"真实录音已实现"）/ Windows / POSIX 路径兼容 / 删除 root 本身 / 未触发权限弹窗 / 未调用麦克风 / 命令纪律（单条命令 / 无管道 / 无重定向 / 无 `&&` / 无分号 / 无复合）/ 越权（push / Tag / amend / rebase / reset --hard 全部禁止 / 不修改 `pubspec.yaml` / `pubspec.lock` / AndroidManifest.xml / Drift schema / 已有 production code） |
+| Blockers Found | 0（四个 Reviewer 均按 `AGENT_REVIEW_TEMPLATE.md` 只读审查，未发现阻断项；详见下文 §4.8.1 ~ §4.8.4 Reviewer 报告段与 `TASK_LEDGER.md` T028 条目 Reviewer 报告段） |
+| Blockers Valid | 0（无 Blockers） |
+| Fix Commits Required | 0 |
+| Tests Passed | 444（421 既有 + 23 新增；既有测试未减少；新增测试 ≥22 满足任务预期） |
+| Scope Clean | Yes（仅新建 3 个允许文件：`lib/shared/services/audio_file_storage_paths.dart` + `lib/shared/services/audio_file_storage_service.dart` + `test/shared/services/audio_file_storage_service_test.dart`；仅修改 3 个允许文档：`docs/dev/TASK_LEDGER.md` 追加 T028 条目 + `docs/dev/TECH_DEBT.md` 校准 TD-007（音频文件存储基础层完成；真实录音仍未完成） + `docs/dev/AGENT_QUALITY_METRICS.md` §4.8 追加 T028 Scorecard） |
+| Command discipline violation | **No**（本任务全程命令均为单条命令；无管道、无重定向、无 `&&`、无分号、无复合命令） |
+| Sensitive Files Checked | Yes（`git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/flutter-apk/app-release.apk` / `build/app/outputs/bundle/release/app-release.aab` 五项均返回空；`v0.1.0-mvp` 仍指向 `d49ce4b` 未变；`v1.0.0-release` 仍指向 `703d2aa` 未变；新代码未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；未读取 `key.properties` 内容） |
+| Build Artifacts Tracked | No（`git ls-files build/app/outputs/**` 返回空） |
+| Dependency Modified | **No**（`pubspec.yaml` / `pubspec.lock` 未被修改；`record` / `just_audio` / `audio_session` / `audioplayers` / `flutter_sound` 均未引入；`path_provider ^2.1.6` 已存在 + `permission_handler ^12.0.3` 已由 T027 引入；本任务复用 `path_provider` 默认生产 root provider） |
+| Permissions Modified | **No**（`AndroidManifest.xml` 三处清单均未修改；`RECORD_AUDIO` / `INTERNET` / 其他权限均未在本任务变更；T027 已完成 `RECORD_AUDIO` 声明，本任务**不**触及权限） |
+| Real Audio Implementation Started | **No**（仅音频文件路径 / 命名 / 临时与已保存目录 / 安全删除基础层；`AudioRecorderService` / `AudioPlaybackService` / `RecordingPracticeController` 真实音频状态机均未实现；`RECORD_AUDIO` 已被 Manifest 声明但 Controller 尚未调用 `requestPermission`；PracticeRecord `audioFilePath` 仍为 `null`；service 文件**不**引用 record / just_audio / audio_session / AudioRecorder / AudioPlayer 任何符号） |
+| Final Approval | 待 GPT 复审 |
+| Collaboration Value | **Medium**（四个 Reviewer 均按模板只读审查并给 Approved；本任务为音频文件存储基础层，证据来自 `flutter analyze` 输出 + `flutter test` 23/23 通过 + 单文件测试通过 + 静态边界检查（grep `record` / `just_audio` / `permission_handler` / `AudioRecorder` / `AudioPlayer` 字符串仅出现在**注释中显式声明"不引用"**或**标识符名 `recordId`**，无实际 import / 引用 / 调用） + 测试隔离验证（fake provider + `Directory.systemTemp.createTempSync()`） + 敏感文件边界（key.properties / *.jks / *.keystore / build artifacts 全部返回空）+ v0.1.0-mvp / v1.0.0-release Tag 完整性，未发现重大缺陷；Reviewer 主要做规范性检查 + 范围守卫 + 文件名片段校验完整性确认 + 路径逃逸防护完整性确认 + root 外路径防御确认 + temp/saved 目录契约确认 + 未来 record / just_audio 接入契约兼容性确认 + 测试覆盖完整性确认 + 测试不触发权限弹窗确认 + 测试不调用麦克风确认 + 测试不调用 path_provider 平台通道确认 + 未完成能力表述隔离 + 敏感信息未泄露确认 + 命令纪律确认，未拦截真实 Bug；与 T022 / T024 / T025 / T026 / T027 类似属于"偏流程化 + 边界校验审查"，但仍是真实音频阶段必经的"音频文件存储基础层门禁"，避免后续 T029+ 在无文件存储契约下启动；协作价值以"完整 8 个 API + 文件名片段校验 + 路径逃逸防护 + Windows/POSIX 兼容 + 23 项纯单元测试 + 未来 record/just_audio 接入契约保留"为主要产出） |
+| Notes | Audio Engineer Reviewer 重点确认：① 文件格式默认 `m4a`、可选 `aac` / `wav`、扩展名校验覆盖 `[a-z0-9]{2,4}`；② temp 目录契约（`root/temp/` + 仅生成路径不写内容 + 录音写入由未来 T029 `AudioRecorderService.start()` 负责）清楚；③ saved 目录契约（`root/saved/YYYY-MM-DD/<recordId>.m4a` + 本地午夜日期格式化 + 不覆盖已有文件）清楚；④ saved 路径格式 `YYYY-MM-DD/<recordId>.m4a` 满足后续 `record` 7.1.0（m4a/AAC-LC）+ `just_audio` 0.10.5（本地 file://）接入契约；⑤ service 文件**不**引用 record / just_audio / permission_handler / audio_session 任何符号（grep 验证仅在注释或标识符名 `recordId` 中）；⑥ 未声称真实录音已实现（`TECH_DEBT.md` TD-007 已校准"音频文件存储基础层完成；真实录音仍未完成"）。Flutter Architect Reviewer 重点确认：① 未修改 `pubspec.yaml` / `pubspec.lock`；② 未修改 `AndroidManifest.xml` 三处清单；③ service 位于 `lib/shared/services/`，与既有 `install_date_service.dart` / `microphone_permission_service.dart` 同级，分层合理；④ 默认生产 root provider 基于 `path_provider.getApplicationDocumentsDirectory()`，测试用注入式 provider 实现隔离；⑤ 测试使用 `_IsolatedRootProvider` fake provider + `Directory.systemTemp.createTempSync()` 创建隔离临时目录，测试结束通过 `addTearDown` 清理；⑥ 未修改 `RecordingPracticeController` / `PracticeRecord` / `Drift` / `Repository` / UI 页面 / `android/app/build.gradle` / `key.properties` / `.gitignore`；⑦ 既有的 421 项测试 100% 保留。Compliance Reviewer 重点确认：① 未读取 `key.properties` 内容、未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；② 未声称真实录音已实现；③ 默认生产 root provider 使用 `getApplicationDocumentsDirectory()/audio`（app 私有文档目录），**不**使用外部共享目录；④ `deleteIfExists` + `cleanupTempFiles` + `isPathInsideRoot` 三重路径逃逸防护；⑤ 未新增 `INTERNET` 权限（三处 Manifest 未变更）；⑥ 未新增任何权限；⑦ 未 push、未 Tag、未 amend / rebase / reset --hard。QA Reviewer 重点确认：① 23 项单元测试全部通过（`flutter test test/shared/services/audio_file_storage_service_test.dart` 输出 `00:00 +23: All tests passed!`）；② 覆盖 ensureDirectories（创建三目录 + 幂等）+ createTempFile（路径生成 + takeId 空/点点/斜杠反斜杠点空格 6 种坏 ID / 扩展名 6 种坏值）+ savedFileForRecord（YYYY-MM-DD 路径 + 创建日期目录 + recordId 校验）+ exists（true/false）+ sizeBytes（实际长度/缺失返 0）+ deleteIfExists（文件内/缺失返 false/root 自身拒绝/root 外文件拒绝）+ cleanupTempFiles（白名单扩展名清理/saved 不删/子目录不删/root 外 temp 拒绝）+ 静态边界契约测试（service 文件**不**引用录音/播放/权限 SDK 符号）；③ 路径逃逸测试覆盖（root 自身拒绝、root 外文件拒绝、root 外 temp 拒绝、takeId `..` 拒绝、takeId 斜杠反斜杠点空格拒绝、扩展名带点拒绝）；④ 删除 root 外文件测试覆盖（`AudioFileStorageService.deleteIfExists refuses root-outside path even when wrapped as File` + `AudioFileStorageService.cleanupTempFiles refuses to clean up temp directory outside of root`）；⑤ 清理 temp 不删除 saved 测试覆盖（`AudioFileStorageService.cleanupTempFiles does not delete saved files`）；⑥ 测试清理临时目录（每个测试通过 `_createIsolatedRoot` 的 `addTearDown` hook 删除临时根目录及其全部内容）；⑦ 测试不触发权限弹窗（fake provider 注入，无 platform channel 调用）；⑧ 旧 421 项测试不减少（实际 444 通过 = 421 既有 + 23 新增）；⑨ 命令纪律无违规（全程单条命令，无管道 / 重定向 / `&&` / 分号 / 复合）；详见 `docs/dev/TASK_LEDGER.md` T028 条目 |
+
+#### 4.8.1 Audio Engineer Reviewer（04-audio-engineer）只读审查
+
+- **Reviewer Role**：`04-audio-engineer`
+- **Scope Reviewed**：`lib/shared/services/audio_file_storage_paths.dart` 不可变数据结构 + `lib/shared/services/audio_file_storage_service.dart` 8 个 API + 文件名片段校验 + 路径逃逸防护 + 文件格式契约；`test/shared/services/audio_file_storage_service_test.dart` 23 项单元测试；既有 `docs/dev/REAL_AUDIO_MVP_SDD.md` §4 Audio File Lifecycle + `docs/dev/REAL_AUDIO_MVP_TDD.md` §2.7 Filesystem + `docs/dev/REAL_AUDIO_DEPENDENCY_SPIKE.md` §3.6 path_provider
+- **Evidence Checked**：
+  - `lib/shared/services/audio_file_storage_paths.dart` 不可变数据结构含 `rootDirectory` / `tempDirectory` / `savedDirectory` / 可空 `dayDirectory`，注释明确"**不**依赖 Flutter UI / Riverpod / Codegen / path_provider"；
+  - `lib/shared/services/audio_file_storage_service.dart` 默认扩展名 `m4a`、可选 `aac` / `wav`、扩展名校验 `[a-z0-9]{2,4}`、白名单 `m4a` / `aac` / `wav`；
+  - `createTempFile` 仅生成 temp 路径契约，**不**写入文件内容（注释明确"调用方拿到路径后可由真实录音服务（未来 T029 实现）写入内容"）；
+  - `savedFileForRecord` 返回 `saved/YYYY-MM-DD/<recordId>.m4a` 路径，`_formatLocalDay` 使用本地午夜 `YYYY-MM-DD` 格式（与 SDD §6.2 一致）；
+  - `cleanupTempFiles` 仅清理 `m4a` / `aac` / `wav` 白名单扩展名顶层文件（**不**删 `saved`、**不**删目录）；
+  - saved 路径格式与未来 `record` 7.1.0 输出 m4a + `just_audio` 0.10.5 本地 file:// 播放兼容；
+  - grep `record` / `just_audio` / `permission_handler` / `AudioRecorder` / `AudioPlayer` 在 `lib/shared/services/audio_file_storage_*.dart` 与 `test/shared/services/audio_file_storage_service_test.dart` 三个文件中仅出现在**注释中显式声明"不引用"**或**标识符名 `recordId`**，无实际 `import` / 引用 / 调用；
+  - `TECH_DEBT.md` TD-007 已校准"音频文件存储基础层完成；真实录音仍未完成"，未把"已声明 RECORD_AUDIO"或"文件存储基础层完成"写成"真实录音已实现"；
+- **Findings**：
+  - 文件格式默认 `m4a` 与既有 `REAL_AUDIO_MVP_SDD.md` §4.3 命名规则一致；
+  - temp / saved 目录契约清楚，与既有 `REAL_AUDIO_MVP_SDD.md` §4.2 + `REAL_AUDIO_DEPENDENCY_SPIKE.md` §3.6 一致；
+  - saved 路径 `saved/YYYY-MM-DD/<recordId>.m4a` 满足后续 `record` 7.1.0（m4a/AAC-LC 44100Hz/128kbps）+ `just_audio` 0.10.5（本地 file:// 路径播放，无需 INTERNET）接入契约；
+  - 未接入 record / just_audio / audio_session / AudioRecorder / AudioPlayer 任何符号；
+  - 未声称真实录音已实现；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - `dayDirectory` 字段当前不可空但未使用，建议未来 T029 录音服务在生成 day 目录时显式调用 `ensureDirectories` 填充 `dayDirectory`，让 Controller 拿到 day 目录引用以便清理；当前保留不影响 T028 主任务；
+  - `_validateExtension` 当前白名单 `[a-z0-9]{2,4}` 已覆盖 `m4a`（3 字符）/ `aac`（3 字符）/ `wav`（3 字符），未来如需支持 `opus` / `flac`（4 字符）也可工作；建议 T029 / T030 隔离 spike 实测 `record` 实际输出扩展名后追加；
+- **Approval**：**Approved**
+
+#### 4.8.2 Flutter Architect Reviewer（02-flutter-architect）只读审查
+
+- **Reviewer Role**：`02-flutter-architect`
+- **Scope Reviewed**：`pubspec.yaml` / `pubspec.lock` 未变更；`lib/shared/services/audio_file_storage_paths.dart` + `audio_file_storage_service.dart` 两个新文件 + 既有 `lib/shared/services/` 既有约定（参考 `install_date_service.dart` / `microphone_permission_service.dart` 的接口 + 实现分离模式）；`test/shared/services/audio_file_storage_service_test.dart` 23 项单元测试；既有 `docs/ARCHITECTURE.md` §3 / §7 + `docs/TECH_STACK.md` §6.1 / §7 / §10
+- **Evidence Checked**：
+  - `git status --short` 工作树（Commit 前）显示仅有允许文件改动；
+  - `git diff --check` 无空白错误；
+  - `pubspec.yaml` 未被修改（既有 `permission_handler: ^12.0.3` / `path_provider: ^2.1.6` 不变，未引入 record / just_audio / audio_session / audioplayers / flutter_sound）；
+  - `pubspec.lock` 未被修改；
+  - `AndroidManifest.xml` 三处清单均未修改（T027 已完成 `RECORD_AUDIO` 声明，本任务**不**触及权限）；
+  - `lib/shared/services/audio_file_storage_service.dart` 注入式根目录设计（`AudioRootDirectoryProvider` typedef + 默认生产 `defaultAudioRootDirectoryProvider()` 基于 `path_provider.getApplicationDocumentsDirectory()/audio`），与既有 `lib/shared/services/` 既有约定一致；
+  - `lib/shared/services/audio_file_storage_paths.dart` 不可变数据结构 + `dart:io` only 依赖（不依赖 Flutter UI / Riverpod / codegen）；
+  - `_validateIdSegment` 字符集 `[A-Za-z0-9_-]+` 与 SDD §6.1 `audioFilePath` 契约 + 真实音频阶段命名规则一致；
+  - `_validateExtension` 字符集 `[a-z0-9]{2,4}` + 默认 `m4a` 与 SDD §4.3 命名规则一致；
+  - `_canonicalPath` 用 `p.normalize` 处理 `..` 路径逃逸，跨 Windows / POSIX 一致（POSIX 正斜杠与 Windows 反斜杠都被规范化为 `/`）；
+  - `isPathInsideRoot` 公开方法供 Controller / Repository 防御性校验；
+  - `deleteIfExists` 仅在 `existsSync() == true` 时进入路径校验 → 删除流程，未通过存在性检查的文件直接返回 `false` 而不抛错（**不**抛异常给 UI，符合 MVP 既有行为约定）；
+  - `_IsolatedRootProvider` fake provider 注入 + `Directory.systemTemp.createTempSync()` 实现测试隔离，测试结束通过 `addTearDown` 删除临时根目录及其全部内容；
+  - 既有的 421 项测试 100% 保留（实际 444 通过 = 421 既有 + 23 新增）；
+  - `RecordingPracticeController` / `PracticeRecord` / Drift schema / `Repository` / UI 页面 / `android/app/build.gradle` / `key.properties` / `.gitignore` 均未修改；
+- **Findings**：
+  - service 位于 `lib/shared/services/`，与既有 `install_date_service.dart` / `microphone_permission_service.dart` 同级，分层合理；
+  - 默认生产 root provider 仅用于生产路径，测试用注入式 provider 实现隔离；
+  - `AudioFileStorageService` 不依赖 Flutter UI、不依赖 Riverpod、不依赖 codegen，可被 Controller / Repository 直接 `new` 注入；
+  - `_canonicalPath` 跨平台一致：Windows 反斜杠 `\audio\temp` 与 POSIX 正斜杠 `/audio/temp` 都被规范化为 `/audio/temp`；
+  - `_validateIdSegment` + `_validateExtension` 校验完整，覆盖空 / 点 / 点点 / 斜杠 / 反斜杠 / 空格 / 长度；
+  - `_validateIdSegment` 字符集 `[A-Za-z0-9_-]+` 与 `PracticeRecordIdGenerator` UUID v4 + `audioFilePath` 契约一致（仅小写十六进制 + 连字符 + 下划线字母数字组合）；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - 当前 `AudioFileStorageService` **未**封装成 Riverpod Provider；如未来需要全局单例，建议在 `lib/shared/providers/audio_file_storage_service_provider.dart` 新建 `Provider<AudioFileStorageService>`（参考 `install_date_service_provider.dart`）；本任务**不**强制此设计（避免过度架构）；
+  - 未来 T031 Controller 可通过 `ProviderScope.overrides` 在测试中注入 `InMemoryAudioFileStorageService` 替换 `AudioFileStorageService`，与 `MicrophonePermissionService` 的 fake gateway 注入模式一致；
+- **Approval**：**Approved**
+
+#### 4.8.3 Compliance Reviewer（08-compliance-reviewer）只读审查
+
+- **Reviewer Role**：`08-compliance-reviewer`
+- **Scope Reviewed**：`lib/shared/services/audio_file_storage_paths.dart` / `audio_file_storage_service.dart` 两个新文件 + 默认生产 root provider 基于 `getApplicationDocumentsDirectory()/audio` + 路径逃逸防护；`test/shared/services/audio_file_storage_service_test.dart` 测试隔离；既有 `docs/dev/REAL_AUDIO_MVP_SDD.md` §3 Permission and Privacy + `docs/dev/TECH_DEBT.md` TD-007 / TD-010 / TD-011 / TD-012 / TD-013
+- **Evidence Checked**：
+  - `git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 五项均返回空；
+  - `v0.1.0-mvp` 仍指向 `d49ce4b`、`v1.0.0-release` 仍指向 `703d2aa`；
+  - 全文搜索 `audio_file_storage_paths.dart` / `audio_file_storage_service.dart` / 测试文件确认未出现 `key.properties` 内容 / 密码 / keystore 内容 / 用户目录 keystore 绝对路径；
+  - 默认生产 root provider 使用 `getApplicationDocumentsDirectory()/audio`（app 私有文档目录），**不**使用外部共享目录；
+  - `deleteIfExists` 接受 `rootDirectory` 参数并执行 `_isPathInsideRoot` 校验，root 外路径 + root 自身 + `..` 路径逃逸全部抛 `ArgumentError`；
+  - `cleanupTempFiles` 接受 `tempDirectory` + `rootDirectory` 两个参数并执行 `_isCanonicalChild` 校验，root 外 temp 抛 `ArgumentError`，仅清理白名单扩展名（`m4a` / `aac` / `wav`）顶层文件，**不**删 saved、**不**删目录；
+  - `isPathInsideRoot` 公开方法供 Controller / Repository 防御性校验；
+  - `AndroidManifest.xml` 三处清单均未修改（**未**新增 `INTERNET`、**未**新增任何权限）；
+  - `TECH_DEBT.md` TD-007 已校准"音频文件存储基础层完成；真实录音仍未完成"，未把"文件存储基础层完成"写成"真实录音已实现"；
+  - 未声称真实录音已实现、未声称应用商店已提交；
+  - 未读取 `key.properties` 内容、未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；
+  - 未 push、未 Tag、未 amend / rebase / reset --hard；
+- **Findings**：
+  - 默认生产 root provider 使用 `getApplicationDocumentsDirectory()/audio`（app 私有文档目录），与既有 `REAL_AUDIO_MVP_SDD.md` §4.1 候选 A（推荐）一致；
+  - 不使用外部共享目录（`/storage/emulated/0/Music` 等）、不使用公共 Downloads / Music / DCIM，与既有 SDD §3.3 无 INTERNET 原则 + §4.1 候选 A 一致；
+  - 路径逃逸防护三重：`deleteIfExists` + `cleanupTempFiles` + `isPathInsideRoot` 公开方法；
+  - 未新增 `INTERNET` 权限（三处 Manifest 未变更）；
+  - 未新增任何权限（仅复用 T027 已声明的 `RECORD_AUDIO`）；
+  - 未声称真实录音已实现；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - 当前 `defaultAudioRootDirectoryProvider()` 直接返回 `<docs>/audio` 路径，**不**在内部调用 `createSync(recursive: true)`；如未来 T031 Controller 在 App 启动时立即调用 `ensureDirectories()`，可保持现有行为；如未来需要立即创建目录，建议把 `createSync(recursive: true)` 移到 provider 内部；
+  - 未来 T033 任务可在 `PrivacyNoticePage` 中明确说明"音频文件保存到 App 私有目录（`<docs>/audio`），其他应用无法访问"，与既有 SDD §3.6 一致；
+- **Approval**：**Approved**
+
+#### 4.8.4 QA Reviewer（07-qa-reviewer）只读审查
+
+- **Reviewer Role**：`07-qa-reviewer`
+- **Scope Reviewed**：`test/shared/services/audio_file_storage_service_test.dart` 23 项单元测试；`flutter analyze` / `flutter test` 实际输出；grep 静态边界检查；既有 `docs/dev/AGENT_REVIEW_TEMPLATE.md` QA Checklist + `docs/dev/REAL_AUDIO_MVP_TDD.md` §2.7 Filesystem + §4 Regression Matrix
+- **Evidence Checked**：
+  - `flutter analyze` `No issues found! (ran in 3.3s)`；
+  - `flutter test test/shared/services/audio_file_storage_service_test.dart` 输出 `00:00 +23: All tests passed!`（23 项测试 100% 通过）；
+  - `flutter test` 全量输出 `00:13 +444: All tests passed!`（444 = 421 既有 + 23 新增，既有测试未减少，新增 ≥22 满足任务预期）；
+  - 23 项测试覆盖：① ensureDirectories creates root temp saved；② ensureDirectories is idempotent；③ createTempFile returns temp path with provided extension；④ createTempFile validates takeId empty；⑤ createTempFile rejects path traversal (..)；⑥ createTempFile rejects slash/backslash/dot/space in takeId（6 种坏 ID 全覆盖）；⑦ createTempFile rejects invalid extension（6 种坏值全覆盖）；⑧ savedFileForRecord returns saved/YYYY-MM-DD/recordId.m4a；⑨ savedFileForRecord creates day directory；⑩ savedFileForRecord validates recordId (rejects invalid)（空 + `../escape`）；⑪ exists returns true for existing file；⑫ exists returns false for missing file；⑬ sizeBytes returns file length for existing file；⑭ sizeBytes returns 0 for missing file；⑮ deleteIfExists deletes file inside root；⑯ deleteIfExists returns false for missing file；⑰ deleteIfExists refuses to delete the root directory itself；⑱ deleteIfExists refuses root-outside path even when wrapped as File；⑲ cleanupTempFiles deletes temp files with whitelisted extension；⑳ cleanupTempFiles does not delete saved files；21 cleanupTempFiles does not delete subdirectories inside temp；22 cleanupTempFiles refuses to clean up temp directory outside of root；23 static boundary generated service does not import record / just_audio / permission_handler / audio_session symbols；
+  - 全部 23 项测试使用 `_IsolatedRootProvider` fake provider + `Directory.systemTemp.createTempSync()` 注入隔离，**不**触发真实系统权限弹窗、**不**调用麦克风、**不**调用 `path_provider` 平台通道；
+  - 测试结束通过 `_createIsolatedRoot` 的 `addTearDown` hook 删除临时根目录及其全部内容（递归清理）；
+  - grep `record` / `just_audio` / `permission_handler` / `AudioRecorder` / `AudioPlayer` 在三个文件中仅出现在**注释中显式声明"不引用"**或**标识符名 `recordId`**；
+  - 既有的 421 项测试 100% 保留（实际 444 通过 = 421 既有 + 23 新增）；
+- **Findings**：
+  - 测试数从 421 增至 444（+23），既有 421 项测试 100% 保留，**无**测试减少；
+  - 测试覆盖完整：8 个 API 全部覆盖 + 文件名片段校验覆盖空 / 点 / 点点 / 斜杠 / 反斜杠 / 空格 + 扩展名校验覆盖空 / 点 / 斜杠 / 反斜杠 / 空格 / 超长 + 路径逃逸防护覆盖 root 外文件拒绝 + root 外 temp 拒绝 + root 自身拒绝 + `..` 路径拒绝 + 子目录不删 + saved 不删 + 白名单扩展名清理；
+  - 测试不触发真实系统权限弹窗（fake provider 注入，与 `REAL_AUDIO_MVP_TDD.md` §1.1 File storage tests 一致）；
+  - 测试不调用麦克风（仅 IO 文件操作，与 `REAL_AUDIO_MVP_TDD.md` §5 Test Gaps 9 项一致）；
+  - `flutter analyze` 通过，无新警告；
+  - Manifest 权限未变更（三处 Manifest 与 T027 一致，未新增任何权限）；
+  - 既有的 421 项测试 100% 保留（基线 T027 锁定，本任务**未**修改任何既有测试代码 / 既有生产代码 / Drift schema / Android Gradle 配置 / `pubspec.yaml` / `pubspec.lock`）；
+  - 命令纪律严格执行：本任务全程命令均为单条命令，无管道 / 重定向 / `&&` / 分号 / 复合命令，与 T023 / T024 / T025 / T026 / T027 表现一致；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - 当前 23 项测试全部用 `_IsolatedRootProvider` + `Directory.systemTemp.createTempSync()` 注入隔离；如未来 T029 录音服务需要测试与 file storage service 协同，可考虑抽出共享 `_IsolatedRootProvider` 到 `test/shared/services/test_helpers/`；本任务**不**强制抽取（避免过度抽象）；
+  - `dayDirectory` 字段当前不可空但未在 `ensureDirectories` 内填充；如未来需要清理当日临时目录，建议 T029 / T030 隔离 spike 中实测 `record` 实际输出路径后追加 `dayDirectory` 填充逻辑；
 - **Approval**：**Approved**
 
 ## 6. Review Cadence

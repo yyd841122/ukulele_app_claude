@@ -850,6 +850,151 @@
   - 本任务 T028A 文档契约校准完成；建议 T029 / T030 / T032 等后续任务执行前在 Primary Agent Findings 中显式引用"deleteIfExists 仅允许删除 root 之下普通文件 + root 外文件抛 `ArgumentError` + root 被 File 包装返回 false"的契约，避免后续任务再次出现表述不一致；
 - **Approval**：**Approved**
 
+### 4.10 T029 Scorecard（真实音频 MVP 录音服务基础层实现）
+
+| 字段 | 值 |
+| --- | --- |
+| Task ID | `T029_REAL_RECORDER_SERVICE` |
+| Primary Agent | `04-audio-engineer`（音频架构 / record 7.1.0 API 接入 / 状态机 / 资源生命周期 / fake gateway 单测主导） |
+| Review Agents | `02-flutter-architect`（record 7.1.0 API / Provider 边界 / 依赖边界审查）、`06-local-data-engineer`（temp 路径安全 / cancel 清理 / 异常一致性 / `AudioFileStorageService` 复用审查）、`07-qa-reviewer`（状态机覆盖 / 异常测试 / 测试隔离 / 回归风险 / 命令纪律审查）、`08-compliance-reviewer`（权限边界 / Manifest 未改 / 未声称真实录音已接入 UI / 敏感文件 / Tag 完整性审查） |
+| High Risk Areas | `record ^7.1.0` API 接入（Context7 验证）/ Provider 边界（构造时**不**访问麦克风 / **不**触发权限 / **不**调用 platform channel）/ 隐式权限请求（`PackageAudioRecorderGateway` **不**调用 `AudioRecorder.hasPermission()`）/ 状态机正确性（5 状态 idle / recording / stopping / cancelling / disposed）/ 异常路径恢复（start / stop / cancel 失败后状态回 idle 或 disposed）/ 取消清理（best-effort `deleteIfExists` 不抛错）/ 路径安全（不绕过 `_validateIdSegment`）/ dispose 幂等（多次调用安全）/ 测试不触发真实麦克风 / 既有 444 项测试不减少 / 不修改 RecordingController / 不修改 Drift schema / 不修改三处 Manifest / 不引入 `audio_session` / 不引入 `just_audio` / 不引入 `audioplayers` / 不引入 `flutter_sound` / 不 push / 不 Tag |
+| Blockers Found | 0（四个 Reviewer 均按 `AGENT_REVIEW_TEMPLATE.md` 只读审查并给 Approved，详见下文 §4.10.1 ~ §4.10.4 Reviewer 报告段与 `TASK_LEDGER.md` T029 条目 Reviewer 报告段） |
+| Blockers Valid | 0（无 Blockers） |
+| Fix Commits Required | 0 |
+| Tests Passed | 464（444 既有 + 20 新增；既有测试未减少；新增测试 ≥20 满足任务预期；既有 444 项测试 100% 保留） |
+| Tests Added/Updated/Deleted | Added: 20；Updated: 0；Deleted: 0 |
+| Scope Clean | Yes（仅修改 4 个允许文件：`pubspec.yaml` 末尾新增 `record: ^7.1.0` + `pubspec.lock` 自动更新、`docs/dev/TASK_LEDGER.md` 追加 T029 条目 + `docs/dev/TECH_DEBT.md` 校准 TD-007 / TD-010 + `docs/dev/AGENT_QUALITY_METRICS.md` §4.10 追加 T029 Scorecard；仅新建 8 个允许文件：`lib/shared/services/audio_recorder_state.dart` + `lib/shared/services/audio_recorder_exception.dart` + `lib/shared/services/audio_recorder_gateway.dart` + `lib/shared/services/real_audio_recorder_service.dart` + `lib/shared/providers/audio_file_storage_service_provider.dart` + `lib/shared/providers/real_audio_recorder_service_provider.dart` + `test/shared/services/fake_audio_recorder_gateway.dart` + `test/shared/services/real_audio_recorder_service_test.dart`） |
+| Command discipline violation | **No**（本任务全程命令均为单条命令：`git status --short` / `git branch --show-current` / `git rev-parse --short HEAD` / `git log -1 --oneline` / `git remote -v` / `git tag -n1 --list v0.1.0-mvp` / `git tag -n1 --list v1.0.0-release` / `git rev-list -n 1 v0.1.0-mvp` / `git rev-list -n 1 v1.0.0-release` / `git ls-files ...` / `git diff ...` / `git grep ...` / `flutter pub get` / `dart format ...` / `flutter analyze` / `flutter test ...` / `flutter test` / `Read` / `Write` / `Edit` / Context7 `mcp__context7__resolve-library-id` / `mcp__context7__query-docs` / WebFetch 等只读或允许写命令；无管道、无重定向、无 `&&`、无分号、无复合命令） |
+| Sensitive Files Checked | Yes（`git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 四项均返回空；`v0.1.0-mvp` 仍指向 `d49ce4b` 未变；`v1.0.0-release` 仍指向 `703d2aa` 未变；新代码未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；未读取 `key.properties` 内容） |
+| Build Artifacts Tracked | No（`git ls-files build/app/outputs/**` 返回空） |
+| Dependency Modified | **Yes**（`pubspec.yaml` 新增 `record: ^7.1.0`；`pubspec.lock` 自动更新；`flutter pub get` 解析成功并自动拉入 8 个 `record_*` 生态子包：`record_android 2.1.1` / `record_ios 2.1.0` / `record_linux 2.1.0` / `record_macos 2.1.0` / `record_platform_interface 2.1.0` / `record_use 0.6.0` / `record_web 2.1.0` / `record_windows 2.1.0`，均为 `record` 必需平台子包；**未**引入 `just_audio` / `audio_session` / `audioplayers` / `flutter_sound`） |
+| Permissions Modified | **No**（`AndroidManifest.xml` 三处清单均未修改；`RECORD_AUDIO` 仍由 T027 声明；**未**声明 `INTERNET`、**未**新增任何权限） |
+| Real Audio Implementation Started | **Partial**（`AudioRecorderService` / `PackageAudioRecorderGateway` 真实 `record 7.1.0` 实现 + `realAudioRecorderServiceProvider` 真实 Provider 已就位；**未**接入 `RecordingPracticeController` / **未**保存 `PracticeRecord` / **未**修改 Drift schema / **未**修改 `recording_page.dart` / **未**真机验收） |
+| Test Count | 464（实测 `flutter test` 全量输出 `00:14 +464: All tests passed!`） |
+| Final Approval | 待 GPT 复审 |
+| Collaboration Value | **Medium**（四个 Reviewer 均按模板只读审查并给 Approved；本任务为录音服务基础层（依赖引入 + Gateway 抽象 + 状态机 + 异常层次 + 单元测试），证据来自 `flutter pub get` 解析输出 + `flutter analyze` 输出 + `flutter test` 20/20 通过 + `flutter test` 全量 464 通过 + 既有 444 项测试 100% 保留 + `grep` 静态 Manifest 验证 + 敏感文件跟踪，未发现重大缺陷；Reviewer 主要做规范性检查 + 范围守卫 + API 边界确认 + 隐式权限请求守卫 + 状态机覆盖完整性确认 + 测试隔离确认 + 既有测试不减少确认 + 边界完整性确认 + 未完成能力表述隔离 + 敏感信息未泄露确认 + 命令纪律确认，未拦截真实 Bug；与 T022 / T024 / T025 / T026 / T027 / T028 / T028A 类似属于"偏流程化 + 边界校验审查"，但仍是真实音频阶段必经的"录音服务基础层门禁"，避免后续 T031 Controller 集成 / T030 播放服务 / 真机验收在无录音契约下启动；协作价值以"完整 `record ^7.1.0` 引入 + 8 个新文件 + 5 状态枚举 + 5 异常子类 + 20 项单元测试 + fake gateway 注入 + 既有 444 项测试 100% 保留"为主要产出） |
+| Notes | Flutter Architect Reviewer 重点确认：① `pubspec.yaml` 单行修改（`permission_handler: ^12.0.3` 后追加 `record: ^7.1.0`），**未**引入 `just_audio` / `audio_session` / `audioplayers` / `flutter_sound`；② `PackageAudioRecorderGateway` 直接代理 `AudioRecorder`，`RecordConfig` 构造使用 `AudioEncoder.aacLc / sampleRate=44100 / bitRate=128000 / numChannels=1`，与 SDD §4.3 + Spike §3.1 完全一致；③ `realAudioRecorderServiceProvider` 手动 `Provider` 无 codegen，沿用 `installDateServiceProvider` 模式；④ 构造时**不**触发 platform channel（`AudioRecorder()` 构造仅是 Dart 包装类，platform channel 仅在 `start()` 调用时触发）；⑤ `RecordingPracticeController` 未被修改（grep 验证 0 命中 `record` / `AudioRecorder` / `MicrophonePermission`）；⑥ T028 storage service 表面未变（仅新增 Provider 包装，不修改 `AudioFileStorageService` 内部）。Local Data Reviewer 重点确认：① `start()` 调用 `_storage.createTempFile(takeId, extension, tempDirectory)`，**不**绕过 `_validateIdSegment`；② `ArgumentError` → `RecorderConfigException` 翻译正确；③ `cancel()` 调用 `_storage.deleteIfExists(file, rootDirectory: paths.rootDirectory)`，best-effort 清理不抛错；④ `stop()` **不**删除 temp 文件（保留给后续 save 流程）；⑤ `_clearActiveSession()` 在 stop / cancel / dispose 三个出口都被调用；⑥ 任何路径**不**删除 root 自身 / saved 文件 / root 外文件；⑦ 三个 minor non-blocking suggestions（start 失败残留 on-disk temp / dispose-while-recording 残留 on-disk temp / cancel 路径 ArgumentError 吞掉未测试）均为设计选择 + 可选测试覆盖，不构成 Blocker。QA Reviewer 重点确认：① 20 项单元测试 100% 通过（`flutter test test/shared/services/real_audio_recorder_service_test.dart` 输出 `00:00 +20: All tests passed!`）；② 状态机覆盖完整：idle → recording、recording → stopping → idle、recording → cancelling → idle、任何状态 → disposed、disposed 后调用抛 `InvalidRecorderStateException`；③ 异常路径覆盖：start gateway 失败 / start storage ArgumentError / stop null / stop 路径不一致 / stop gateway 异常 / cancel gateway 异常 / cancel best-effort 删除失败 / dispose while recording / dispose 幂等 / dispose post-dispose 拒绝；④ 测试不触发真实麦克风 / **不**调用 platform channel / **不**申请权限 / **不**保存 `PracticeRecord` / **不**触发播放（fake gateway 注入 + temp root 隔离）；⑤ `flutter test` 全量输出 `00:14 +464: All tests passed!`（464 = 444 既有 + 20 新增，既有测试未减少）；⑥ 既有 444 项测试 100% 保留；⑦ Manifest 静态检查通过（三处 `RECORD_AUDIO` 仍存在 + 三处**未**声明 `INTERNET` + 三处**未**新增任何权限）；⑧ 命令纪律严格执行（全程单条命令，无管道 / 重定向 / `&&` / 分号 / 复合命令）；⑨ Reviewer 主动 `git stash` + `flutter test` 验证既有基线 = 444（Reviewer 强证据）。Compliance Reviewer 重点确认：① Service **不**调用 `MicrophonePermissionGateway` / `AudioRecorder.hasPermission()`（grep 验证 0 命中实际调用点，仅注释中显式声明"不调用"）；② `RecordingPracticeController` 未被修改（`git diff` 空）；③ Drift schema 未被修改（`schemaVersion = 1` 不变）；④ **未**引入 `just_audio` / `audio_session` / `audioplayers` / `flutter_sound`；⑤ `AndroidManifest.xml` 三处清单未修改（T027 `RECORD_AUDIO` 声明不变）；⑥ `git ls-files android/key.properties` / `*.jks` / `*.keystore` 三项均返回空；⑦ `v0.1.0-mvp` 仍指向 `d49ce4b`、`v1.0.0-release` 仍指向 `703d2aa`；⑧ Service / Provider 文档明确"不接 UI / 不隐式调用权限 / 不保存 PracticeRecord / 不触发播放"；⑨ 未 push / 未 Tag / 未 amend / rebase / reset --hard；⑩ 无 key.properties 内容 / 密码 / keystore 内容 / 用户目录 keystore 绝对路径泄露；详见 `docs/dev/TASK_LEDGER.md` T029 条目 |
+
+#### 4.10.1 Flutter Architect Reviewer（02-flutter-architect）只读审查
+
+- **Reviewer Role**：`02-flutter-architect`
+- **Scope Reviewed**：T029 新增的 5 个服务文件 + 1 个 Provider + 1 个最小 Provider + 1 个 fake gateway + 1 个测试文件；`pubspec.yaml` / `pubspec.lock` 变更；既有 `lib/shared/services/` 既有约定（参考 `install_date_service.dart` / `microphone_permission_service.dart` / `audio_file_storage_service.dart` 的接口 + 实现分离模式）；既有 `docs/TECH_STACK.md` §6.1 / §7 / §10 + `docs/ARCHITECTURE.md` §3 / §7 + `docs/dev/REAL_AUDIO_MVP_SDD.md` §7.1 / §7.5 / §8 + `docs/dev/REAL_AUDIO_DEPENDENCY_SPIKE.md` §3.1
+- **Evidence Checked**：
+  - `pubspec.yaml` 单行修改（`permission_handler: ^12.0.3` 后追加 `record: ^7.1.0`），`pubspec.lock` 仅由 pub 自动更新；
+  - `flutter pub get` 解析成功，输出 `+ record 7.1.0` + 8 个 `record_*` 子包；`pubspec.yaml` 当前**不**包含 `just_audio` / `audio_session` / `audioplayers` / `flutter_sound`；
+  - `lib/shared/services/audio_recorder_gateway.dart` 4 个方法（`start(RecordConfig, {required String path})` / `stop()` / `cancel()` / `dispose()`）与 Context7 验证的 `record 7.1.0` 真实 API 完全一致；
+  - `PackageAudioRecorderGateway`（`audio_recorder_gateway.dart` 第 70-93 行）直接代理 `AudioRecorder` 4 个方法，**不**调用 `_recorder.hasPermission()`（grep 验证 0 命中）；
+  - `lib/shared/services/audio_recorder_state.dart` 5 状态枚举（`idle` / `recording` / `stopping` / `cancelling` / `disposed`）+ 不可变 `AudioRecorderTakeResult` 值类型（7 个字段 `takeId` / `requestedPath` / `resolvedPath` / `format` / `sampleRate` / `bitRate` / `numChannels`）；
+  - `lib/shared/services/audio_recorder_exception.dart` sealed class `AudioRecorderException` + 5 个具体子类（`RecorderStartFailedException` / `RecorderStopFailedException` / `RecorderGatewayException` / `InvalidRecorderStateException` / `RecorderConfigException`），每个携带 `message` + 可选 `cause`；
+  - `lib/shared/services/real_audio_recorder_service.dart` 构造注入 `AudioRecorderGateway` + `AudioFileStorageService` + `RealAudioRecorderConfig`（默认 AAC-LC 44100Hz 128kbps 单声道 m4a），状态机严格按 SDD §8；
+  - `lib/shared/providers/real_audio_recorder_service_provider.dart` 手动 `Provider<RealAudioRecorderService>`，构造时**不**触发 platform channel（`AudioRecorder()` 是 Dart 包装类，构造时无 IO）；
+  - `lib/shared/providers/audio_file_storage_service_provider.dart` 新增最小 `Provider<AudioFileStorageService>`，沿用 `defaultAudioRootDirectoryProvider()`，**不**修改 T028 既有 `AudioFileStorageService` 契约；
+  - `test/shared/services/fake_audio_recorder_gateway.dart` 纯 Dart fake gateway，记录每次调用的 `RecordConfig` + path + 调用次数，支持故障注入；
+  - `test/shared/services/real_audio_recorder_service_test.dart` 20 项测试使用 fake gateway + temp root 隔离，**不**触发真实 platform channel / **不**调用 `AudioRecorder()` 构造 / **不**申请权限 / **不**保存 `PracticeRecord` / **不**触发播放；
+  - `lib/features/recording/application/recording_practice_controller.dart` 未被修改（grep 验证 0 命中 `record` / `AudioRecorder` / `MicrophonePermission` / `realAudioRecorderServiceProvider`）；
+  - `lib/data/database/app_database.dart` 未被修改（`schemaVersion = 1` 不变）；
+- **Findings**：
+  - `pubspec.yaml` 单行修改符合任务预期（仅新增 `record ^7.1.0`），无其他顶层依赖变更；
+  - `record ^7.1.0` API 接入正确（Context7 验证 4 个方法签名完全匹配）；
+  - 状态机严格按 SDD §8 实现（5 状态 + 终止 `disposed` + 非法状态转换抛 `InvalidRecorderStateException`）；
+  - Provider 边界正确（手动 `Provider` + 构造时无 platform channel 触发 + 测试隔离模式保留）；
+  - `RecordingPracticeController` 未被修改，符合任务"录音服务基础层"边界；
+  - `record 7.1.0` 满足 `minSdk = 23` 要求（当前 `minSdk = 24`），无需 R8 keep 规则；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - `stopping` / `cancelling` 中间态在测试中**不**直接断言（仅断言 `idle` 后置状态）；未来可加 `package:test` 流式断言中间态；
+  - `_pathsEqual` Windows 分支可简化为 `p.normalize(a).toLowerCase() == p.normalize(b).toLowerCase()`（cosmetic only）；
+  - `dispose()` while recording 不清理 on-disk temp 文件（设计选择，与 T027 dispose 契约一致；可加注释说明 best-effort 语义）；
+- **Approval**：**Approved**
+
+#### 4.10.2 Local Data Reviewer（06-local-data-engineer）只读审查
+
+- **Reviewer Role**：`06-local-data-engineer`
+- **Scope Reviewed**：`lib/shared/services/real_audio_recorder_service.dart` 状态机 + 路径安全 + cancel 清理；`lib/shared/services/audio_file_storage_service.dart` T028 既有契约；`test/shared/services/real_audio_recorder_service_test.dart` 20 项测试
+- **Evidence Checked**：
+  - `real_audio_recorder_service.dart:142-159` `start()` 调用 `_storage.ensureDirectories()` + `_storage.createTempFile(takeId, extension, tempDirectory)`，`ArgumentError` 翻译为 `RecorderConfigException`；
+  - `real_audio_recorder_service.dart:266-311` `cancel()` 调用 `_storage.deleteIfExists(tempFile, rootDirectory: paths.rootDirectory)`，best-effort `on Object` 吞掉所有异常；
+  - `real_audio_recorder_service.dart:199-254` `stop()` **不**调用 `deleteIfExists`，on-disk temp 文件保留给后续 save 流程；
+  - `real_audio_recorder_service.dart:337-341` `_clearActiveSession()` 在 stop / cancel / dispose 三个出口都被调用；
+  - `real_audio_recorder_service.dart:321-333` `dispose()` best-effort 调用 `gateway.dispose()`，**不**删除 on-disk temp 文件；
+  - `real_audio_recorder_service.dart` 任何路径**不**删除 root 自身 / saved 文件 / root 外文件；
+- **Findings**：
+  - `start()` 路径安全：复用 `_validateIdSegment`，**不**绕过；
+  - `cancel()` 清理：调用 `deleteIfExists(file, rootDirectory)`，best-effort 不抛错；
+  - `stop()` 行为：不删除文件（契约与 T025 §4.4 + T028 §6.5 一致）；
+  - 状态追踪：`_clearActiveSession` 在 stop / cancel / dispose 三个出口都被调用；
+  - **不**误删 root / saved；
+  - 三个 minor suggestions：① start gateway 失败时 on-disk temp 文件可能残留（`record` 实际不会预创建，可不处理）；② `dispose()` while recording 残留 on-disk temp 文件（设计选择，与 T027 dispose 契约一致）；③ cancel 路径对 `deleteIfExists ArgumentError` 吞掉（best-effort 契约，无测试覆盖但可接受）；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - 可选：在 `start()` gateway 失败路径增加 `try { deleteIfExists } catch (_) {}` 清理 temp 文件（与 cancel 一致的 best-effort）；
+  - 可选：在 `dispose()` while recording 时 best-effort 调用 `deleteIfExists` 清理 temp 文件（与 cancel 一致）；
+  - 可选：补一个测试验证 cancel 路径对 `deleteIfExists` 抛 `ArgumentError` 时的 best-effort 吞掉行为；
+- **Approval**：**Approved**
+
+#### 4.10.3 QA Reviewer（07-qa-reviewer）只读审查
+
+- **Reviewer Role**：`07-qa-reviewer`
+- **Scope Reviewed**：`test/shared/services/real_audio_recorder_service_test.dart` 20 项单元测试；`test/shared/services/fake_audio_recorder_gateway.dart`；`flutter analyze` / `flutter test` 实际输出；既有 `docs/dev/AGENT_REVIEW_TEMPLATE.md` QA Checklist + `docs/dev/REAL_AUDIO_MVP_TDD.md` §2.2 Test Matrix TC-R01~R06
+- **Evidence Checked**：
+  - `flutter analyze` `No issues found! (ran in 4.5s)`；
+  - `flutter test test/shared/services/real_audio_recorder_service_test.dart` 输出 `00:00 +20: All tests passed!`（20 项测试 100% 通过）；
+  - `flutter test` 全量输出 `00:14 +464: All tests passed!`（464 = 444 既有 + 20 新增，既有测试未减少，新增 ≥20 满足任务预期）；
+  - 20 项测试覆盖：① start 成功生成 temp `.m4a` 路径；② start 配置 AAC-LC / M4A / mono / 44100Hz / 128kbps；③ start 成功进入 recording；④ 重复 start 被拒绝；⑤ 空白 takeId → `RecorderConfigException`；⑥ start 失败不遗留 recording 状态；⑦ stop 成功返回 `AudioRecorderTakeResult`；⑧ idle 时 stop 抛 `InvalidRecorderStateException`；⑨ stop 返回 null 抛 `RecorderStopFailedException`；⑩ stop 返回路径不一致抛 `RecorderStopFailedException`；⑪ stop 抛异常翻译为 `RecorderStopFailedException` + 状态恢复；⑫ cancel 成功调用 gateway + 清理 temp 文件；⑬ idle 时 cancel 抛 `InvalidRecorderStateException`；⑭ cancel 失败翻译为 `RecorderGatewayException` + 状态恢复；⑮ cancel best-effort 删除失败不抛错；⑯ dispose 幂等；⑰ dispose 后调用被拒绝；⑱ 录音中 dispose 调用 `gateway.dispose` + 状态切 `disposed`；⑲ 一次会话结束后可开始下一次录音；⑳ 不触发权限请求 / PracticeRecord 保存 / 播放的契约测试；
+  - Reviewer 主动执行 `git stash` + `flutter test` 验证既有基线 = 444（**Reviewer 强证据**：与 `flutter test` 增量 +20 = 464 一致）；
+  - 全部 20 项测试使用 `FakeAudioRecorderGateway` 注入 + `Directory.systemTemp` 临时根目录，**不**触发真实 platform channel / **不**调用 `AudioRecorder()` 构造 / **不**申请权限；
+  - `package:record/record.dart` 在测试文件中**仅**用于读 `RecordConfig` / `AudioEncoder` 值类型（无 `AudioRecorder()` 实例化，无 platform channel 调用）；
+  - `grep -c RECORD_AUDIO` 三处 Manifest 各返回 1 行 `<uses-permission>` 节点（注释行不匹配 `uses-permission` 字面量但实际声明存在；与 T027 一致）；
+  - `grep -E "uses-permission.*INTERNET"` 三处 Manifest 均返回空；
+  - `pubspec.yaml` 单行修改（`record: ^7.1.0`），无其他变化；
+  - 命令纪律严格执行（全程单条命令，无管道 / 重定向 / `&&` / 分号 / 复合命令）；
+- **Findings**：
+  - 测试数从 444 增至 464（+20），既有 444 项测试 100% 保留，**无**测试减少；
+  - 测试覆盖完整：5 状态转换 + 5 异常路径 + 1 一次性 + 1 一次会话结束后 + 1 契约（不触发副作用）+ 1 配置断言 + 1 状态转换 + 1 重复 start 拒绝 + 1 dispose 幂等 + 1 dispose 后续调用拒绝 + 1 dispose while recording + 1 一次会话结束后可开始下一次；
+  - 测试不触发真实系统权限弹窗（fake gateway 注入，与 `REAL_AUDIO_MVP_TDD.md` §1.1 File storage tests 一致）；
+  - 测试不调用麦克风（仅 fake gateway 调用计数 + temp root IO，与 `REAL_AUDIO_MVP_TDD.md` §5 Test Gaps 9 项一致）；
+  - `flutter analyze` 通过，无新警告；
+  - Manifest 权限验证通过：三处 `RECORD_AUDIO` 声明 + 三处无 `INTERNET` + 三处无任何存储 / 相机 / 蓝牙权限；
+  - 既有 444 项测试 100% 保留（基线 T028 锁定，本任务**未**修改任何既有测试代码 / 既有生产代码 / Drift schema / Android Gradle 配置 / `pubspec.yaml` 其他字段 / `pubspec.lock` 既有部分）；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - 当前 20 项测试全部用 fake gateway + `Directory.systemTemp` 注入隔离；如未来 T030 播放服务或 T031 Controller 集成需要测试与 recorder 协同，可考虑抽出共享 fake gateway 到 `test/shared/services/test_helpers/`；本任务**不**强制抽取（避免过度抽象）；
+  - `best-effort: temp delete failure does not throw` 测试用 pre-delete 模拟文件缺失（不直接测 storage 异常路径），如未来 T030 / T031 需要更严密的 best-effort 验证，可补一个 fake storage 抛异常的场景；
+- **Approval**：**Approved**
+
+#### 4.10.4 Compliance Reviewer（08-compliance-reviewer）只读审查
+
+- **Reviewer Role**：`08-compliance-reviewer`
+- **Scope Reviewed**：T029 8 个新文件（5 服务 + 1 最小 Provider + 1 fake + 1 test）+ `pubspec.yaml` / `pubspec.lock` 变更；`android/app/src/main/AndroidManifest.xml` / `debug` / `profile` 三处清单权限声明；既有 `docs/dev/REAL_AUDIO_MVP_SDD.md` §3 Permission and Privacy + `docs/dev/TECH_DEBT.md` TD-007 / TD-010 / TD-013
+- **Evidence Checked**：
+  - `git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 四项均返回空；
+  - `git rev-list -n 1 v0.1.0-mvp` = `d49ce4b`、`git rev-list -n 1 v1.0.0-release` = `703d2aa`（Tag 完整性验证通过）；
+  - 全文搜索 T029 新增 8 个文件确认未出现 `key.properties` 内容 / 密码 / keystore 内容 / 用户目录 keystore 绝对路径；
+  - `lib/shared/services/real_audio_recorder_service.dart` grep `MicrophonePermission | hasPermission | requestPermission` 0 命中实际调用点（仅注释中显式声明"不调用"）；
+  - `lib/shared/services/audio_recorder_gateway.dart` grep `_recorder\.hasPermission` 0 命中（仅 `_recorder.start/stop/cancel/dispose` 4 处调用）；
+  - `lib/shared/providers/real_audio_recorder_service_provider.dart` grep 0 命中实际权限调用点（仅注释中显式声明"不调用"）；
+  - `git diff lib/features/recording/application/recording_practice_controller.dart` 空（Controller 未被修改）；
+  - `git diff lib/data/database/app_database.dart` 空（Drift schema 未被修改，`schemaVersion = 1` 不变）；
+  - `git diff android/` 空（三处 Manifest 未被修改）；
+  - `grep "just_audio | audio_session"` 在 `lib/shared/services/` T029 新文件 0 命中（仅 pre-existing T027 `microphone_permission_gateway.dart` 引用 `audio_session` 作为"不引入"对照说明）；
+  - `pubspec.yaml` 单行修改（`record: ^7.1.0`），**未**引入 `just_audio` / `audio_session` / `audioplayers` / `flutter_sound`；
+  - 三处 Manifest 仅 T027 已声明的 `RECORD_AUDIO`，**未**新增 `INTERNET` / **未**新增任何存储 / 相机 / 蓝牙权限；
+  - Service / Provider 文档明确"不接 UI / 不隐式调用权限 / 不保存 PracticeRecord / 不触发播放"；
+- **Findings**：
+  - 权限边界严格遵守：Service **不**调用 `MicrophonePermissionGateway` / `AudioRecorder.hasPermission()`，避免隐式权限请求；
+  - Controller / Drift schema / Manifest / Privacy 全部**未**被修改；
+  - 无 `INTERNET` 原则保留（`record 7.1.0` 仅在 Android 端通过 platform plugin 加载 native 代码，**不**引入联网能力）；
+  - 依赖最小化（仅 `record ^7.1.0` + 8 个 `record_*` 生态子包，**未**引入 `audio_session` / `just_audio` 等其他音频依赖）；
+  - 敏感文件边界严格：`key.properties` / `*.jks` / `*.keystore` 均 untracked / ignored；新代码未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；
+  - Tag 完整性：`v0.1.0-mvp` → `d49ce4b`、`v1.0.0-release` → `703d2aa` 均未变；
+  - 未声称真实录音已实现 / 未声称麦克风权限已加入 / 未声称应用商店已提交；
+  - 未 push / 未 Tag / 未 amend / rebase / reset --hard；
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - 未来 T031 任务实现 Controller 集成时，可考虑在 `RecordingPracticeController` 显式调用 `MicrophonePermissionService.requestPermission()` 后再调用 `realAudioRecorderService.start()`，保持 Service 边界（Service 不调用权限）+ Controller 边界（Controller 协调权限）的清晰分离；
+  - 未来 T033 任务可在 `PrivacyNoticePage` 中明确说明"音频文件保存到 App 私有目录（`<docs>/audio`），其他应用无法访问"，与既有 SDD §3.6 一致；
+- **Approval**：**Approved**
+
 ## 6. Review Cadence
 
 > 不追求每周复盘；以"每 5 个任务 + 每个阶段结束"为节奏。

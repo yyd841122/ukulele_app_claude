@@ -645,16 +645,33 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
 
   /// Starts playback of the most recently recorded take.
   ///
-  /// Behaviour:
+  /// Behaviour (T031G):
   /// - **No-op** unless [state.hasRecordedTake] is `true` AND
   ///   [state.isRecording] is `false` AND [state.isSaving] is
   ///   `false` AND [state.isPlaying] is `false`.
   /// - Calls `RealAudioPlaybackService.loadFile` with the recorded
   ///   take's `resolvedPath` (T031 contract — playback only
   ///   targets the in-memory take, never historical records).
-  /// - On `loadFile` success calls `play()` and flips
-  ///   [state.isPlaying] to `true`. On failure surfaces
-  ///   `lastError` and leaves `isPlaying = false`.
+  /// - **Immediately** flips [state.isPlaying] to `true` on a
+  ///   successful `loadFile`, BEFORE the underlying
+  ///   `playback.play()` Future is awaited. This is required
+  ///   because `just_audio`'s `AudioPlayer.play()` returns a
+  ///   `Future<void>` that stays pending for the entire
+  ///   playback duration on real Android devices; awaiting it
+  ///   in the controller would block the synchronous
+  ///   `state.isPlaying = true` write and leave the page
+  ///   buttons ("停止回放" disabled / "开始录音" enabled) in
+  ///   the wrong state for the whole duration of the take.
+  ///   On real devices this caused the user to be able to
+  ///   start a recording while the previous playback was
+  ///   still in progress. We therefore fire the play
+  ///   request via `unawaited` and rely on the playback
+  ///   service's `playerStateStream` `completed` event to
+  ///   drive the post-playback state machine.
+  /// - The `playback.play()` call itself is fire-and-forget.
+  ///   Any error from it surfaces via `lastError` AND flips
+  ///   `isPlaying` back to `false` (the unawaited future
+  ///   returns to the controller on its own microtask).
   /// - Subscribes to the playback service's position / duration /
   ///   state streams on first success so the UI's elapsed
   ///   readout tracks the live file.
@@ -681,14 +698,41 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
         return;
       }
       _ensurePlaybackSubscriptions();
-      await _playback.play();
-      if (_disposed || !ref.mounted) {
-        return;
-      }
+
+      // T031G: flip isPlaying synchronously BEFORE the
+      // fire-and-forget play() call so the UI state machine
+      // (停止回放 enabled / 开始录音 disabled) updates in
+      // the same microtask as the user tap. just_audio's
+      // play() Future stays pending for the whole playback
+      // duration on real Android; awaiting it here would
+      // block the state write and let the user start a
+      // recording while the previous playback is still
+      // running.
       state = state.copyWith(
         isPlaying: true,
         currentPlaybackPosition: Duration.zero,
       );
+
+      // T031G: fire-and-forget the actual play() request.
+      // The state machine recovery is driven by the
+      // `playerStateStream` `completed` event (subscribed
+      // above), which is the canonical just_audio signal
+      // for "natural end of playback". Errors from the
+      // play() Future are surfaced via lastError and
+      // flip isPlaying back to false.
+      unawaited(_playback.play().then(
+        (_) {},
+        onError: (Object e) {
+          if (_disposed || !ref.mounted) {
+            return;
+          }
+          state = state.copyWith(
+            isPlaying: false,
+            currentPlaybackPosition: Duration.zero,
+            lastError: '播放失败：$e',
+          );
+        },
+      ));
     } on Object catch (e) {
       if (_disposed || !ref.mounted) {
         return;

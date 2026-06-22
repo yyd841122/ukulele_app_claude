@@ -2137,6 +2137,365 @@ void main() {
       expect(state.recordedTakeResult!.resolvedPath, resolvedPath,
           reason: 'T031E: resolved path must not be modified by recovery');
     });
+
+    // ---------------------------------------------------------------------
+    // T031G: real-device "playback state machine not in sync" regression
+    // tests. The user reported on real Android that tapping "回放":
+    //  - starts audio in the background
+    //  - keeps the "开始录音" button enabled (and starts a recording
+    //    if the user taps it)
+    //  - keeps the "停止回放" button DISABLED
+    // Root cause: the controller `await`ed `playback.play()` which
+    // on real Android returns a Future that stays pending for the
+    // entire playback duration. The synchronous
+    // `state.isPlaying = true` write only ran after the file
+    // finished playing. T031G fixes the contract by:
+    //  - flipping isPlaying synchronously, BEFORE the
+    //    fire-and-forget play() call;
+    //  - relying on the playerStateStream `completed` event to
+    //    recover the post-playback state (same path that
+    //    drives natural completion today);
+    //  - making the fake gateway's play() Future stay pending
+    //    when the test sets `keepPlayPending = true`, mirroring
+    //    real just_audio behaviour.
+    // ---------------------------------------------------------------------
+
+    test(
+        'T031G: play() flips isPlaying=true synchronously even when the '
+        'underlying play() Future stays pending (real-device regression)',
+        () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+
+      // T031G: pin the fake to keep the play() Future pending —
+      // mirrors real just_audio on Android.
+      ctx.playbackGateway.keepPlayPending = true;
+      await controller.play();
+      // T031G: do NOT drain any extra microtasks here. With the
+      // old code the `state.isPlaying = true` write was inside
+      // the async body AFTER `await _playback.play()` and would
+      // never have landed yet. With the fix the state is set
+      // synchronously before the fire-and-forget play() call.
+      final RecordingPracticeState state =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(state.isPlaying, isTrue,
+          reason: 'T031G: play() must flip isPlaying=true synchronously, '
+              'even when the underlying play() Future stays pending');
+      expect(ctx.playbackGateway.playCallCount, 1,
+          reason: 'T031G: play() must still call gateway.play()');
+      expect(ctx.playbackGateway.loadFileCallCount, greaterThanOrEqualTo(1),
+          reason: 'T031G: play() must still call gateway.loadFile()');
+    });
+
+    test(
+        'T031G: with pending play Future, startRecording is rejected — no '
+        'permission check, no recorder call, no new takeId', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+
+      // T031G: keep the play() Future pending and assert that
+      // startRecording is fully blocked by the isPlaying guard.
+      ctx.playbackGateway.keepPlayPending = true;
+      await controller.play();
+      final int checksBefore = ctx.permissionGateway.checkStatusCallCount;
+      final int startsBefore = ctx.recorderGateway.startCallCount;
+      final String takeIdBefore =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      await controller.startRecording();
+      await _pumpEventQueue();
+      final RecordingPracticeState state =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(state.isPlaying, isTrue,
+          reason: 'T031G: playback must still be running');
+      expect(state.takeId, takeIdBefore,
+          reason: 'T031G: a no-op startRecording must NOT mint a new takeId');
+      expect(ctx.recorderGateway.startCallCount, startsBefore,
+          reason: 'T031G: recorder.start MUST NOT be called while playing');
+      expect(ctx.permissionGateway.checkStatusCallCount, checksBefore,
+          reason:
+              'T031G: permission service MUST NOT be touched while playing');
+    });
+
+    test(
+        'T031G: with pending play Future, stopPlayback drives the playback '
+        'service to stop and flips isPlaying back to false', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+
+      // T031G: keep the play() Future pending and exercise
+      // stopPlayback.
+      ctx.playbackGateway.keepPlayPending = true;
+      await controller.play();
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).isPlaying,
+        isTrue,
+      );
+      final int stopsBefore = ctx.playbackGateway.stopCallCount;
+      await controller.stopPlayback();
+      await _pumpEventQueue();
+      final RecordingPracticeState state =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(state.isPlaying, isFalse,
+          reason: 'T031G: stopPlayback must flip isPlaying to false even when '
+              'the play() Future is still pending');
+      expect(ctx.playbackGateway.stopCallCount, stopsBefore + 1,
+          reason:
+              'T031G: stopPlayback must drive the playback service to stop');
+    });
+
+    test(
+        'T031G: with pending play Future, emitting the playerStateStream '
+        '`completed` event flips isPlaying back to false (the only path '
+        'that drives the natural-completion recovery)', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+
+      // T031G: pending play, then emit `completed` (mimics
+      // just_audio's natural-end event). The controller must
+      // recover the state.
+      ctx.playbackGateway.keepPlayPending = true;
+      await controller.play();
+      ctx.playbackGateway.emitPlayerState(const PlaybackPlayerState(
+        playing: false,
+        processingState: PlaybackProcessingState.completed,
+      ));
+      await _pumpEventQueue();
+      await _pumpEventQueue();
+      final RecordingPracticeState state =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(state.isPlaying, isFalse,
+          reason: 'T031G: completed must auto-recover the controller state '
+              'even when the play() Future is still pending');
+    });
+
+    test(
+        'T031G: after a pending play Future completes naturally, the user '
+        'can replay from 0 (loadFile is called again, no fresh recording)',
+        () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+
+      // T031G: first play, then completed, then replay from 0.
+      ctx.playbackGateway.keepPlayPending = true;
+      await controller.play();
+      ctx.playbackGateway.emitPlayerState(const PlaybackPlayerState(
+        playing: false,
+        processingState: PlaybackProcessingState.completed,
+      ));
+      await _pumpEventQueue();
+      await _pumpEventQueue();
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).isPlaying,
+        isFalse,
+      );
+
+      // T031G: replay from 0 — must work. The first play() went
+      // through the pending Future path. The replay must go
+      // through a fresh loadFile + new play() call.
+      final int loadBefore = ctx.playbackGateway.loadFileCallCount;
+      final int startsBefore = ctx.recorderGateway.startCallCount;
+      // Switch to a regular play (no keepPlayPending, no
+      // completeOnNextPlay) — the fake returns immediately
+      // and the controller sees isPlaying flip synchronously.
+      await controller.play();
+      await _pumpEventQueue();
+      final RecordingPracticeState replayed =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(replayed.isPlaying, isTrue,
+          reason: 'T031G: replay after completion must start playback');
+      expect(ctx.playbackGateway.loadFileCallCount, greaterThan(loadBefore),
+          reason: 'T031G: replay must call loadFile() again so playback '
+              'restarts from 0');
+      expect(ctx.recorderGateway.startCallCount, startsBefore,
+          reason: 'T031G: replay must NOT start a new recording');
+
+      await controller.stopPlayback();
+    });
+
+    test(
+        'T031G: play() does not call playback.play() more than once, even '
+        'when re-entered while a previous play is in flight (the '
+        'isPlaying guard fires synchronously)', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+
+      // T031G: first play keeps the Future pending. The second
+      // call must be blocked by the synchronous isPlaying guard.
+      ctx.playbackGateway.keepPlayPending = true;
+      await controller.play();
+      final int playsBefore = ctx.playbackGateway.playCallCount;
+      final int loadsBefore = ctx.playbackGateway.loadFileCallCount;
+      await controller.play();
+      expect(ctx.playbackGateway.playCallCount, playsBefore,
+          reason: 'T031G: a second play() while playing MUST NOT call '
+              'gateway.play() again');
+      expect(ctx.playbackGateway.loadFileCallCount, loadsBefore,
+          reason: 'T031G: a second play() while playing MUST NOT call '
+              'gateway.loadFile() again');
+
+      await controller.stopPlayback();
+    });
+
+    test(
+        'T031G: loadFile pins LoopMode.off even when play() is '
+        'fire-and-forget (the loop-mode contract survives the async play)',
+        () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+
+      final int loopBefore = ctx.playbackGateway.setLoopModeOffCallCount;
+      ctx.playbackGateway.keepPlayPending = true;
+      await controller.play();
+      expect(
+        ctx.playbackGateway.setLoopModeOffCallCount,
+        greaterThan(loopBefore),
+        reason: 'T031G: loadFile must still pin LoopMode.off to prevent the '
+            'real-device playback-loops-forever bug, even when play() is '
+            'fire-and-forget',
+      );
+
+      await controller.stopPlayback();
+    });
   });
 
   group('RecordingPracticeController save (T013.4A) — preserved', () {

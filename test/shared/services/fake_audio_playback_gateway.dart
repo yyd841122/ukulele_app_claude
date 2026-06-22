@@ -59,6 +59,21 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
   /// audio.
   bool completeOnNextPlay = false;
 
+  /// T031G: when true, the next call to [play] will keep its
+  /// returned Future pending (mimics just_audio's real behaviour
+  /// on Android where `AudioPlayer.play()` returns a Future that
+  /// stays pending for the entire playback duration). The
+  /// controller must therefore NOT `await` this Future — flipping
+  /// `isPlaying = true` must happen synchronously, and the only
+  /// way to flip it back is via the `playerStateStream` `completed`
+  /// event (or an explicit `stop()` call).
+  ///
+  /// Tests that drive the controller's post-playback state
+  /// machine should emit the `completed` event manually after
+  /// `play()` returns. Default `false` to keep T031E tests
+  /// (which rely on auto-completion microtask) working.
+  bool keepPlayPending = false;
+
   /// T031E: tracks whether `setLoopModeOff` has been called on this
   /// gateway. Production gateway pins `LoopMode.off` on every
   /// `loadFile`; the fake mirrors the same contract so the
@@ -149,6 +164,18 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
     playCallCount += 1;
     if (nextPlayException != null) {
       throw nextPlayException!;
+    }
+    if (keepPlayPending) {
+      // T031G: mirror just_audio's real-device behaviour where
+      // `AudioPlayer.play()` returns a Future that stays pending
+      // for the entire playback duration. The controller
+      // therefore must NOT `await` this Future; the post-play
+      // state machine recovery is driven exclusively by the
+      // `playerStateStream` `completed` event (or an explicit
+      // stop() call).
+      isPlaying = true;
+      keepPlayPending = false;
+      return;
     }
     if (completeOnNextPlay) {
       // T031E: simulate just_audio's natural-completion semantics

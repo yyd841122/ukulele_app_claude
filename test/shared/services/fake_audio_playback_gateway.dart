@@ -16,6 +16,13 @@
 // - `completeOnNextPlay()` triggers a one-shot "natural completion":
 //   next `play()` future completes immediately, simulating just_audio's
 //   "play Future completes on natural playback end" semantics.
+// - T031I: supports `simulateRealDeviceLoopAfterCompleted` to mirror
+//   the real Android just_audio behaviour where, after a `completed`
+//   event is emitted WITHOUT a preceding `playback.stop()`, the
+//   player re-enters `ready/playing` and replays the source — the
+//   regression T031I fixes. Tests flip this on to assert that the
+//   controller's `_handleNaturalCompletion` actually drives
+//   `playback.stop()` and breaks the loop.
 
 import 'dart:async';
 
@@ -49,6 +56,17 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
 
   /// If set, [stop] throws this exception instead of completing.
   Object? nextStopException;
+
+  /// T031I: if set, [stop] throws this exception EXACTLY ONCE
+  /// — when [stopCallCount] reaches [nextStopExceptionAtCallCount]
+  /// (default: next stop call). The flag is consumed after the
+  /// throw, so subsequent `stop()` calls succeed normally. This
+  /// lets tests fault-inject the controller's
+  /// `_handleNaturalCompletion` stop path WITHOUT also breaking
+  /// the `loadFile` internal-stop path (which is what makes
+  /// `controller.play()` succeed in the first place).
+  Object? nextStopExceptionOnce;
+  int nextStopExceptionAtCallCount = -1;
 
   /// If set, [dispose] throws this exception instead of completing.
   Object? nextDisposeException;
@@ -86,6 +104,40 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
   /// If non-null, [setLoopModeOff] throws this exception (testing
   /// the best-effort error swallow path).
   Object? nextSetLoopModeOffException;
+
+  /// T031I: when `true`, the fake simulates the real-device
+  /// just_audio behaviour where, after a `completed` event is
+  /// emitted, the underlying player re-enters `ready/playing` and
+  /// replays the source — but ONLY if `playback.stop()` has NOT
+  /// been called by the controller since the `completed` event.
+  /// Once `playback.stop()` is called, the fake records that as a
+  /// "stopped" barrier and stops re-emitting `completed` /
+  /// `ready+playing` on subsequent ticks. This mirrors the real
+  /// Android regression the user reported (playback loops forever
+  /// after natural end-of-stream) and lets tests assert that the
+  /// controller's `_handleNaturalCompletion` actually drives
+  /// `playback.stop()` (otherwise the test would never settle —
+  /// the playerStateStream keeps re-firing `completed` because
+  /// the fake keeps "replaying"). Default `false` to keep every
+  /// pre-T031I test deterministic.
+  bool simulateRealDeviceLoopAfterCompleted = false;
+
+  /// T031I: when [simulateRealDeviceLoopAfterCompleted] is `true`,
+  /// the fake schedules extra `completed` → `ready+playing` →
+  /// `completed` cycles on the playerStateStream unless
+  /// [playback.stop()] has been called. The counter is for tests
+  /// to assert "the fake re-emitted completed N times before the
+  /// controller broke the loop". When the controller calls
+  /// `playback.stop()`, the loop barrier is set and no further
+  /// cycles are scheduled.
+  int loopEmittedCompletedCount = 0;
+
+  /// T031I: when `true`, the most recent `playback.stop()` call
+  /// (if any) has been observed. The fake's loop scheduler checks
+  /// this flag to decide whether to keep re-emitting cycles.
+  /// Reset on every `play()` call (the next playback may naturally
+  /// end and the controller is expected to drive stop again).
+  bool _stoppedBarrier = false;
 
   /// When true, [pause] / [stop] future completes immediately without
   /// state changes.
@@ -165,6 +217,10 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
     if (nextPlayException != null) {
       throw nextPlayException!;
     }
+    // T031I: each new play() resets the stopped barrier — the
+    // next natural end-of-stream is a fresh opportunity for the
+    // controller to drive playback.stop() to break the loop.
+    _stoppedBarrier = false;
     if (keepPlayPending) {
       // T031G: mirror just_audio's real-device behaviour where
       // `AudioPlayer.play()` returns a Future that stays pending
@@ -199,14 +255,7 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
       //      subscribed.
       isPlaying = true;
       completeOnNextPlay = false;
-      scheduleMicrotask(() {
-        _playerStateController.add(
-          const PlaybackPlayerState(
-            playing: false,
-            processingState: PlaybackProcessingState.completed,
-          ),
-        );
-      });
+      scheduleMicrotask(_emitCompletedWithOptionalLoop);
       return;
     }
     // Successful play path: update isPlaying flag.
@@ -245,9 +294,22 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
   @override
   Future<void> stop() async {
     stopCallCount += 1;
+    if (nextStopExceptionOnce != null &&
+        nextStopExceptionAtCallCount == stopCallCount) {
+      final Object err = nextStopExceptionOnce!;
+      nextStopExceptionOnce = null;
+      throw err;
+    }
     if (nextStopException != null) {
       throw nextStopException!;
     }
+    // T031I: every successful `playback.stop()` raises the loop
+    // barrier — the fake stops re-emitting `completed` /
+    // `ready+playing` cycles until the next `play()` resets it.
+    // This mirrors the real-device behaviour the user reported
+    // where the underlying player only stops looping once a
+    // `stop()` is actually driven by the controller.
+    _stoppedBarrier = true;
     if (noOpNextStop) {
       noOpNextStop = false;
       return;
@@ -302,6 +364,56 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
   /// Emit a `playerStateStream` event.
   void emitPlayerState(PlaybackPlayerState state) {
     _playerStateController.add(state);
+  }
+
+  /// T031I: emits a `completed` playerStateStream event. When
+  /// `simulateRealDeviceLoopAfterCompleted` is `true` AND the
+  /// controller has NOT yet driven `playback.stop()` (i.e.
+  /// `_stoppedBarrier` is `false`), the fake re-arms the
+  /// completed → ready+playing → completed cycle to mirror the
+  /// real Android just_audio regression. The cycle is broken as
+  /// soon as `playback.stop()` is called (raises `_stoppedBarrier`).
+  ///
+  /// This is the core T031I risk-simulation helper: tests flip
+  /// `simulateRealDeviceLoopAfterCompleted` on and assert that
+  /// the controller's `_handleNaturalCompletion` actually drives
+  /// `playback.stop()` (otherwise the test would never settle
+  /// because the fake keeps re-firing `completed`).
+  void _emitCompletedWithOptionalLoop() {
+    if (_playerStateController.isClosed) {
+      return;
+    }
+    loopEmittedCompletedCount += 1;
+    _playerStateController.add(
+      const PlaybackPlayerState(
+        playing: false,
+        processingState: PlaybackProcessingState.completed,
+      ),
+    );
+    if (!simulateRealDeviceLoopAfterCompleted || _stoppedBarrier) {
+      return;
+    }
+    // Mirror the real-device loop: schedule the next cycle on a
+    // fresh event-loop tick so the controller has a chance to
+    // react to the first `completed` event (call stop, flip
+    // isPlaying, etc.) before the fake re-arms.
+    Future<void>.delayed(Duration.zero).then((_) {
+      if (_playerStateController.isClosed || _stoppedBarrier) {
+        return;
+      }
+      _playerStateController.add(
+        const PlaybackPlayerState(
+          playing: true,
+          processingState: PlaybackProcessingState.ready,
+        ),
+      );
+      Future<void>.delayed(Duration.zero).then((_) {
+        if (_playerStateController.isClosed || _stoppedBarrier) {
+          return;
+        }
+        _emitCompletedWithOptionalLoop();
+      });
+    });
   }
 
   /// Emit a `positionStream` event.

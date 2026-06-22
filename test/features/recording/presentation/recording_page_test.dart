@@ -702,6 +702,206 @@ void main() {
     // and flips isPlaying to false, (c) the page UI matches the
     // controller state at every step.
     testWidgets(
+        'T031I: after natural completion on the page, audio actually stops '
+        'and 停止回放 disables (real-device loop-fix pin)',
+        (WidgetTester tester) async {
+      await _useTallSurface(tester);
+      final (:rootProvider, :root) = _isolatedRoot();
+      final AudioFileStorageService storage = AudioFileStorageService(
+        rootDirectoryProvider: rootProvider,
+      );
+      final _PageContext ctx = _PageContext(
+        recorderGateway: FakeAudioRecorderGateway(),
+        playbackGateway: FakeAudioPlaybackGateway(),
+        permissionGateway: FakeMicrophonePermissionGateway()
+          ..nextCheckStatus = MicrophonePermissionStatus.granted,
+        storage: storage,
+      );
+      final ProviderContainer container = await _pumpPage(
+        tester,
+        _FakePracticeRecordRepository(),
+        ctx: ctx,
+      );
+
+      // Drive into playback, then natural completion.
+      final RecordingPracticeController controller = container.read(
+        recordingPracticeControllerProvider.notifier,
+      );
+      await controller.startRecording();
+      await tester.pumpAndSettle();
+      final String path = ctx.recorderGateway.lastStartPath!;
+      await tester.runAsync(() async {
+        final File f = File(path);
+        await f.create(recursive: true);
+        await f.writeAsString('fake m4a');
+      });
+      ctx.recorderGateway.nextStopResult = path;
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+      await tester.runAsync(() => controller.stopRecording());
+      await tester.pump();
+      await tester.pump();
+      await tester.runAsync(() => controller.play());
+      await tester.pump();
+      await tester.pump();
+
+      // Sanity: while playing, 停止回放 is enabled.
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.byKey(const ValueKey<String>('recording-stop-playback')),
+            )
+            .onPressed,
+        isNotNull,
+      );
+
+      // Natural completion.
+      final int stopsBefore = ctx.playbackGateway.stopCallCount;
+      await tester.runAsync(() async {
+        ctx.playbackGateway.emitPlayerState(const PlaybackPlayerState(
+          playing: false,
+          processingState: PlaybackProcessingState.completed,
+        ));
+      });
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+
+      // T031I: the controller's `_handleNaturalCompletion`
+      // must have driven `playback.stop()` at least once. This
+      // is the contract that breaks the real-device loop.
+      expect(ctx.playbackGateway.stopCallCount, stopsBefore + 1,
+          reason: 'T031I: completed event must drive playback.stop() so the '
+              'underlying player is released and the loop breaks on the '
+              'real device');
+
+      // T031I: page state must match the controller state —
+      // 停止回放 is disabled, 回放 + 开始录音 are enabled.
+      expect(
+        container.read(recordingPracticeControllerProvider).isPlaying,
+        isFalse,
+        reason: 'T031I: isPlaying must be false after natural completion',
+      );
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.byKey(const ValueKey<String>('recording-stop-playback')),
+            )
+            .onPressed,
+        isNull,
+        reason: 'T031I: 停止回放 must auto-disable after natural completion',
+      );
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.byKey(const ValueKey<String>('recording-play')),
+            )
+            .onPressed,
+        isNotNull,
+        reason: 'T031I: 回放 must re-enable after natural completion',
+      );
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.byKey(const ValueKey<String>('recording-start')),
+            )
+            .onPressed,
+        isNotNull,
+        reason: 'T031I: 开始录音 must re-enable after natural completion',
+      );
+    });
+
+    testWidgets(
+        'T031I: second replay after completion starts from 0 with stop '
+        'already driven (no fresh recording)', (WidgetTester tester) async {
+      await _useTallSurface(tester);
+      final (:rootProvider, :root) = _isolatedRoot();
+      final AudioFileStorageService storage = AudioFileStorageService(
+        rootDirectoryProvider: rootProvider,
+      );
+      final _PageContext ctx = _PageContext(
+        recorderGateway: FakeAudioRecorderGateway(),
+        playbackGateway: FakeAudioPlaybackGateway(),
+        permissionGateway: FakeMicrophonePermissionGateway()
+          ..nextCheckStatus = MicrophonePermissionStatus.granted,
+        storage: storage,
+      );
+      final ProviderContainer container = await _pumpPage(
+        tester,
+        _FakePracticeRecordRepository(),
+        ctx: ctx,
+      );
+
+      // Drive into playback then natural completion.
+      final RecordingPracticeController controller = container.read(
+        recordingPracticeControllerProvider.notifier,
+      );
+      await controller.startRecording();
+      await tester.pumpAndSettle();
+      final String path = ctx.recorderGateway.lastStartPath!;
+      await tester.runAsync(() async {
+        final File f = File(path);
+        await f.create(recursive: true);
+        await f.writeAsString('fake m4a');
+      });
+      ctx.recorderGateway.nextStopResult = path;
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+      await tester.runAsync(() => controller.stopRecording());
+      await tester.pump();
+      await tester.pump();
+      await tester.runAsync(() => controller.play());
+      await tester.pump();
+      await tester.pump();
+      await tester.runAsync(() async {
+        ctx.playbackGateway.emitPlayerState(const PlaybackPlayerState(
+          playing: false,
+          processingState: PlaybackProcessingState.completed,
+        ));
+      });
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      final int stopsAfterFirst = ctx.playbackGateway.stopCallCount;
+      final int loadBefore = ctx.playbackGateway.loadFileCallCount;
+      final int startsBefore = ctx.recorderGateway.startCallCount;
+
+      // T031I: tap 回放 to replay from 0.
+      await tester.tap(
+        find.byKey(const ValueKey<String>('recording-play')),
+      );
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      });
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+
+      // T031I: replay restarts from 0 (new loadFile + play) and
+      // the recorder service is NOT touched. The T031I stop
+      // call from the first completion is preserved (no new
+      // stop call is needed for the replay — the user is now in
+      // playing state again).
+      expect(ctx.recorderGateway.startCallCount, startsBefore,
+          reason: 'T031I: replay must NOT start a new recording');
+      expect(ctx.playbackGateway.loadFileCallCount, greaterThan(loadBefore),
+          reason: 'T031I: replay must call loadFile() so playback restarts '
+              'from position 0');
+      expect(ctx.playbackGateway.stopCallCount, stopsAfterFirst,
+          reason: 'T031I: replay must not drive an extra stop call — the '
+              'first completion already drove stop (T031I core fix)');
+      expect(
+        container.read(recordingPracticeControllerProvider).isPlaying,
+        isTrue,
+        reason: 'T031I: replay after completion must flip isPlaying to true',
+      );
+
+      // Cleanup.
+      await controller.stopPlayback();
+      await tester.pump();
+      await tester.pump();
+    });
+
+    testWidgets(
       'T031E: loadFile pins LoopMode.off so playback does NOT loop on the '
       'page (regression for the real-device "playback loops forever" bug)',
       (WidgetTester tester) async {

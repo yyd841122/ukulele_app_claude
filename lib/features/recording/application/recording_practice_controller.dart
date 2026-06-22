@@ -44,22 +44,29 @@
 //   - `disposed` => every public mutator is a no-op
 //     (recording / playback / save / rating / note / reset).
 //
-// - Natural completion handling (T031C):
+// - Natural completion handling (T031C + T031I):
 //   When `playback.playerStateStream` emits
 //   `processingState == completed`:
-//     1. `isPlaying` flips to `false` (auto-recovery — the page
-//        no longer requires the user to tap "停止回放" after the
-//        file ends);
+//     1. `isPlaying` flips to `false` **synchronously** so the UI
+//        immediately auto-disables "停止回放" and re-enables
+//        "回放" + "开始录音" (T031C). The page no longer requires
+//        the user to tap "停止回放" after the file ends;
 //     2. `currentPlaybackPosition` is reset to `Duration.zero`;
-//     3. `playback.seek(Duration.zero)` is called so the next
-//        `play()` replays from the start (matches the user's
-//        expected "回放 from the start" behaviour);
+//     3. `playback.stop()` is called (best-effort, T031I) — this
+//        is what actually breaks the real-device loop on Android.
+//        just_audio's `seek(0)` from a completed state can re-arm
+//        playback on some real devices, so we MUST drive the
+//        underlying player to `stop()` before the next `play()`.
+//        The playback service's `stop()` resets `_activePosition`
+//        to `Duration.zero` (via `_clearActiveSession()`) so the
+//        "next play() starts from 0" contract is satisfied without
+//        an extra seek(0) call (which would be rejected at the
+//        service layer once state has transitioned to `idle`);
 //     4. `lastError` is cleared.
-//   This makes the post-completion UX deterministic: "停止回放"
-//   auto-disables, "回放" + "开始录音" re-enable, and re-tapping
-//   "回放" restarts the take from 0. The seek is best-effort
-//   (the state-machine recovery still runs even if the seek
-//   throws, e.g. completed → dispose race).
+//   The handler is idempotent (T031I): duplicate `completed`
+//   events from `just_audio` are short-circuited by an internal
+//   `_handlingNaturalCompletion` flag so we never drive
+//   `playback.stop()` twice for the same take.
 //
 // - dispose: cancels the playback stream subscriptions, calls
 //   [RealAudioPlaybackService.dispose] (best-effort, idempotent) and
@@ -100,15 +107,19 @@
 //                                   isPlaying = true
 //                                 otherwise: no-op
 //   stopPlayback              ->  isPlaying = false (service.stop())
-//   playerStateStream.completed (T031C)
-//                              ->  playback.seek(Duration.zero)
-//                                  (best-effort), then isPlaying =
-//                                  false, currentPlaybackPosition =
-//                                  Duration.zero, lastError cleared.
-//                                  State transitions to recorded
-//                                  (hasRecordedTake stays true,
-//                                  isPlaying flips to false). UI
-//                                  auto-disables "停止回放" and
+//   playerStateStream.completed (T031C + T031I)
+//                              ->  state.isPlaying flips to false
+//                                  synchronously, position reset to 0,
+//                                  lastError cleared;
+//                                  then best-effort playback.stop()
+//                                  (T031I core fix — breaks the
+//                                  real-device loop). No explicit
+//                                  seek(0) — stop() resets the
+//                                  service-side position to 0 via
+//                                  _clearActiveSession().
+//                                  Repeated completed events are
+//                                  idempotent (no double stop).
+//                                  UI auto-disables "停止回放" and
 //                                  re-enables "回放" + "开始录音".
 //   reset                     ->  back to initial state, clears
 //                                 takeId + recordedTakeResult +
@@ -431,6 +442,18 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
   Timer? _ticker;
   int _tickerSeconds = 0;
   bool _disposed = false;
+
+  /// T031I: re-entrancy guard for the natural-completion handler.
+  ///
+  /// `just_audio` may emit `processingState == completed` more
+  /// than once in some real-device scenarios (e.g. when the
+  /// underlying decoder re-broadcasts the end-of-stream signal
+  /// after a `seek(0)`). The guard short-circuits duplicate
+  /// events so we never drive `playback.stop()` / `playback.seek()`
+  /// twice for the same take — the second call would race with
+  /// the first and could re-introduce the real-device
+  /// "playback loops forever" regression T031I is fixing.
+  bool _handlingNaturalCompletion = false;
 
   @override
   RecordingPracticeState build() {
@@ -1012,49 +1035,125 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
         return;
       }
       if (ps.processingState == PlaybackProcessingState.completed) {
-        // T031C: natural completion must auto-recover the
-        // controller state. The user no longer has to tap
-        // "停止回放" after the file ends — the controller
-        // flips isPlaying back to false and asks the playback
-        // service to seek to 0 so the next `play()` replays
-        // from the start (matches the user's expected UX).
-        // The seek is best-effort: if the playback service
-        // already tore the source down (e.g. completed →
-        // dispose race) the seek will throw and we still keep
-        // the state-machine recovery that the user depends on.
-        unawaited(_seekToZeroOnCompletion());
+        // T031I: natural-completion handler is the only path that
+        // flips `isPlaying` back to false after the underlying
+        // just_audio player reaches end-of-stream. It does two
+        // things in order:
+        //   1. **synchronously** flip `isPlaying` to false so the
+        //      UI immediately auto-disables 停止回放 and
+        //      re-enables 回放 + 开始录音 (T031C contract — must
+        //      not be blocked by stop I/O on the underlying
+        //      player);
+        //   2. best-effort call `playback.stop()` to actually
+        //      release the native decoder and break the loop on
+        //      real Android (T031I fix — without this call the
+        //      `seek(0)` step alone can re-arm playback on some
+        //      real devices because just_audio drops back to
+        //      `ready/playing` after a seek-from-completed, and
+        //      the user gets the playback-loops-forever bug).
+        //      `stop()` also resets `_activePosition` to
+        //      `Duration.zero` via the playback service's
+        //      `_clearActiveSession()` call, so the "next
+        //      `play()` starts from 0" contract is satisfied
+        //      without an extra seek(0) call (which would be
+        //      rejected by the service layer once state is
+        //      `idle`).
+        // The whole handler is idempotent — repeated `completed`
+        // events from `just_audio` are short-circuited by the
+        // `_handlingNaturalCompletion` flag so we never drive
+        // `playback.stop()` twice for the same take.
+        unawaited(_handleNaturalCompletion());
       }
     });
   }
 
-  /// Best-effort `seek(0)` invoked from the playback
-  /// `playerStateStream` `completed` handler (T031C).
+  /// Best-effort natural-completion recovery (T031I).
   ///
-  /// - If the seek succeeds, `currentPlaybackPosition` is
-  ///   updated by the underlying service + position stream;
-  ///   the controller state is then refreshed to
-  ///   `isPlaying = false` / `currentPlaybackPosition = 0` /
-  ///   `lastError = null` so the UI immediately re-enables
-  ///   "回放" + "开始录音" and disables "停止回放".
-  /// - If the seek throws (e.g. service in a state that no
-  ///   longer accepts seek), the state-machine recovery
-  ///   (`isPlaying = false` / position reset / `lastError`
-  ///   clear) still runs so the user is never left staring
-  ///   at a "停止回放" button that does nothing.
-  Future<void> _seekToZeroOnCompletion() async {
-    try {
-      await _playback.seek(Duration.zero);
-    } on Object {
-      // Best-effort: state machine still recovers below.
-    }
+  /// Order is load-bearing:
+  ///   1. **synchronously** update the controller state so the UI
+  ///      recovers even if the underlying `playback.stop()`
+  ///      throws (this is the T031C contract — must hold
+  ///      regardless of the playback service's runtime
+  ///      behaviour on the real device);
+  ///   2. best-effort `playback.stop()` (T031I core fix — this
+  ///      is what stops the real Android loop). The playback
+  ///      service's `stop()` clears `_activePosition` to
+  ///      `Duration.zero` and `_activePath` to `null`, so the
+  ///      "next play() starts from 0" contract is satisfied
+  ///      without an extra `playback.seek(Duration.zero)`
+  ///      (which would be rejected at the service layer once
+  ///      state has transitioned to `idle`).
+  ///
+  /// The whole method is guarded against:
+  /// - re-entrancy (duplicate `completed` events from just_audio
+  ///   are short-circuited via [_handlingNaturalCompletion]);
+  /// - already-recovered state (`isPlaying == false` → no-op);
+  /// - post-dispose invocation (`_disposed` / `!ref.mounted`
+  ///   checks before every `state` write).
+  Future<void> _handleNaturalCompletion() async {
     if (_disposed || !ref.mounted) {
       return;
     }
-    state = state.copyWith(
-      isPlaying: false,
-      currentPlaybackPosition: Duration.zero,
-      clearLastError: true,
-    );
+    if (_handlingNaturalCompletion) {
+      // Duplicate `completed` event — just_audio can re-emit
+      // after a previous completed; skip the whole handler so
+      // we never double-stop the underlying player.
+      return;
+    }
+    if (!state.isPlaying) {
+      // The handler already ran for the most recent take (or the
+      // state was cleared by `stopPlayback` / `reset`). Do not
+      // drive the playback service again — this is the cheap
+      // short-circuit path for repeated `completed` events that
+      // arrive AFTER the first recovery has finished.
+      return;
+    }
+    _handlingNaturalCompletion = true;
+    try {
+      // Step 1: synchronous UI recovery. MUST NOT be awaited —
+      // we want this state write to land before any await point
+      // so the page re-enables 回放 / 开始录音 in the same
+      // microtask as the `completed` event.
+      state = state.copyWith(
+        isPlaying: false,
+        currentPlaybackPosition: Duration.zero,
+        clearLastError: true,
+      );
+      // Step 2: best-effort stop. This is what actually breaks
+      // the real-device "playback loops forever" loop — on some
+      // just_audio Android builds the player re-enters
+      // ready/playing after `seek(0)` if it was not stopped
+      // first, and we MUST drive the underlying player to
+      // `stop()` to release the native decoder and end the
+      // loop. The playback service's `stop()` resets
+      // `_activePosition` to `Duration.zero` and clears
+      // `_activePath`, so the "next play() starts from 0"
+      // contract is satisfied without an explicit seek(0).
+      try {
+        await _playback.stop();
+      } on Object {
+        // Swallow: UI state has already been recovered above.
+        // The T031C contract is "isPlaying must flip to false on
+        // completed" — that contract is already satisfied by
+        // step 1, regardless of whether the underlying stop
+        // succeeded.
+      }
+      // T031I note: we deliberately do NOT call
+      // `_playback.seek(Duration.zero)` after `stop()`. The
+      // playback service's `stop()` transitions state from
+      // `playing` / `completed` / `paused` to `idle` and clears
+      // `_activePosition` to `Duration.zero` via
+      // `_clearActiveSession()`. A subsequent `seek(Duration.zero)`
+      // would therefore be rejected at the service layer
+      // (state == idle, no active path), which is correct but
+      // useless: the position has already been cleared. The
+      // user-facing "next replay starts from 0" contract is
+      // satisfied by the next `play()` triggering a fresh
+      // `loadFile()` (T031G behaviour) which re-initialises the
+      // service to state == ready with position == 0.
+    } finally {
+      _handlingNaturalCompletion = false;
+    }
   }
 
   /// Hooked to `ref.onDispose` so the playback subscriptions +

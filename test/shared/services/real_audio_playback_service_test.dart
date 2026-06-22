@@ -619,6 +619,49 @@ void main() {
     });
 
     test(
+        'T031I: stop() from completed state is accepted and returns to idle '
+        '(the real-device loop-fix contract)', () async {
+      final (:provider, :root) = _createIsolatedRoot();
+      final ctx = _buildService(provider, root);
+      await ctx.storage.ensureDirectories();
+      final String path = await _createM4AFile(ctx.tempDirectory, 'rec_cstop');
+      ctx.gateway.nextLoadResult = const Duration(seconds: 5);
+      await ctx.service.loadFile(path);
+      ctx.gateway.completeOnNextPlay = true;
+      await ctx.service.play();
+      // T031E: drain two microtasks so the scheduleMicrotask
+      // that emits `completed` has a chance to run.
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      expect(ctx.service.state, AudioPlaybackState.completed,
+          reason: 'T031I: pre-condition — service is in completed state');
+
+      // T031I: the controller's `_handleNaturalCompletion`
+      // drives `playback.stop()` from the completed state. The
+      // service must accept this transition (state machine
+      // allows `stopping` from `completed`) and end in
+      // `idle` + cleared session. This pins the contract that
+      // the T031I real-device fix depends on.
+      final result = await ctx.service.stop();
+
+      expect(ctx.gateway.stopCallCount, 1,
+          reason: 'T031I: stop() must drive the gateway');
+      expect(result.path, path,
+          reason: 'T031I: stop() returns the resolved path of the completed '
+              'take');
+      expect(result.isCompleted, isTrue,
+          reason: 'T031I: stop() must record that the source was in the '
+              'completed state when stop was called');
+      expect(ctx.service.state, AudioPlaybackState.idle,
+          reason: 'T031I: stop() must transition the service to idle, '
+              'so the next play() reloads the source from position 0');
+      expect(ctx.service.activePath, isNull,
+          reason: 'T031I: stop() must clear the active path (the next '
+              'play() goes through a fresh loadFile)');
+      _cleanupRoot(root);
+    });
+
+    test(
         'T031E: setLoopModeOff best-effort — gateway throw does not break '
         'the loadFile path (playback service still loads the file)', () async {
       final (:provider, :root) = _createIsolatedRoot();

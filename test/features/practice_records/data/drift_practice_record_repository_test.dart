@@ -1,4 +1,4 @@
-// Tests for [DriftPracticeRecordRepository] (T013.2).
+// Tests for [DriftPracticeRecordRepository] (T013.2, T032).
 //
 // Strategy:
 // - Each test gets its own `AppDatabase.forTesting(...)` so the
@@ -24,8 +24,19 @@
 //   state.
 // - `_decode` must always return `createdAt` / `updatedAt` with
 //   `isUtc == true`.
+//
+// T032_REAL_AUDIO_PRACTICE_RECORD_SCHEMA_UPGRADE additions:
+// - New "audioFilePath (T032)" group pins the persistence-layer
+//   contract for the audio path field:
+//     * round-trips verbatim (no normalisation),
+//     * null round-trips as null,
+//     * visible on listRecent / watchAll,
+//     * delete() does NOT touch the audio file on disk — that
+//       is T034's responsibility, and the Repository is a pure
+//       persistence boundary.
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
@@ -576,6 +587,182 @@ void main() {
         () => ctx.repo.getById('bad-shape'),
         throwsA(isA<FormatException>()),
       );
+    });
+  });
+
+  // -----------------------------------------------------------------
+  // T032_REAL_AUDIO_PRACTICE_RECORD_SCHEMA_UPGRADE — explicit
+  // audioFilePath coverage on the persistence boundary.
+  //
+  // The "round-trips a fully-populated record" group above already
+  // covers `audioFilePath == 'recordings/x.m4a'` and the "round-trips
+  // nullable fields" group covers `audioFilePath == null`. The
+  // tests below pin the specific T032 contract points that the
+  // detail / list / migration tests rely on:
+  //
+  //   - Repository.decode(DB null)  → domain null
+  //   - Repository.decode(DB string) → domain string (verbatim)
+  //   - Repository does NOT validate / normalise the path
+  //   - Repository.delete does NOT touch the audio file (the
+  //     audio file lifecycle is owned by T034; the Repository
+  //     here MUST stay a pure persistence boundary)
+  // -----------------------------------------------------------------
+
+  group('DriftPracticeRecordRepository audioFilePath (T032)', () {
+    test(
+        'insert + getById round-trips a non-null audioFilePath verbatim '
+        '(no normalisation, no trimming)', () async {
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      const String path = 'saved/2026-06-22/rec-with-path.m4a';
+      await ctx.repo.insert(
+        _record(
+          id: 'rec-with-path',
+          audioFilePath: path,
+          primaryPracticeType: PracticeType.recording,
+        ),
+      );
+      final PracticeRecord? stored = await ctx.repo.getById('rec-with-path');
+      expect(stored, isNotNull);
+      expect(stored!.audioFilePath, path,
+          reason: 'audioFilePath must round-trip verbatim — the '
+              'Repository must not normalise the path');
+    });
+
+    test(
+        'insert + getById round-trips audioFilePath = null '
+        '(DB null → domain null)', () async {
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      await ctx.repo.insert(
+        _record(id: 'rec-no-audio', audioFilePath: null),
+      );
+      final PracticeRecord? stored = await ctx.repo.getById('rec-no-audio');
+      expect(stored, isNotNull);
+      expect(stored!.audioFilePath, isNull,
+          reason: 'audioFilePath must round-trip null verbatim');
+    });
+
+    test(
+        'listRecent / watchAll surface audioFilePath from every row '
+        '(string and null paths both visible)', () async {
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      await ctx.repo.insert(
+        _record(
+          id: 'rec-list-1',
+          audioFilePath: 'saved/2026-06-22/one.m4a',
+          primaryPracticeType: PracticeType.recording,
+        ),
+      );
+      await ctx.repo.insert(
+        _record(
+          id: 'rec-list-2',
+          audioFilePath: null,
+          primaryPracticeType: PracticeType.recording,
+        ),
+      );
+
+      // listRecent
+      final List<PracticeRecord> list = await ctx.repo.listRecent();
+      expect(list, hasLength(2));
+      final Map<String, String?> byId = <String, String?>{
+        for (final PracticeRecord r in list) r.id: r.audioFilePath,
+      };
+      expect(byId['rec-list-1'], 'saved/2026-06-22/one.m4a');
+      expect(byId['rec-list-2'], isNull);
+
+      // watchAll — verify the stream surfaces the same shapes.
+      final List<List<PracticeRecord>> emissions =
+          await ctx.repo.watchAll().take(1).toList();
+      expect(emissions, hasLength(1));
+      final List<PracticeRecord> snapshot = emissions.single;
+      expect(snapshot, hasLength(2));
+      final Map<String, String?> watchById = <String, String?>{
+        for (final PracticeRecord r in snapshot) r.id: r.audioFilePath,
+      };
+      expect(watchById['rec-list-1'], 'saved/2026-06-22/one.m4a');
+      expect(watchById['rec-list-2'], isNull);
+    });
+
+    test(
+        'delete() removes only the DB row — it MUST NOT touch any audio '
+        'file on disk (T032 contract; the audio file lifecycle is '
+        'T034\'s responsibility)', () async {
+      // Plant a real file at a known temp path. The Repository
+      // has no File / Directory dependency — this test pins
+      // "Repository does not delete the audio file" by checking
+      // the file is still on disk after the DB row is removed.
+      final Directory tempDir =
+          await Directory.systemTemp.createTemp('t032_repo_delete_');
+      addTearDown(() async {
+        if (await tempDir.exists()) {
+          await tempDir.delete(recursive: true);
+        }
+      });
+      final File fakeAudio = File('${tempDir.path}/saved/rec.m4a')
+        ..createSync(recursive: true);
+      await fakeAudio.writeAsBytes(<int>[0, 1, 2, 3]);
+
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      await ctx.repo.insert(
+        _record(
+          id: 'rec-del-audio',
+          audioFilePath: fakeAudio.path,
+        ),
+      );
+      // Sanity: the file is on disk before delete.
+      expect(await fakeAudio.exists(), isTrue);
+
+      final bool deleted = await ctx.repo.delete('rec-del-audio');
+      expect(deleted, isTrue);
+      // The DB row is gone.
+      expect(await ctx.repo.getById('rec-del-audio'), isNull);
+      // The audio file MUST still be on disk — the Repository
+      // does not own the file lifecycle. T034 will wire
+      // "delete row → delete file" at a higher layer.
+      expect(await fakeAudio.exists(), isTrue,
+          reason: 'Repository.delete must not touch audio files on disk '
+              '— that is T034\'s responsibility');
+    });
+
+    test(
+        'audioFilePath is exposed on the returned PracticeRecord from '
+        'insert() so the caller can inspect the value that was persisted',
+        () async {
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      const String path = 'saved/2026-06-22/returned.m4a';
+      final PracticeRecord inserted = await ctx.repo.insert(
+        _record(
+          id: 'rec-returned',
+          audioFilePath: path,
+        ),
+      );
+      // The contract: the value the Repository returned is the
+      // value it actually persisted. If the Repository were to
+      // silently coerce the path (e.g. to null), the caller
+      // would never know.
+      expect(inserted.audioFilePath, path);
+    });
+
+    test(
+        'audioFilePath is NOT validated — empty string survives '
+        'insert + read back unchanged (T033 owns real validation)', () async {
+      // T032 explicitly does NOT validate the audioFilePath. Empty
+      // strings are accepted because (a) the storage layer is
+      // still T033 / T034 work, (b) the Repository contract today
+      // is "store the value the caller passed".
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      await ctx.repo.insert(
+        _record(id: 'rec-empty-audio-path', audioFilePath: ''),
+      );
+      final PracticeRecord? stored =
+          await ctx.repo.getById('rec-empty-audio-path');
+      expect(stored, isNotNull);
+      expect(stored!.audioFilePath, '');
     });
   });
 }

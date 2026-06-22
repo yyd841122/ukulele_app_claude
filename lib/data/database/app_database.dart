@@ -1,15 +1,30 @@
-// AppDatabase — T013.1 Drift schema-version-1 foundation.
+// AppDatabase — T013.1 Drift schema-version-1 foundation,
+// bumped to schemaVersion = 2 by
+// T032_REAL_AUDIO_PRACTICE_RECORD_SCHEMA_UPGRADE.
 //
 // Scope (T013.1):
 // - One Drift database covering the three MVP tables:
 //     * `practice_records_table.dart` — PracticeRecords
 //     * `user_settings_table.dart`    — UserSettings
 //     * `completed_tasks_table.dart`  — CompletedTasks
-// - `schemaVersion = 1`. NO migration code is added in T013.1 because
-//   there is nothing to migrate from. The `MigrationStrategy` is
-//   intentionally minimal — no TODO stubs, no speculative upgrade
-//   branches. V1+ will introduce `onUpgrade` when schemaVersion
-//   actually moves off 1.
+// - `schemaVersion = 2` (T032). T013.1 froze the schema at v1;
+//   T031 introduced real audio recording/playback but did NOT
+//   bump the schema version (audioFilePath was already nullable
+//   in v1, see T013.1 — the column was reserved for the
+//   "real audio phase"). T032 bumps the version so the schema
+//   evolution has a clear anchor for "real audio persistence
+//   is now part of the contract".
+// - **v1 → v2 is a contract bump, not a layout change**:
+//     * `practice_records.audio_file_path` was already nullable
+//       in v1.
+//     * No `ALTER TABLE` is needed.
+//     * Legacy rows survive the upgrade with `audio_file_path =
+//       NULL` exactly as they were written.
+//   The `onUpgrade` branch for v1 → v2 exists so future
+//   migrations (T033+) can stack after v2 without having to
+//   relocate the v1 → v2 transition; it does **not** call
+//   `m.createAll()` (which would fail because the columns are
+//   already on disk) and does **not** rewrite any rows.
 // - Two constructors:
 //     * [AppDatabase] (default) — production. Opens a file under the
 //       app private documents directory (`<docs>/ukulele.db`).
@@ -50,8 +65,8 @@ const String kAppDatabaseFileName = 'ukulele.db';
 
 /// Root Drift database for the ukulele_app MVP.
 ///
-/// Holds three tables (see imports). The schema is locked at version
-/// 1 for the MVP — see file docs.
+/// Holds three tables (see imports). The schema is at version
+/// 2 — see file docs.
 @DriftDatabase(
   tables: <Type>[PracticeRecords, UserSettings, CompletedTasks],
 )
@@ -74,15 +89,46 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
         onCreate: (Migrator m) async {
-          // T013.1: nothing to migrate from. Just create the initial
-          // schema. No speculative upgrade branches, no TODO stubs —
-          // V1+ will add `onUpgrade` when schemaVersion increments.
+          // Initial schema for fresh installs. The schema is the
+          // v2 layout — `practice_records.audio_file_path` is
+          // already declared as nullable in the Table class, so
+          // this single `createAll()` materialises the v2
+          // schema on disk.
           await m.createAll();
+        },
+        onUpgrade: (Migrator m, int from, int to) async {
+          // T032: v1 → v2 is a contract bump only — see the
+          // file-level docs above. The on-disk layout is
+          // unchanged from v1 (audio_file_path was already
+          // nullable in v1), so we explicitly do **not** call
+          // `m.createAll()` (which would fail on already-present
+          // columns) and we do **not** rewrite any rows. Legacy
+          // rows survive untouched with `audio_file_path = NULL`.
+          //
+          // The branch is left in place so future migrations
+          // (T033+) can stack after v2 — any v1 install that
+          // reaches this code path is migrated in-place to v2
+          // (no-op) and any v2 install never enters it.
+          if (from == 1 && to == 2) {
+            // Intentionally empty: see file-level docs.
+            return;
+          }
+          // Defensive fallback. Drift only invokes `onUpgrade`
+          // when `from < to` and `from < schemaVersion`, so
+          // this branch should be unreachable in normal flows.
+          // We throw rather than silently swallow so a future
+          // bump that forgets to extend this switch surfaces as
+          // a loud failure instead of a half-migrated DB.
+          throw StateError(
+            'AppDatabase: no migration path defined for '
+            'schemaVersion $from → $to (current schemaVersion = '
+            '$schemaVersion). Update the onUpgrade branch.',
+          );
         },
       );
 }

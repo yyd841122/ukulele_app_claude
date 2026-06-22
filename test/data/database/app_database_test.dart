@@ -1,4 +1,4 @@
-// Tests for [AppDatabase] (T013.1).
+// Tests for [AppDatabase] (T013.1, T032).
 //
 // Strategy:
 // - All tests use `AppDatabase.forTesting(NativeDatabase.memory())`,
@@ -7,6 +7,8 @@
 // - We assert on the generated row classes (`PracticeRecordData`,
 //   `UserSettingData`, `CompletedTaskData`) — this doubles as a
 //   smoke test for the Drift codegen output.
+// - T032 bump: `schemaVersion` is now 2 (was 1 in T013.1). The
+//   schema-version pin test below reflects the post-T032 value.
 // - We deliberately do NOT test the production constructor (which
 //   calls `path_provider`); that path requires a Flutter binding and
 //   is exercised by the widget_test.dart full-App smoke test in
@@ -22,10 +24,16 @@ void main() {
   // -------- schema_version ------
 
   group('AppDatabase schema', () {
-    test('schemaVersion is exactly 1', () {
+    test('schemaVersion is exactly 2', () {
+      // T032_REAL_AUDIO_PRACTICE_RECORD_SCHEMA_UPGRADE bumped
+      // schemaVersion from 1 → 2 to mark the "real audio
+      // persistence phase" schema-evolution anchor. The on-disk
+      // layout is unchanged (audio_file_path was already nullable
+      // in v1); the bump is a contract-only marker so future
+      // migrations (T033+) can stack after v2.
       final AppDatabase db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
-      expect(db.schemaVersion, 1);
+      expect(db.schemaVersion, 2);
     });
 
     test('onCreate produces all three MVP tables', () async {
@@ -48,6 +56,60 @@ void main() {
       expect(names, contains('practice_records'));
       expect(names, contains('user_settings'));
       expect(names, contains('completed_tasks'));
+    });
+
+    test(
+        'practice_records.audio_file_path is part of the v2 schema '
+        '(nullable TEXT column)', () async {
+      // T032 contract pin: the column must already exist on disk
+      // after onCreate so v2 is forward-compatible with code that
+      // writes non-null audio paths. The column was already
+      // declared nullable in v1 (T013.1 reserved it for the
+      // "real audio phase"); the v2 schema-evolution anchor
+      // exists so we can track "this is the version that
+      // officially wires audio persistence into the contract".
+      final AppDatabase db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      // Force the lazy open so onCreate runs.
+      await db.customSelect('SELECT 1').get();
+
+      final List<QueryRow> cols = await db
+          .customSelect(
+            "SELECT name, type, \"notnull\" FROM pragma_table_info("
+            "'practice_records') WHERE name = 'audio_file_path';",
+          )
+          .get();
+      expect(cols, hasLength(1),
+          reason: 'practice_records.audio_file_path must exist on disk');
+      final QueryRow row = cols.single;
+      expect(row.read<String>('name'), 'audio_file_path');
+      expect(row.read<String>('type'), 'TEXT');
+      // `notnull == 0` means the column is nullable in SQLite.
+      expect(row.read<int>('notnull'), 0,
+          reason: 'audio_file_path must remain nullable so old rows '
+              'survive the v1 → v2 migration with audioFilePath = null');
+    });
+
+    test(
+        'fresh install lands at user_version = 2 '
+        '(onCreate writes the current schemaVersion)', () async {
+      // T032 contract pin: a fresh install (no prior DB on disk)
+      // must reach schemaVersion = 2 immediately after onCreate.
+      // Drift writes `user_version` from the `schemaVersion`
+      // field at the end of onCreate, so this verifies the v2
+      // schema-evolution anchor is "first install" compatible
+      // without needing onUpgrade to fire.
+      final AppDatabase db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      await db.customSelect('SELECT 1').get();
+      final int userVersion = await db
+          .customSelect('PRAGMA user_version;')
+          .map((QueryRow row) => row.read<int>('user_version'))
+          .getSingle();
+      expect(userVersion, 2,
+          reason: 'fresh install must write user_version = '
+              'schemaVersion (= 2) after onCreate');
     });
   });
 

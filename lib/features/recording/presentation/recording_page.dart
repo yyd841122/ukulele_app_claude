@@ -268,18 +268,26 @@ class ElapsedDisplay extends StatelessWidget {
 
 /// Primary controls: start / stop / play / stop-playback.
 ///
-/// The enablement rules come straight from the T031 brief:
+/// The enablement rules come straight from the T031 + T031C
+/// brief:
 /// - `start` is disabled while a recording is in progress, while
 ///   a permission check is in flight, while a save is in flight,
 ///   or while playback is running. The controller is the
 ///   belt-and-braces guard against
-///   `play || recording` mutual exclusion.
+///   `play || recording` mutual exclusion (T031C pins this with a
+///   dedicated widget test so the user can never start a
+///   recording while playback is running).
 /// - `stop` is disabled unless we are recording (and not
 ///   saving / checking permission).
 /// - `play` is disabled unless we have a recorded take AND we
 ///   are not recording AND we are not already playing AND we
-///   are not saving AND we are not checking permission.
-/// - `stop-playback` is disabled unless we are playing.
+///   are not saving AND we are not checking permission. After
+///   natural completion the controller flips `isPlaying = false`
+///   (T031C) so `play` re-enables and the user can replay from 0.
+/// - `stop-playback` is disabled unless we are playing. After
+///   natural completion the controller flips `isPlaying = false`
+///   (T031C) so `stop-playback` auto-disables — the user no
+///   longer has to tap "停止回放" after the file ends.
 class ControlRow extends StatelessWidget {
   const ControlRow({
     super.key,

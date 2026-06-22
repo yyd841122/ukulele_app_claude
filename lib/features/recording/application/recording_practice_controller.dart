@@ -1,4 +1,4 @@
-// Riverpod controller for the recording practice flow (T012 + T013.4A + T031).
+// Riverpod controller for the recording practice flow (T012 + T013.4A + T031 + T031C).
 //
 // Design notes (T031 - real audio state machine integration):
 //
@@ -33,14 +33,33 @@
 //   calls [RealAudioRecorderService.start] with a freshly minted
 //   `takeId` and flips into the recording state.
 //
-// - Recording ↔ Playback mutual exclusion (T025 §8.3):
+// - Recording ↔ Playback mutual exclusion (T025 §8.3 + T031C):
 //   - `isPlaying == true` => `startRecording()` is a no-op
 //     (recording button is disabled by the UI; controller is the
-//         belt-and-braces guard);
+//         belt-and-braces guard). T031C pins this guard with a
+//         dedicated controller test + page test so the user can
+//         never start a recording while playback is running;
 //   - `isRecording == true` => `play()` is a no-op
 //     (play button is disabled by the UI);
 //   - `disposed` => every public mutator is a no-op
 //     (recording / playback / save / rating / note / reset).
+//
+// - Natural completion handling (T031C):
+//   When `playback.playerStateStream` emits
+//   `processingState == completed`:
+//     1. `isPlaying` flips to `false` (auto-recovery — the page
+//        no longer requires the user to tap "停止回放" after the
+//        file ends);
+//     2. `currentPlaybackPosition` is reset to `Duration.zero`;
+//     3. `playback.seek(Duration.zero)` is called so the next
+//        `play()` replays from the start (matches the user's
+//        expected "回放 from the start" behaviour);
+//     4. `lastError` is cleared.
+//   This makes the post-completion UX deterministic: "停止回放"
+//   auto-disables, "回放" + "开始录音" re-enable, and re-tapping
+//   "回放" restarts the take from 0. The seek is best-effort
+//   (the state-machine recovery still runs even if the seek
+//   throws, e.g. completed → dispose race).
 //
 // - dispose: cancels the playback stream subscriptions, calls
 //   [RealAudioPlaybackService.dispose] (best-effort, idempotent) and
@@ -81,6 +100,16 @@
 //                                   isPlaying = true
 //                                 otherwise: no-op
 //   stopPlayback              ->  isPlaying = false (service.stop())
+//   playerStateStream.completed (T031C)
+//                              ->  playback.seek(Duration.zero)
+//                                  (best-effort), then isPlaying =
+//                                  false, currentPlaybackPosition =
+//                                  Duration.zero, lastError cleared.
+//                                  State transitions to recorded
+//                                  (hasRecordedTake stays true,
+//                                  isPlaying flips to false). UI
+//                                  auto-disables "停止回放" and
+//                                  re-enables "回放" + "开始录音".
 //   reset                     ->  back to initial state, clears
 //                                 takeId + recordedTakeResult +
 //                                 savedRecordId + recordedDurationSeconds
@@ -934,12 +963,49 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
         return;
       }
       if (ps.processingState == PlaybackProcessingState.completed) {
-        state = state.copyWith(
-          isPlaying: false,
-          currentPlaybackPosition: Duration.zero,
-        );
+        // T031C: natural completion must auto-recover the
+        // controller state. The user no longer has to tap
+        // "停止回放" after the file ends — the controller
+        // flips isPlaying back to false and asks the playback
+        // service to seek to 0 so the next `play()` replays
+        // from the start (matches the user's expected UX).
+        // The seek is best-effort: if the playback service
+        // already tore the source down (e.g. completed →
+        // dispose race) the seek will throw and we still keep
+        // the state-machine recovery that the user depends on.
+        unawaited(_seekToZeroOnCompletion());
       }
     });
+  }
+
+  /// Best-effort `seek(0)` invoked from the playback
+  /// `playerStateStream` `completed` handler (T031C).
+  ///
+  /// - If the seek succeeds, `currentPlaybackPosition` is
+  ///   updated by the underlying service + position stream;
+  ///   the controller state is then refreshed to
+  ///   `isPlaying = false` / `currentPlaybackPosition = 0` /
+  ///   `lastError = null` so the UI immediately re-enables
+  ///   "回放" + "开始录音" and disables "停止回放".
+  /// - If the seek throws (e.g. service in a state that no
+  ///   longer accepts seek), the state-machine recovery
+  ///   (`isPlaying = false` / position reset / `lastError`
+  ///   clear) still runs so the user is never left staring
+  ///   at a "停止回放" button that does nothing.
+  Future<void> _seekToZeroOnCompletion() async {
+    try {
+      await _playback.seek(Duration.zero);
+    } on Object {
+      // Best-effort: state machine still recovers below.
+    }
+    if (_disposed || !ref.mounted) {
+      return;
+    }
+    state = state.copyWith(
+      isPlaying: false,
+      currentPlaybackPosition: Duration.zero,
+      clearLastError: true,
+    );
   }
 
   /// Hooked to `ref.onDispose` so the playback subscriptions +

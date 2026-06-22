@@ -931,6 +931,353 @@ void main() {
           reason: 'a completed event must flip isPlaying back');
     });
 
+    // T031C: pinned "playback completed auto-recovery" tests.
+    test(
+        'T031C: natural completion seeks to zero and clears lastError so '
+        'replay starts from 0', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 5);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      await controller.play();
+      await _pumpEventQueue();
+      // Simulate a non-zero position right before natural completion.
+      ctx.playbackGateway.emitPosition(const Duration(seconds: 4));
+      await _pumpEventQueue();
+      // T031C contract: seek-to-zero is called on the playback
+      // service before the state flips.
+      final int seeksBefore = ctx.playbackGateway.seekCallCount;
+      ctx.playbackGateway.emitPlayerState(const PlaybackPlayerState(
+        playing: false,
+        processingState: PlaybackProcessingState.completed,
+      ));
+      await _pumpEventQueue();
+
+      final RecordingPracticeState state =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(state.isPlaying, isFalse);
+      expect(state.currentPlaybackPosition, Duration.zero);
+      expect(ctx.playbackGateway.seekCallCount, greaterThan(seeksBefore),
+          reason: 'completed must trigger a best-effort seek to 0');
+      expect(ctx.playbackGateway.lastSeekPosition, Duration.zero,
+          reason: 'the recovery seek must target position 0');
+    });
+
+    test(
+        'T031C: after natural completion user can replay from start without '
+        'a fresh recording', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 3);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      await controller.play();
+      await _pumpEventQueue();
+
+      // Natural completion.
+      ctx.playbackGateway.emitPlayerState(const PlaybackPlayerState(
+        playing: false,
+        processingState: PlaybackProcessingState.completed,
+      ));
+      await _pumpEventQueue();
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).isPlaying,
+        isFalse,
+      );
+
+      // Replay: must work because isPlaying is false and the
+      // recorded take is still held in memory.
+      final int playCallsBefore = ctx.playbackGateway.playCallCount;
+      final int loadCallsBefore = ctx.playbackGateway.loadFileCallCount;
+      await controller.play();
+      await _pumpEventQueue();
+      final RecordingPracticeState replayed =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(replayed.isPlaying, isTrue,
+          reason: 're-tapping play after completion must start playback');
+      expect(ctx.playbackGateway.playCallCount, playCallsBefore + 1);
+      expect(
+          ctx.playbackGateway.loadFileCallCount, greaterThan(loadCallsBefore),
+          reason: 'play() reloads the source after completion');
+
+      await controller.stopPlayback();
+    });
+
+    test(
+        'T031C: after natural completion user can re-record a new take '
+        '(isPlaying cleared, startRecording accepted)', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      await controller.play();
+      await _pumpEventQueue();
+
+      ctx.playbackGateway.emitPlayerState(const PlaybackPlayerState(
+        playing: false,
+        processingState: PlaybackProcessingState.completed,
+      ));
+      await _pumpEventQueue();
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).isPlaying,
+        isFalse,
+      );
+
+      // Re-record: must be accepted because isPlaying is false.
+      final int startsBefore = ctx.recorderGateway.startCallCount;
+      final String firstTakeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      await controller.startRecording();
+      await _pumpEventQueue();
+      final RecordingPracticeState fresh =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(fresh.isRecording, isTrue);
+      expect(fresh.isPlaying, isFalse);
+      expect(fresh.takeId, isNot(equals(firstTakeId)),
+          reason: 'a fresh take must mint a new takeId');
+      expect(ctx.recorderGateway.startCallCount, startsBefore + 1,
+          reason: 'recorder.start must be called when starting fresh after '
+              'natural completion');
+
+      // Cleanup the second take.
+      // ignore: unused_local_variable
+      final String secondTakeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String secondPath = ctx.recorderGateway.lastStartPath!;
+      final File f2 = File(secondPath);
+      await f2.create(recursive: true);
+      await f2.writeAsString('fake m4a #2');
+      ctx.recorderGateway.nextStopResult = _stopPath(secondPath);
+      await controller.stopRecording();
+    });
+
+    test(
+        'T031C: startRecording is rejected while playing (belt-and-braces '
+        'controller guard, recorder.start NOT called)', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      await controller.play();
+      await _pumpEventQueue();
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).isPlaying,
+        isTrue,
+      );
+
+      // T031C: explicit guard test — controller MUST NOT call
+      // recorder.start while playback is in progress, MUST NOT
+      // mint a new takeId, MUST NOT change isPlaying.
+      final int startsBefore = ctx.recorderGateway.startCallCount;
+      final int checkBefore = ctx.permissionGateway.checkStatusCallCount;
+      final String takeIdBefore =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      await controller.startRecording();
+      await _pumpEventQueue();
+      final RecordingPracticeState state =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(state.isPlaying, isTrue,
+          reason:
+              'playback must still be running after a no-op startRecording');
+      expect(state.takeId, takeIdBefore,
+          reason: 'a no-op startRecording must NOT mint a new takeId');
+      expect(ctx.recorderGateway.startCallCount, startsBefore,
+          reason: 'recorder.start MUST NOT be called while playing');
+      expect(ctx.permissionGateway.checkStatusCallCount, checkBefore,
+          reason: 'permission service MUST NOT be touched while playing');
+
+      await controller.stopPlayback();
+    });
+
+    test(
+        'T031C: stopPlayback after natural completion is a clean no-op '
+        '(does not throw, does not change already-cleared state)', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      await controller.play();
+      await _pumpEventQueue();
+
+      ctx.playbackGateway.emitPlayerState(const PlaybackPlayerState(
+        playing: false,
+        processingState: PlaybackProcessingState.completed,
+      ));
+      await _pumpEventQueue();
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).isPlaying,
+        isFalse,
+      );
+
+      // Manual stop after auto-recovery: must be a clean no-op
+      // because `isPlaying` is already false. The controller
+      // guards with `if (!state.isPlaying) return` so the
+      // playback service is not touched.
+      final int stopsBefore = ctx.playbackGateway.stopCallCount;
+      await controller.stopPlayback();
+      await _pumpEventQueue();
+      final RecordingPracticeState after =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(after.isPlaying, isFalse);
+      expect(after.currentPlaybackPosition, Duration.zero);
+      expect(ctx.playbackGateway.stopCallCount, stopsBefore,
+          reason: 'stopPlayback after natural completion is a controller '
+              'no-op and MUST NOT drive the playback service again');
+    });
+
+    test(
+        'T031C: stopRecording is unaffected by the natural-completion '
+        'recovery (still no-op without an active recording)', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      // No recording ever started.
+      await controller.stopRecording();
+      final RecordingPracticeState idle =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(idle.isRecording, isFalse);
+      expect(idle.lastError, isNull);
+    });
+
+    test(
+        'T031C: natural-completion recovery does NOT trigger Drift writes '
+        'or insert a PracticeRecord (audioFilePath stays null)', () async {
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository();
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        repository: repo,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      await controller.play();
+      await _pumpEventQueue();
+      ctx.playbackGateway.emitPlayerState(const PlaybackPlayerState(
+        playing: false,
+        processingState: PlaybackProcessingState.completed,
+      ));
+      await _pumpEventQueue();
+
+      // No PracticeRecord was auto-persisted by the recovery.
+      expect(repo.inserted, isEmpty,
+          reason: 'natural completion MUST NOT auto-save a record');
+      expect(
+          ctx.container.read(recordingPracticeControllerProvider).savedRecordId,
+          isNull,
+          reason: 'savedRecordId stays null — auto-recovery is not a save');
+    });
+
     test('stopPlayback flips isPlaying back', () async {
       final ctx = _buildContext(
         permission: (b) =>

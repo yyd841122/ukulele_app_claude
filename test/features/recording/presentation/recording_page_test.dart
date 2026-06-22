@@ -62,6 +62,7 @@ import 'package:ukulele_app/features/practice_records/data/practice_record_repos
 import 'package:ukulele_app/features/practice_records/domain/practice_record.dart';
 import 'package:ukulele_app/features/practice_records/domain/practice_tag.dart';
 import 'package:ukulele_app/features/practice_records/domain/self_assessment.dart';
+import 'package:ukulele_app/features/recording/application/recording_practice_controller.dart';
 import 'package:ukulele_app/features/recording/presentation/recording_page.dart';
 import 'package:ukulele_app/shared/providers/app_clock_provider.dart';
 import 'package:ukulele_app/shared/providers/audio_file_storage_service_provider.dart';
@@ -69,6 +70,7 @@ import 'package:ukulele_app/shared/providers/microphone_permission_service_provi
 import 'package:ukulele_app/shared/providers/real_audio_playback_service_provider.dart';
 import 'package:ukulele_app/shared/providers/real_audio_recorder_service_provider.dart';
 import 'package:ukulele_app/shared/services/audio_file_storage_service.dart';
+import 'package:ukulele_app/shared/services/audio_playback_gateway.dart';
 import 'package:ukulele_app/shared/services/microphone_permission_service.dart';
 import 'package:ukulele_app/shared/services/microphone_permission_status.dart';
 import 'package:ukulele_app/shared/services/practice_day_context.dart';
@@ -367,6 +369,327 @@ void main() {
           find.byKey(const ValueKey<String>('recording-stop')),
         );
         await tester.pumpAndSettle();
+      },
+    );
+
+    // T031C: pinned "recording ↔ playback mutual exclusion" page tests.
+    testWidgets(
+      'T031C: while playback is in progress, the "开始录音" button is '
+      'disabled and the controller never receives a startRecording call',
+      (WidgetTester tester) async {
+        await _useTallSurface(tester);
+        final (:rootProvider, :root) = _isolatedRoot();
+        final AudioFileStorageService storage = AudioFileStorageService(
+          rootDirectoryProvider: rootProvider,
+        );
+        final _PageContext ctx = _PageContext(
+          recorderGateway: FakeAudioRecorderGateway(),
+          playbackGateway: FakeAudioPlaybackGateway(),
+          permissionGateway: FakeMicrophonePermissionGateway()
+            ..nextCheckStatus = MicrophonePermissionStatus.granted,
+          storage: storage,
+        );
+        final ProviderContainer container = await _pumpPage(
+          tester,
+          _FakePracticeRecordRepository(),
+          ctx: ctx,
+        );
+
+        // Drive the controller into the playback state via the
+        // public API (startRecording → stopRecording → play) so the
+        // page reflects isPlaying == true.
+        final RecordingPracticeController controller = container.read(
+          recordingPracticeControllerProvider.notifier,
+        );
+        await controller.startRecording();
+        // T031C note: `pumpAndSettle` is safe here because its
+        // default 100ms tick interval is well below the
+        // controller's 1s `Timer.periodic` — the ticker never
+        // fires during the pump cycle, so the test converges.
+        await tester.pumpAndSettle();
+        final String path = ctx.recorderGateway.lastStartPath!;
+        // Pre-create the file in the real I/O zone; the
+        // controller's `_probeRecordingDuration` and subsequent
+        // `playback.loadFile` need to do real disk I/O that
+        // would never complete in a `FakeAsync` zone otherwise.
+        await tester.runAsync(() async {
+          final File f = File(path);
+          await f.create(recursive: true);
+          await f.writeAsString('fake m4a');
+        });
+        ctx.recorderGateway.nextStopResult = path;
+        ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+        // `stopRecording` calls into the real `RealAudioPlaybackService`
+        // (loadFile + ensureDirectories) which needs real I/O. Run
+        // it through `tester.runAsync` so the disk operations
+        // actually complete.
+        await tester.runAsync(() => controller.stopRecording());
+        // Drop back into the FakeAsync zone to drive the widget
+        // tree; a few short pumps are enough to propagate the
+        // state change.
+        await tester.pump();
+        await tester.pump();
+        // `play()` also drives the real playback service's
+        // `loadFile` (real I/O) — same `runAsync` escape hatch.
+        await tester.runAsync(() => controller.play());
+        await tester.pump();
+        await tester.pump();
+
+        // isPlaying should now be true.
+        expect(
+          container.read(recordingPracticeControllerProvider).isPlaying,
+          isTrue,
+        );
+
+        // T031C: the "开始录音" button must be disabled while
+        // playback is in progress.
+        final FilledButton startButton = tester.widget<FilledButton>(
+          find.byKey(const ValueKey<String>('recording-start')),
+        );
+        expect(startButton.onPressed, isNull,
+            reason: 'T031C: 开始录音 button must be disabled during playback');
+
+        // T031C: the "停止回放" button must be enabled while
+        // playback is in progress.
+        final OutlinedButton stopPlaybackButton = tester.widget<OutlinedButton>(
+          find.byKey(const ValueKey<String>('recording-stop-playback')),
+        );
+        expect(stopPlaybackButton.onPressed, isNotNull,
+            reason: 'T031C: 停止回放 button must be enabled during playback');
+
+        // Cleanup: stop the playback to release the timer.
+        await controller.stopPlayback();
+        await tester.pumpAndSettle();
+      },
+    );
+
+    testWidgets(
+      'T031C: after natural completion the "停止回放" button auto-disables '
+      'and the "回放" + "开始录音" buttons re-enable',
+      (WidgetTester tester) async {
+        await _useTallSurface(tester);
+        final (:rootProvider, :root) = _isolatedRoot();
+        final AudioFileStorageService storage = AudioFileStorageService(
+          rootDirectoryProvider: rootProvider,
+        );
+        final _PageContext ctx = _PageContext(
+          recorderGateway: FakeAudioRecorderGateway(),
+          playbackGateway: FakeAudioPlaybackGateway(),
+          permissionGateway: FakeMicrophonePermissionGateway()
+            ..nextCheckStatus = MicrophonePermissionStatus.granted,
+          storage: storage,
+        );
+        final ProviderContainer container = await _pumpPage(
+          tester,
+          _FakePracticeRecordRepository(),
+          ctx: ctx,
+        );
+
+        // Drive into playback.
+        final RecordingPracticeController controller = container.read(
+          recordingPracticeControllerProvider.notifier,
+        );
+        await controller.startRecording();
+        // T031C note: `pumpAndSettle` is safe here because its
+        // default 100ms tick interval is well below the
+        // controller's 1s `Timer.periodic` — the ticker never
+        // fires during the pump cycle, so the test converges.
+        await tester.pumpAndSettle();
+        final String path = ctx.recorderGateway.lastStartPath!;
+        // Pre-create the file in the real I/O zone; the
+        // controller's `_probeRecordingDuration` and subsequent
+        // `playback.loadFile` need to do real disk I/O that
+        // would never complete in a `FakeAsync` zone otherwise.
+        await tester.runAsync(() async {
+          final File f = File(path);
+          await f.create(recursive: true);
+          await f.writeAsString('fake m4a');
+        });
+        ctx.recorderGateway.nextStopResult = path;
+        ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+        // `stopRecording` calls into the real `RealAudioPlaybackService`
+        // (loadFile + ensureDirectories) which needs real I/O. Run
+        // it through `tester.runAsync` so the disk operations
+        // actually complete.
+        await tester.runAsync(() => controller.stopRecording());
+        // Drop back into the FakeAsync zone to drive the widget
+        // tree; a few short pumps are enough to propagate the
+        // state change.
+        await tester.pump();
+        await tester.pump();
+        // `play()` also drives the real playback service's
+        // `loadFile` (real I/O) — same `runAsync` escape hatch.
+        await tester.runAsync(() => controller.play());
+        await tester.pump();
+        await tester.pump();
+
+        // Sanity: while playing, "停止回放" is enabled.
+        expect(
+          tester
+              .widget<OutlinedButton>(
+                find.byKey(const ValueKey<String>('recording-stop-playback')),
+              )
+              .onPressed,
+          isNotNull,
+        );
+
+        // Natural completion. Wrap the emit + the controller's
+        // unawaited `_seekToZeroOnCompletion` (which awaits the
+        // real playback service's seek — needs real I/O zone).
+        await tester.runAsync(() async {
+          ctx.playbackGateway.emitPlayerState(const PlaybackPlayerState(
+            playing: false,
+            processingState: PlaybackProcessingState.completed,
+          ));
+        });
+        // The controller's `_seekToZeroOnCompletion` is unawaited;
+        // pump a few frames so it completes + state propagates.
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+
+        // T031C: after natural completion, isPlaying must be false
+        // and the "停止回放" button must be auto-disabled.
+        expect(
+          container.read(recordingPracticeControllerProvider).isPlaying,
+          isFalse,
+          reason: 'T031C: natural completion must flip isPlaying to false',
+        );
+        final OutlinedButton stopPlaybackButton = tester.widget<OutlinedButton>(
+          find.byKey(const ValueKey<String>('recording-stop-playback')),
+        );
+        expect(stopPlaybackButton.onPressed, isNull,
+            reason: 'T031C: 停止回放 must auto-disable after natural completion');
+
+        // T031C: the "回放" button must be re-enabled so the user
+        // can replay the take from the start.
+        final FilledButton playButton = tester.widget<FilledButton>(
+          find.byKey(const ValueKey<String>('recording-play')),
+        );
+        expect(playButton.onPressed, isNotNull,
+            reason: 'T031C: 回放 must re-enable after natural completion');
+
+        // T031C: the "开始录音" button must be re-enabled so the
+        // user can re-record.
+        final FilledButton startButton = tester.widget<FilledButton>(
+          find.byKey(const ValueKey<String>('recording-start')),
+        );
+        expect(startButton.onPressed, isNotNull,
+            reason: 'T031C: 开始录音 must re-enable after natural completion');
+      },
+    );
+
+    testWidgets(
+      'T031C: tapping "回放" after natural completion actually starts '
+      'a new playback (recorder not touched, playback service called)',
+      (WidgetTester tester) async {
+        await _useTallSurface(tester);
+        final (:rootProvider, :root) = _isolatedRoot();
+        final AudioFileStorageService storage = AudioFileStorageService(
+          rootDirectoryProvider: rootProvider,
+        );
+        final _PageContext ctx = _PageContext(
+          recorderGateway: FakeAudioRecorderGateway(),
+          playbackGateway: FakeAudioPlaybackGateway(),
+          permissionGateway: FakeMicrophonePermissionGateway()
+            ..nextCheckStatus = MicrophonePermissionStatus.granted,
+          storage: storage,
+        );
+        final ProviderContainer container = await _pumpPage(
+          tester,
+          _FakePracticeRecordRepository(),
+          ctx: ctx,
+        );
+
+        // Drive into playback then emit natural completion.
+        final RecordingPracticeController controller = container.read(
+          recordingPracticeControllerProvider.notifier,
+        );
+        await controller.startRecording();
+        // T031C note: `pumpAndSettle` is safe here because its
+        // default 100ms tick interval is well below the
+        // controller's 1s `Timer.periodic` — the ticker never
+        // fires during the pump cycle, so the test converges.
+        await tester.pumpAndSettle();
+        final String path = ctx.recorderGateway.lastStartPath!;
+        // Pre-create the file in the real I/O zone; the
+        // controller's `_probeRecordingDuration` and subsequent
+        // `playback.loadFile` need to do real disk I/O that
+        // would never complete in a `FakeAsync` zone otherwise.
+        await tester.runAsync(() async {
+          final File f = File(path);
+          await f.create(recursive: true);
+          await f.writeAsString('fake m4a');
+        });
+        ctx.recorderGateway.nextStopResult = path;
+        ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+        // `stopRecording` calls into the real `RealAudioPlaybackService`
+        // (loadFile + ensureDirectories) which needs real I/O. Run
+        // it through `tester.runAsync` so the disk operations
+        // actually complete.
+        await tester.runAsync(() => controller.stopRecording());
+        // Drop back into the FakeAsync zone to drive the widget
+        // tree; a few short pumps are enough to propagate the
+        // state change.
+        await tester.pump();
+        await tester.pump();
+        // `play()` also drives the real playback service's
+        // `loadFile` (real I/O) — same `runAsync` escape hatch.
+        await tester.runAsync(() => controller.play());
+        await tester.pump();
+        await tester.pump();
+        ctx.playbackGateway.emitPlayerState(const PlaybackPlayerState(
+          playing: false,
+          processingState: PlaybackProcessingState.completed,
+        ));
+        // Wrap in runAsync so the controller's unawaited
+        // `_seekToZeroOnCompletion` can complete (real seek I/O).
+        await tester.runAsync(() async {});
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+        expect(
+          container.read(recordingPracticeControllerProvider).isPlaying,
+          isFalse,
+        );
+
+        // Tap "回放" — must start a new playback without
+        // touching the recorder.
+        final int startsBefore = ctx.recorderGateway.startCallCount;
+        final int playsBefore = ctx.playbackGateway.playCallCount;
+        // The tap dispatches the pointer event in the FakeAsync
+        // zone, which fires the onPressed callback that calls
+        // `controller.play()`. The play() call drives the real
+        // playback service's `loadFile` (real I/O) so we run
+        // the microtask drain in the real I/O zone.
+        await tester.tap(
+          find.byKey(const ValueKey<String>('recording-play')),
+        );
+        await tester.runAsync(() async {
+          // Allow the unawaited play() Future to make real I/O
+          // progress. The fake is pure-Dart, so the loadFile
+          // + play chain completes here.
+          await Future<void>.delayed(const Duration(milliseconds: 1));
+        });
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+        expect(ctx.recorderGateway.startCallCount, startsBefore,
+            reason:
+                'replaying after completion must NOT start a new recording');
+        expect(ctx.playbackGateway.playCallCount, playsBefore + 1,
+            reason: 'replaying after completion must call playback.play');
+        expect(
+          container.read(recordingPracticeControllerProvider).isPlaying,
+          isTrue,
+          reason: 'replaying after completion must flip isPlaying to true',
+        );
+
+        // Cleanup.
+        await controller.stopPlayback();
+        await tester.pump();
+        await tester.pump();
       },
     );
   });

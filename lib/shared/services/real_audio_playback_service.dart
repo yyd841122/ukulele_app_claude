@@ -182,6 +182,22 @@ class RealAudioPlaybackService {
     // 3. 调用 gateway.loadFile。
     Duration? resolvedDuration;
     try {
+      // T031E: defensively pin LoopMode.off at the service layer
+      // too. The gateway implementation is supposed to pin it
+      // internally; this is a belt-and-braces call for any future
+      // gateway swap. Errors are swallowed (best-effort) — the
+      // service has its own natural-completion recovery that
+      // flips isPlaying back to false on the playerStateStream
+      // `completed` event regardless of whether the loop mode was
+      // successfully pinned. We deliberately call this BEFORE
+      // the gateway.loadFile so the file loads with the correct
+      // loop mode from the start (some platforms do not allow
+      // changing loop mode after the source is loaded).
+      try {
+        await _gateway.setLoopModeOff();
+      } on Object {
+        // Best-effort: see comment above.
+      }
       resolvedDuration = await _gateway.loadFile(filePath);
     } on AudioPlaybackException {
       _clearActiveSession();

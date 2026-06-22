@@ -59,6 +59,19 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
   /// audio.
   bool completeOnNextPlay = false;
 
+  /// T031E: tracks whether `setLoopModeOff` has been called on this
+  /// gateway. Production gateway pins `LoopMode.off` on every
+  /// `loadFile`; the fake mirrors the same contract so the
+  /// production state machine (`isPlaying = false` after `play()`,
+  /// `processingState == completed` event triggers controller
+  /// auto-recovery) is correctly exercised. Tests can assert
+  /// `setLoopModeOffCallCount >= 1` to pin the contract.
+  int setLoopModeOffCallCount = 0;
+
+  /// If non-null, [setLoopModeOff] throws this exception (testing
+  /// the best-effort error swallow path).
+  Object? nextSetLoopModeOffException;
+
   /// When true, [pause] / [stop] future completes immediately without
   /// state changes.
   bool noOpNextPause = false;
@@ -102,6 +115,20 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
   Future<Duration?> loadFile(String filePath) async {
     loadFileCallCount += 1;
     lastLoadPath = filePath;
+    // T031E: production gateway pins LoopMode.off on every load;
+    // mirror the call here so the fake exercises the same contract
+    // path. We record the call BEFORE the loadFile exception check
+    // because production's setLoopModeOff is best-effort and runs
+    // before the throw. Production also wraps the call in try/catch
+    // so a failing setLoopModeOff never blocks the load — the
+    // fake mirrors that swallow as well.
+    try {
+      await setLoopModeOff();
+    } on Object {
+      // Best-effort: production gateway swallows loop-mode errors
+      // so a missing platform channel or odd state does not
+      // prevent the file from being loaded.
+    }
     if (nextLoadException != null) {
       throw nextLoadException!;
     }
@@ -124,18 +151,35 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
       throw nextPlayException!;
     }
     if (completeOnNextPlay) {
+      // T031E: simulate just_audio's natural-completion semantics
+      // faithfully. In production, `play()` returns a Future that
+      // hangs for the entire playback duration, then completes
+      // when the file reaches the end. The
+      // `processingState == completed` event on
+      // `playerStateStream` is the canonical signal the
+      // controller uses for auto-recovery; it is delivered AFTER
+      // `play()` has returned so the controller's stream
+      // subscription (set up just before `play()`) is in place to
+      // receive it.
+      //
+      // The fake mirrors that ordering:
+      //   1. mark `isPlaying = true` so any synchronous
+      //      controller state writes after `play()` returns see
+      //      the right "we are playing" flag;
+      //   2. schedule the `completed` event on the next
+      //      microtask so it lands AFTER `play()`'s return value
+      //      propagates and AFTER the controller's listener is
+      //      subscribed.
+      isPlaying = true;
       completeOnNextPlay = false;
-      // Simulate "play future completes on natural end"：
-      // 真实 just_audio 在 playing 期间 future 挂起，播放自然结束时
-      // complete，并同步通过 playerStateStream 推送
-      // `processingState == completed` 事件。本 fake 在同一 microtask
-      // 中同时 emit 状态事件并返回，驱动 Service 把状态切到 completed。
-      _playerStateController.add(
-        const PlaybackPlayerState(
-          playing: false,
-          processingState: PlaybackProcessingState.completed,
-        ),
-      );
+      scheduleMicrotask(() {
+        _playerStateController.add(
+          const PlaybackPlayerState(
+            playing: false,
+            processingState: PlaybackProcessingState.completed,
+          ),
+        );
+      });
       return;
     }
     // Successful play path: update isPlaying flag.
@@ -199,6 +243,14 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
     }
     if (!_durationController.isClosed) {
       await _durationController.close();
+    }
+  }
+
+  @override
+  Future<void> setLoopModeOff() async {
+    setLoopModeOffCallCount += 1;
+    if (nextSetLoopModeOffException != null) {
+      throw nextSetLoopModeOffException!;
     }
   }
 

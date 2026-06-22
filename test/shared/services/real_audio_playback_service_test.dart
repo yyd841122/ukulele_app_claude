@@ -550,8 +550,11 @@ void main() {
       await ctx.service.loadFile(path);
       ctx.gateway.completeOnNextPlay = true;
       await ctx.service.play();
-      // Just a microtask delay to allow the gateway-play future to
-      // propagate through then().
+      // T031E: the fake schedules the `completed` event on the
+      // next microtask so it lands AFTER `play()` returns. Two
+      // microtask drains are needed to flush the scheduleMicrotask
+      // and the resulting state stream emission.
+      await Future<void>.delayed(Duration.zero);
       await Future<void>.delayed(Duration.zero);
 
       expect(ctx.service.state, AudioPlaybackState.completed);
@@ -567,6 +570,9 @@ void main() {
       await ctx.service.loadFile(path);
       ctx.gateway.completeOnNextPlay = true;
       await ctx.service.play();
+      // T031E: drain two microtasks so the scheduleMicrotask that
+      // emits `completed` has a chance to run.
+      await Future<void>.delayed(Duration.zero);
       await Future<void>.delayed(Duration.zero);
       expect(ctx.service.state, AudioPlaybackState.completed);
 
@@ -577,6 +583,57 @@ void main() {
 
       expect(ctx.gateway.playCallCount, 2);
       expect(ctx.service.state, AudioPlaybackState.playing);
+      _cleanupRoot(root);
+    });
+
+    // T031E: pinned loop-mode contract test. Production gateway
+    // pins LoopMode.off on every loadFile; the service layer
+    // additionally calls setLoopModeOff defensively before
+    // loadFile. The fake gateway records the call count so the
+    // contract is testable.
+    test(
+        'T031E: loadFile pins LoopMode.off via gateway (setLoopModeOff '
+        'is invoked before the file is loaded)', () async {
+      final (:provider, :root) = _createIsolatedRoot();
+      final ctx = _buildService(provider, root);
+      await ctx.storage.ensureDirectories();
+      final String path = await _createM4AFile(ctx.tempDirectory, 'rec_lm');
+      ctx.gateway.nextLoadResult = const Duration(seconds: 5);
+      final int loopBefore = ctx.gateway.setLoopModeOffCallCount;
+      final int loadBefore = ctx.gateway.loadFileCallCount;
+
+      await ctx.service.loadFile(path);
+
+      // T031E: production `RealAudioPlaybackService.loadFile`
+      // calls `gateway.setLoopModeOff()` defensively, then
+      // `gateway.loadFile()` which internally also calls
+      // `setLoopModeOff()` again. So a single service.loadFile
+      // should drive the gateway's setLoopModeOff at least twice.
+      expect(ctx.gateway.setLoopModeOffCallCount,
+          greaterThanOrEqualTo(loopBefore + 2),
+          reason: 'T031E: loadFile must pin LoopMode.off on every invocation '
+              'to defend against just_audio default drift and previous-'
+              'session state leakage');
+      expect(ctx.gateway.loadFileCallCount, loadBefore + 1);
+      _cleanupRoot(root);
+    });
+
+    test(
+        'T031E: setLoopModeOff best-effort — gateway throw does not break '
+        'the loadFile path (playback service still loads the file)', () async {
+      final (:provider, :root) = _createIsolatedRoot();
+      final ctx = _buildService(provider, root);
+      await ctx.storage.ensureDirectories();
+      final String path = await _createM4AFile(ctx.tempDirectory, 'rec_lmf');
+      ctx.gateway.nextLoadResult = const Duration(seconds: 5);
+      ctx.gateway.nextSetLoopModeOffException =
+          StateError('synthetic loop mode failure');
+
+      // The service must still successfully load the file even if
+      // setLoopModeOff throws (best-effort contract).
+      await ctx.service.loadFile(path);
+
+      expect(ctx.service.state, AudioPlaybackState.ready);
       _cleanupRoot(root);
     });
   });
@@ -823,6 +880,9 @@ void main() {
       await ctx.service.loadFile(path);
       ctx.gateway.completeOnNextPlay = true;
       await ctx.service.play();
+      // T031E: drain two microtasks so the scheduleMicrotask
+      // that emits `completed` has a chance to run.
+      await Future<void>.delayed(Duration.zero);
       await Future<void>.delayed(Duration.zero);
       await ctx.service.stop();
       await ctx.service.dispose();

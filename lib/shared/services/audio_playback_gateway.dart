@@ -55,7 +55,17 @@ abstract class AudioPlaybackGateway {
   ///   初始化时自动播放文件"一致）；
   /// - **不**调用 `MicrophonePermissionGateway`；
   /// - **不**声明 / 触发 `INTERNET` 权限（仅本地 file:// 路径）。
+  /// - **必须**显式 `setLoopMode(LoopMode.off)` 以保证
+  ///   "播放一次、到达末尾自然停止、不循环"契约（详见 T031E）。
   Future<Duration?> loadFile(String filePath);
+
+  /// 显式设置 `LoopMode.off`（不循环）— T031E 强制契约。
+  ///
+  /// - 调用方可以在 `loadFile` 之外显式调用以重置之前的状态；
+  /// - 默认实现内部用 `setLoopMode(LoopMode.off)`；
+  /// - 失败被吞掉（best-effort），但调用方应保证在加载时已
+  ///   显式调用了一次。
+  Future<void> setLoopModeOff();
 
   /// 启动播放；如未加载文件则抛异常。
   ///
@@ -166,8 +176,31 @@ class PackageJustAudioPlaybackGateway implements AudioPlaybackGateway {
   final AudioPlayer _player;
 
   @override
-  Future<Duration?> loadFile(String filePath) {
+  Future<Duration?> loadFile(String filePath) async {
+    // T031E: explicitly pin LoopMode.off on every load. just_audio
+    // defaults to LoopMode.off, but: (a) we MUST NOT rely on a
+    // default that lives in a third-party package, (b) some
+    // platforms / earlier sessions may leave the player in
+    // LoopMode.one. Pinning it here makes the "play once, stop at
+    // the end" contract explicit and testable. Errors from
+    // setLoopMode are non-fatal — if it fails the file is still
+    // loaded and the natural-completion recovery in the controller
+    // will still flip isPlaying to false on the completed event.
+    try {
+      await _player.setLoopMode(LoopMode.off);
+    } on Object {
+      // Best-effort: see comment above.
+    }
     return _player.setFilePath(filePath);
+  }
+
+  @override
+  Future<void> setLoopModeOff() async {
+    try {
+      await _player.setLoopMode(LoopMode.off);
+    } on Object {
+      // Best-effort: see comment above.
+    }
   }
 
   @override

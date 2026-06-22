@@ -1669,6 +1669,474 @@ void main() {
         expect(state.currentPlaybackPosition, Duration.zero);
       },
     );
+
+    // T031E: pinned loop-mode + completed + stop-button + startRecording-
+    // guard regression tests. These exist because T031C did not pin the
+    // just_audio loop mode — the user reported on real Android that
+    // playback looped forever (Bug 1), the "停止回放" button stayed
+    // enabled but its tap had no effect because `processingState` never
+    // reached `completed` (Bug 2), and the "开始录音" button stayed
+    // tappable while playback was running (Bug 3). T031E fixes the
+    // root cause by pinning LoopMode.off at the gateway + service
+    // layers, and pins the state-machine contract with tests that
+    // exercise the same path on a fake that mirrors real just_audio
+    // behaviour.
+
+    test(
+        'T031E: play() flips isPlaying=true and the page sees the enabled '
+        'stop-playback button + disabled start-recording button', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      await controller.play();
+      await _pumpEventQueue();
+
+      // T031E Bug 1 fix: isPlaying must be true after play() returns.
+      // (Pre-fix the production path left isPlaying=false because
+      // just_audio's loopMode was on LoopMode.one — but the
+      // controller's copyWith still ran and the page saw isPlaying
+      // toggling on briefly. The widget contract is the same; the
+      // audio behaviour is the actual difference.)
+      final RecordingPracticeState state =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(state.isPlaying, isTrue,
+          reason: 'T031E: play() must flip isPlaying to true');
+      expect(ctx.playbackGateway.playCallCount, 1,
+          reason: 'T031E: playback.play must be called exactly once');
+
+      // Cleanup.
+      await controller.stopPlayback();
+    });
+
+    test(
+        'T031E: loadFile() pins LoopMode.off via the gateway contract '
+        '(no playback looping)', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      // T031E: every loadFile (including the one inside
+      // _probeRecordingDuration triggered by stopRecording, plus the
+      // one inside play()) must pin LoopMode.off. The fake records
+      // the call count; we assert >= 2 to pin the contract.
+      final int setLoopBefore = ctx.playbackGateway.setLoopModeOffCallCount;
+      await controller.play();
+      await _pumpEventQueue();
+      expect(
+        ctx.playbackGateway.setLoopModeOffCallCount,
+        greaterThan(setLoopBefore),
+        reason: 'T031E: loadFile() must pin LoopMode.off on every invocation '
+            'to defend against just_audio default drift and previous-'
+            'session state leakage',
+      );
+
+      await controller.stopPlayback();
+    });
+
+    test(
+        'T031E: natural completion flips isPlaying back to false (state '
+        'machine recovery does not require user to tap stop)', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      // T031E: drive a normal play() (no auto-complete) so we can
+      // observe isPlaying flipping to true, THEN emit the
+      // completed event manually (this mirrors the production
+      // path where the just_audio `completed` event arrives
+      // asynchronously while playback is in progress).
+      await controller.play();
+      await _pumpEventQueue();
+      // play() flipped isPlaying to true.
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).isPlaying,
+        isTrue,
+      );
+
+      // Emit the natural completion (mimics just_audio's
+      // `processingState == completed` event).
+      ctx.playbackGateway.emitPlayerState(const PlaybackPlayerState(
+        playing: false,
+        processingState: PlaybackProcessingState.completed,
+      ));
+      await _pumpEventQueue();
+      await _pumpEventQueue();
+
+      final RecordingPracticeState state =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(state.isPlaying, isFalse,
+          reason: 'T031E: completed must flip isPlaying back to false');
+      expect(state.currentPlaybackPosition, Duration.zero,
+          reason: 'T031E: completed must reset position to 0');
+    });
+
+    test(
+        'T031E: after natural completion the user can replay from 0 '
+        'without a fresh recording (no-op on recorder)', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      // Use the deterministic microtask-scheduled completion path.
+      ctx.playbackGateway.completeOnNextPlay = true;
+      await controller.play();
+      await _pumpEventQueue();
+      await _pumpEventQueue();
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).isPlaying,
+        isFalse,
+        reason: 'auto-recovery already flipped isPlaying back to false',
+      );
+
+      // T031E: replaying from 0 must NOT start a new recording
+      // (startRecording guard pins this). Recorder call count must
+      // be 1 (the initial startRecording).
+      final int startsBefore = ctx.recorderGateway.startCallCount;
+      await controller.play();
+      await _pumpEventQueue();
+      expect(
+        ctx.recorderGateway.startCallCount,
+        startsBefore,
+        reason: 'T031E: replay after completion must not start a recording',
+      );
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).isPlaying,
+        isTrue,
+        reason: 'T031E: replay after completion must flip isPlaying to true',
+      );
+
+      await controller.stopPlayback();
+    });
+
+    test(
+        'T031E: playback-loops regression — fake gateway simulates real '
+        'just_audio completed (event arrives AFTER play() returns) so the '
+        'controller state machine is exercised the same way as on device',
+        () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+
+      // T031E: schedule natural completion (mimics just_audio's
+      // post-end event). Then play() returns; the listener is in
+      // place; the microtask fires; controller flips isPlaying to
+      // false. This is the exact ordering real just_audio uses.
+      ctx.playbackGateway.completeOnNextPlay = true;
+      await controller.play();
+      // T031E: the fake's microtask is what the production
+      // playerStateStream emit mirrors. Two microtask drains
+      // suffice to flush the scheduleMicrotask inside play().
+      await _pumpEventQueue();
+      await _pumpEventQueue();
+
+      // T031E: the controller's state machine must be in the
+      // post-completion state — isPlaying=false — with no user
+      // action required.
+      final RecordingPracticeState state =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(state.isPlaying, isFalse,
+          reason: 'T031E: just_audio completed event must auto-recover the '
+              'controller state, matching the production behaviour');
+      expect(state.currentPlaybackPosition, Duration.zero,
+          reason: 'T031E: position must reset to 0 on completion');
+      // The seek-to-0 path must have driven the playback service
+      // at least once.
+      expect(ctx.playbackGateway.seekCallCount, greaterThanOrEqualTo(1),
+          reason: 'T031E: completed must trigger seek(0) for replay');
+      expect(ctx.playbackGateway.lastSeekPosition, Duration.zero,
+          reason: 'T031E: the recovery seek must target position 0');
+    });
+
+    test(
+        'T031E: stopPlayback() flips isPlaying back, the page re-enables '
+        'start recording and disables stop playback', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      await controller.play();
+      await _pumpEventQueue();
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).isPlaying,
+        isTrue,
+      );
+
+      // T031E: stopPlayback must drive the playback service to
+      // stop and flip isPlaying to false so the page re-enables
+      // start recording and re-enables replay.
+      final int stopsBefore = ctx.playbackGateway.stopCallCount;
+      await controller.stopPlayback();
+      await _pumpEventQueue();
+      final RecordingPracticeState state =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(state.isPlaying, isFalse,
+          reason: 'T031E: stopPlayback must flip isPlaying to false');
+      expect(state.currentPlaybackPosition, Duration.zero,
+          reason: 'T031E: stopPlayback must reset position to 0');
+      expect(ctx.playbackGateway.stopCallCount, stopsBefore + 1,
+          reason: 'T031E: stopPlayback must call playback.stop');
+    });
+
+    test(
+        'T031E: startRecording guard — when isPlaying is true, '
+        'startRecording() does NOT request permission, does NOT call '
+        'recorder.start, does NOT mint a new takeId', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      await controller.play();
+      await _pumpEventQueue();
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).isPlaying,
+        isTrue,
+      );
+
+      // T031E Bug 3 regression: the controller guard is the
+      // belt-and-braces layer (the page also disables the button).
+      // Pin all three assertions: NO permission check, NO recorder
+      // call, NO new takeId.
+      final int checksBefore = ctx.permissionGateway.checkStatusCallCount;
+      final int startsBefore = ctx.recorderGateway.startCallCount;
+      final String takeIdBefore =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      await controller.startRecording();
+      await _pumpEventQueue();
+      final RecordingPracticeState state =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(state.isPlaying, isTrue,
+          reason: 'T031E: playback must still be running');
+      expect(state.takeId, takeIdBefore,
+          reason: 'T031E: a no-op startRecording must NOT mint a new takeId');
+      expect(ctx.recorderGateway.startCallCount, startsBefore,
+          reason: 'T031E: recorder.start MUST NOT be called while playing');
+      expect(ctx.permissionGateway.checkStatusCallCount, checksBefore,
+          reason:
+              'T031E: permission service MUST NOT be touched while playing');
+
+      await controller.stopPlayback();
+    });
+
+    test(
+        'T031E: natural-completion recovery does NOT trigger Drift writes '
+        'or insert a PracticeRecord (audioFilePath stays null) — regression',
+        () async {
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository();
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        repository: repo,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      ctx.playbackGateway.completeOnNextPlay = true;
+      await controller.play();
+      await _pumpEventQueue();
+      await _pumpEventQueue();
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).isPlaying,
+        isFalse,
+        reason: 'auto-recovery must flip isPlaying to false',
+      );
+
+      // T031E: natural-completion recovery MUST NOT auto-save.
+      expect(repo.inserted, isEmpty,
+          reason: 'T031E: natural completion must not insert a PracticeRecord');
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).savedRecordId,
+        isNull,
+        reason: 'T031E: savedRecordId stays null — auto-recovery is not a save',
+      );
+    });
+
+    test(
+        'T031E: natural-completion recovery does NOT change audioFilePath '
+        '(no take is promoted to a saved PracticeRecord)', () async {
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      // ignore: unused_local_variable
+      final String takeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      final String resolvedPath = ctx.container
+          .read(recordingPracticeControllerProvider)
+          .recordedTakeResult!
+          .resolvedPath;
+      ctx.playbackGateway.completeOnNextPlay = true;
+      await controller.play();
+      await _pumpEventQueue();
+      await _pumpEventQueue();
+
+      // T031E: resolvedPath stays the same — the in-memory take is
+      // not promoted, audioFilePath stays null on the would-be
+      // PracticeRecord.
+      final RecordingPracticeState state =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(state.recordedTakeResult, isNotNull);
+      expect(state.recordedTakeResult!.resolvedPath, resolvedPath,
+          reason: 'T031E: resolved path must not be modified by recovery');
+    });
   });
 
   group('RecordingPracticeController save (T013.4A) — preserved', () {

@@ -671,6 +671,11 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
     }
     state = state.copyWith(clearLastError: true);
     try {
+      // T031E: loadFile is responsible for pinning LoopMode.off
+      // at the gateway layer (see AudioPlaybackGateway.loadFile
+      // contract). The defensive setLoopModeOff call in
+      // RealAudioPlaybackService.loadFile covers any future
+      // gateway swap.
       await _playback.loadFile(result.resolvedPath);
       if (_disposed || !ref.mounted) {
         return;

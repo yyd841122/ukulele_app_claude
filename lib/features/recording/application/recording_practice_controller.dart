@@ -1,4 +1,4 @@
-// Riverpod controller for the recording practice flow (T012 + T013.4A + T031 + T031C).
+// Riverpod controller for the recording practice flow (T012 + T013.4A + T031 + T031C + T033).
 //
 // Design notes (T031 - real audio state machine integration):
 //
@@ -9,10 +9,24 @@
 //   [RealAudioPlaybackService] (T030) plus
 //   [MicrophonePermissionService] (T027). The save flow, the
 //   rating / note metadata, and the [PracticeRecord] write path
-//   remain UNCHANGED — T031 only swaps the recording + playback
-//   engines and the duration / position source. The save flow
-//   still hard-codes `audioFilePath: null` because T032 (Drift
-//   schema migration) is out of scope here.
+//   remain UNCHANGED for the engine swap.
+//
+// - T033 connects the real audio path to the persisted
+//   [PracticeRecord]: the in-memory take's
+//   [AudioRecorderTakeResult.resolvedPath] is now written
+//   verbatim into [PracticeRecord.audioFilePath] by
+//   [saveCurrentTake]. The path is taken straight from the
+//   recorder service's successful `stop()` result (which is
+//   already cross-checked against the requested path inside
+//   [RealAudioRecorderService] via `_pathsEqual`); the
+//   controller does NOT normalise, reformat, or recompute the
+//   string. When the recorder did not produce a usable
+//   resolved path (no take yet, or the in-flight take was
+//   discarded / failed) the field is `null` — the same
+//   pre-T033 contract. The repository layer
+//   ([DriftPracticeRecordRepository.insert]) already persists
+//   `audioFilePath` verbatim; no schema / migration change is
+//   required (schemaVersion is still 2 from T032).
 //
 // - The simulated [Timer.periodic] clock has been REMOVED. Position
 //   during recording is derived from [AudioRecorderTakeResult] only
@@ -127,11 +141,14 @@
 //   setSelfRating / setNote   ->  no-op while isRecording / isPlaying
 //                                 / isSaving / isCheckingPermission
 //                                 or after isSaved == true
-//   saveCurrentTake           ->  unchanged: writes a
-//                                 PracticeRecord with
-//                                 audioFilePath = null and
-//                                 durationSeconds =
-//                                 recordedDurationSeconds
+//   saveCurrentTake           ->  T033: writes a PracticeRecord
+//                                 with audioFilePath sourced
+//                                 verbatim from
+//                                 recordedTakeResult.resolvedPath
+//                                 (null when no usable take is
+//                                 held) and durationSeconds =
+//                                 recordedDurationSeconds. Repository
+//                                 persists the value verbatim.
 //
 //   dispose                   ->  cancels stream subscriptions,
 //                                 calls recorder / playback
@@ -794,7 +811,7 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
   }
 
   // ---------------------------------------------------------------------------
-  // Save flow — UNCHANGED from T013.4A
+  // Save flow — T013.4A + T033
   // ---------------------------------------------------------------------------
 
   /// Restores the initial state and clears the self-rating + note
@@ -861,10 +878,16 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
   ///   [PracticeRecordRepository] threw.
   ///
   /// The save is NOT executed by `startRecording` / `reset` —
-  /// the user must tap the save button explicitly. The persisted
-  /// `audioFilePath` is `null` because T032 (Drift schema
-  /// migration) has not landed; T031 explicitly does NOT
-  /// promote the in-memory take to the `PracticeRecord`.
+  /// the user must tap the save button explicitly.
+  ///
+  /// T033: the persisted `audioFilePath` is sourced verbatim
+  /// from [state.recordedTakeResult]'s `resolvedPath` when a
+  /// usable take is held in memory. When no successful take is
+  /// currently held (no recording yet, or the most recent
+  /// in-flight take failed / was discarded) the field is
+  /// `null` — the pre-T033 contract. The string is taken
+  /// AS-IS from the recorder service: the controller does not
+  /// reformat, normalise, or recompute the path.
   Future<SaveRecordingResult> saveCurrentTake() async {
     if (_disposed) {
       return SaveRecordingResult.ignored;
@@ -904,6 +927,15 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
       PracticeTag.recording,
       if (snapshot.selfRating != null) PracticeTag.selfAssessment,
     ];
+    // T033: source the audio path from the in-memory take result.
+    // The recorder service guarantees that `resolvedPath` is
+    // byte-equivalent to the requested path (cross-checked via
+    // `_pathsEqual` inside `RealAudioRecorderService.stop`).
+    // Using `?.resolvedPath` is intentional — when no usable
+    // take is held in memory the field stays `null`, matching
+    // the pre-T033 contract for the canSave=false / no-take
+    // case. The repository persists the value verbatim.
+    final String? resolvedAudioPath = snapshot.recordedTakeResult?.resolvedPath;
     final PracticeRecord record = PracticeRecord(
       id: snapshotTakeId,
       practiceDate: dayContext.today,
@@ -914,13 +946,19 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
       durationSeconds: snapshot.recordedDurationSeconds,
       isCompleted: true,
       selfAssessment: mapSelfRatingToSelfAssessment(snapshot.selfRating),
-      audioFilePath: null,
+      audioFilePath: resolvedAudioPath,
       createdAt: now,
       updatedAt: now,
     );
     try {
       await repository.insert(record);
     } catch (_) {
+      // T033: failure path keeps the current take + path in
+      // memory so the user can retry with the same resolved
+      // path. We do NOT clear `recordedTakeResult`, do NOT
+      // change the audio path, and do NOT touch the audio file
+      // on disk. The existing `isSaving: false` reset is the
+      // same T013.4A contract.
       if (ref.mounted) {
         state = state.copyWith(isSaving: false);
       }

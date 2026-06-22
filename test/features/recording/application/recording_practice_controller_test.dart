@@ -3155,8 +3155,14 @@ void main() {
       final PracticeRecord saved = repo.inserted.single;
       expect(saved.id, expectedTakeId);
       expect(saved.durationSeconds, 3);
-      expect(saved.audioFilePath, isNull,
-          reason: 'T031 explicitly does NOT promote take to PracticeRecord');
+      // T033: the resolved path from the recorder service is
+      // persisted verbatim on the PracticeRecord. The string
+      // is taken AS-IS from the in-memory recordedTakeResult
+      // — no normalisation, no recomputation, no substring
+      // rewrite. Equality is exact (==), not contains / matches.
+      expect(saved.audioFilePath, path,
+          reason: 'T033: saveCurrentTake must persist the resolved path '
+              'verbatim from recordedTakeResult.resolvedPath');
       expect(saved.selfAssessment, SelfAssessment.good);
     });
 
@@ -3178,6 +3184,8 @@ void main() {
       final String takeId =
           ctx.container.read(recordingPracticeControllerProvider).takeId!;
       final String path = ctx.recorderGateway.lastStartPath!;
+      // Write a real file so the playback service's _validatePath
+      // passes during the post-stop duration probe.
       final File f = File(path);
       await f.create(recursive: true);
       await f.writeAsString('fake m4a');
@@ -3190,7 +3198,10 @@ void main() {
       expect(result, SaveRecordingResult.success);
       final PracticeRecord saved = repo.inserted.single;
       expect(saved.practiceTags, <PracticeTag>[PracticeTag.recording]);
-      expect(saved.audioFilePath, isNull);
+      // T033: the audio path is persisted verbatim, independent
+      // of whether the user supplied a self-rating.
+      expect(saved.audioFilePath, path,
+          reason: 'T033: missing self-rating must not affect the audio path');
     });
 
     test('save without a valid take is ignored', () async {
@@ -3341,6 +3352,530 @@ void main() {
       final PracticeRecord saved = repo.inserted.single;
       expect(saved.createdAt, pinnedNow);
       expect(saved.updatedAt, pinnedNow);
+    });
+
+    // -------------------------------------------------------------------
+    // T033: persist recorded audio path with PracticeRecord.
+    //
+    // The pre-T033 controller wrote `audioFilePath: null` to
+    // every record. T033 sources the path verbatim from
+    // `state.recordedTakeResult.resolvedPath`, so:
+    //   - a successful take → audioFilePath equals the resolved
+    //     path byte-for-byte (no normalisation, no
+    //     recomputation, no substring rewrite);
+    //   - a missing / failed take → audioFilePath stays null
+    //     (same pre-T033 contract);
+    //   - a new take must NOT inherit a previous take's path;
+    //   - save failure must keep the in-memory take + path so
+    //     the user can retry;
+    //   - save success is not re-triggered (canSave is
+    //     blocked by isSaved → no duplicate rows);
+    //   - natural playback completion must not blow away the
+    //     pending save.
+    // -------------------------------------------------------------------
+
+    test(
+        'T033: saveCurrentTake persists the resolved path verbatim from '
+        'recordedTakeResult (no normalisation, no recomputation)', () async {
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository();
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        repository: repo,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      final String path = ctx.recorderGateway.lastStartPath!;
+      // Sanity: the path is the verbatim string the recorder
+      // service's createTempFile produced — keep a copy so we
+      // can assert the persisted value is byte-equivalent.
+      expect(path, isNotEmpty);
+      final String expectedPath = path;
+
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+      await controller.stopRecording();
+      await _pumpEventQueue();
+
+      final SaveRecordingResult result = await controller.saveCurrentTake();
+      expect(result, SaveRecordingResult.success,
+          reason: 'happy path: real recording -> save -> success');
+      expect(repo.inserted.length, 1,
+          reason: 'T033: one save => exactly one persisted record');
+      final PracticeRecord saved = repo.inserted.single;
+
+      // T033 #1 + #2 + #11: path is verbatim, not null, not
+      // normalised. Self-rating / note / duration / dayIndex
+      // are unchanged from the pre-T033 contract.
+      expect(saved.audioFilePath, expectedPath,
+          reason: 'T033: audioFilePath must equal resolvedPath verbatim');
+      expect(saved.audioFilePath, isNot(isNull),
+          reason: 'T033: a successful take must persist a non-null path');
+      expect(
+        saved.audioFilePath,
+        ctx.container
+            .read(recordingPracticeControllerProvider)
+            .recordedTakeResult!
+            .resolvedPath,
+        reason: 'T033: the persisted value must come from the in-memory take, '
+            'identical to the controller\'s recordedTakeResult.resolvedPath',
+      );
+      expect(saved.durationSeconds, 2,
+          reason: 'T033: duration field must not regress');
+      expect(saved.practiceDate, _kTestToday);
+      expect(saved.dayIndex, _kTestDayIndex);
+    });
+
+    test(
+        'T033: saveCurrentTake without a usable take leaves audioFilePath '
+        'null (no fake fabrication)', () async {
+      // T033 #3 / 空路径兼容: never-recorded flow must still
+      // be safe — the controller returns `ignored` (canSave is
+      // false) and the repository is not touched. Even if the
+      // user manually drove a `save` with no take, the field
+      // would be null (state.recordedTakeResult is null).
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository();
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        repository: repo,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+
+      // Never call startRecording — there is no take in memory.
+      final SaveRecordingResult result = await controller.saveCurrentTake();
+      expect(result, SaveRecordingResult.ignored);
+      expect(repo.inserted, isEmpty,
+          reason: 'T033: no take => no record is written');
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).canSave,
+        isFalse,
+        reason: 'T033: canSave must be false with no take in memory',
+      );
+      expect(
+        ctx.container
+            .read(recordingPracticeControllerProvider)
+            .recordedTakeResult,
+        isNull,
+        reason: 'T033: state has no recordedTakeResult — any future save '
+            'would write audioFilePath=null',
+      );
+    });
+
+    test(
+        'T033: recorder.start failure on a SECOND take does NOT leak the '
+        'previous take path into a persisted record', () async {
+      // T033 #4: 录音启动失败后,即使前一次录音成功,新一次录音
+      // 启动失败时也不能把上一 take 的路径错挂在新 take 上.
+      // 通过 startRecording 的 clearRecordedTakeResult 路径
+      // 保证 hasRecording=false / recordedTakeResult=null, 后续
+      // save 走 ignored, 不会写出旧路径.
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository();
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        repository: repo,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+
+      // First take — succeeds. We are NOT going to save it.
+      await controller.startRecording();
+      await _pumpEventQueue();
+      final String firstPath = ctx.recorderGateway.lastStartPath!;
+      final File f1 = File(firstPath);
+      await f1.create(recursive: true);
+      await f1.writeAsString('fake m4a #1');
+      ctx.recorderGateway.nextStopResult = _stopPath(firstPath);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 1);
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      expect(
+        ctx.container
+            .read(recordingPracticeControllerProvider)
+            .recordedTakeResult!
+            .resolvedPath,
+        firstPath,
+      );
+
+      // Second start — fails. The first take's path must NOT be
+      // re-attached to a would-be saved record.
+      ctx.recorderGateway.nextStartException =
+          StateError('synthetic recorder start failure');
+      await controller.startRecording();
+      await _pumpEventQueue();
+      final RecordingPracticeState afterStart =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(afterStart.isRecording, isFalse,
+          reason: 'recorder.start failure must flip isRecording back to false');
+      expect(afterStart.hasRecording, isFalse,
+          reason: 'T033: a failed start must clear hasRecording, even when '
+              'the previous take was successful');
+      expect(
+        afterStart.recordedTakeResult,
+        isNull,
+        reason: 'T033: a failed start must clear the previous take\'s path',
+      );
+      expect(afterStart.canSave, isFalse,
+          reason: 'T033: canSave must stay false — no path can be saved');
+
+      // save must be ignored, repo must stay empty (no leak of
+      // the first take's path).
+      final SaveRecordingResult result = await controller.saveCurrentTake();
+      expect(result, SaveRecordingResult.ignored);
+      expect(repo.inserted, isEmpty,
+          reason: 'T033: a failed second start must not produce a record '
+              'containing the first take\'s path');
+    });
+
+    test(
+        'T033: recorder.stop failure does NOT save a stale or invalid path '
+        '(canSave stays false)', () async {
+      // T033 #5: 录音停止失败后, hasRecording=false ⇒ canSave=false ⇒
+      // 保存不会写入任何路径. 旧 take 的路径也不会"穿越"到一个
+      // 失败的新 take 上.
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository();
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        recorder: (b) =>
+            b..nextStopException = StateError('synthetic stop failure'),
+        repository: repo,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      final RecordingPracticeState afterStop =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(afterStop.isRecording, isFalse);
+      expect(afterStop.hasRecording, isFalse,
+          reason: 'recorder.stop failure must NOT flip hasRecording to true');
+      expect(afterStop.canSave, isFalse,
+          reason: 'T033: canSave must stay false after a stop failure');
+
+      final SaveRecordingResult result = await controller.saveCurrentTake();
+      expect(result, SaveRecordingResult.ignored);
+      expect(repo.inserted, isEmpty,
+          reason: 'T033: a failed stop must not leak the previous path '
+              'into a new record');
+    });
+
+    test(
+        'T033: re-recording does NOT reuse the previous take path (only the '
+        'current take is persisted)', () async {
+      // T033 #6 + #7: 新 take 不会复用上一 take 路径, 多次录音
+      // 只保存当前 take 路径. 第二次 stopRecording 用了一个完全
+      // 不同的 temp 路径, 断言 save 写入的 path 与第二次
+      // recorder.start 返回的路径 byte-equal,与第一次的 path
+      // 严格不同.
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository();
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        repository: repo,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+
+      // First take.
+      await controller.startRecording();
+      await _pumpEventQueue();
+      final String firstPath = ctx.recorderGateway.lastStartPath!;
+      final File f1 = File(firstPath);
+      await f1.create(recursive: true);
+      await f1.writeAsString('fake m4a #1');
+      ctx.recorderGateway.nextStopResult = _stopPath(firstPath);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 1);
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      expect(
+        ctx.container
+            .read(recordingPracticeControllerProvider)
+            .recordedTakeResult!
+            .resolvedPath,
+        firstPath,
+      );
+
+      // Second take — must mint a new takeId + a new temp file.
+      await controller.startRecording();
+      await _pumpEventQueue();
+      final String secondPath = ctx.recorderGateway.lastStartPath!;
+      expect(secondPath, isNot(equals(firstPath)),
+          reason: 'T033: the recorder service must allocate a fresh temp file '
+              'for the second take');
+      final File f2 = File(secondPath);
+      await f2.create(recursive: true);
+      await f2.writeAsString('fake m4a #2');
+      ctx.recorderGateway.nextStopResult = _stopPath(secondPath);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 3);
+      await controller.stopRecording();
+      await _pumpEventQueue();
+
+      final SaveRecordingResult result = await controller.saveCurrentTake();
+      expect(result, SaveRecordingResult.success);
+      expect(repo.inserted.length, 1,
+          reason: 'T033: one save must persist exactly one record');
+      final PracticeRecord saved = repo.inserted.single;
+      expect(saved.audioFilePath, secondPath,
+          reason: 'T033: the persisted path must be the CURRENT take path, '
+              'not the previous take');
+      expect(saved.audioFilePath, isNot(equals(firstPath)),
+          reason: 'T033: the previous take path must NOT leak into the new '
+              'record');
+    });
+
+    test(
+        'T033: natural playback completion does NOT wipe the current path — '
+        'the user can still save the take', () async {
+      // T033 #8: 播放自然完成后 recordedTakeResult / hasRecording 仍
+      // 保留, 路径完整可供 save 使用.
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository();
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        repository: repo,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 4);
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      final String expectedPath = ctx.container
+          .read(recordingPracticeControllerProvider)
+          .recordedTakeResult!
+          .resolvedPath;
+      expect(expectedPath, path);
+
+      // Replay with a microtask-scheduled completion.
+      ctx.playbackGateway.completeOnNextPlay = true;
+      await controller.play();
+      await _pumpEventQueue();
+      await _pumpEventQueue();
+      // T031I: completed flips isPlaying back, but the in-memory
+      // take is preserved — the user can still save.
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).isPlaying,
+        isFalse,
+      );
+      expect(
+        ctx.container
+            .read(recordingPracticeControllerProvider)
+            .recordedTakeResult,
+        isNotNull,
+        reason: 'T033: natural completion must not clear the take',
+      );
+      expect(
+        ctx.container.read(recordingPracticeControllerProvider).canSave,
+        isTrue,
+        reason: 'T033: canSave must remain true after natural completion',
+      );
+
+      final SaveRecordingResult result = await controller.saveCurrentTake();
+      expect(result, SaveRecordingResult.success);
+      expect(repo.inserted.single.audioFilePath, expectedPath,
+          reason: 'T033: save after natural completion must persist the '
+              'still-held resolved path');
+    });
+
+    test(
+        'T033: repository save failure keeps the in-memory take + path so the '
+        'user can retry with the same audio file', () async {
+      // T033 #9: Repository 抛错时, 不得伪装成功, 不得把路径改回
+      // null, 不得删文件, 必须保留可重试状态. 后续 retry 应当
+      // 使用完全相同的 path / takeId.
+      final _FakePracticeRecordRepository repo = _FakePracticeRecordRepository()
+        ..throwOnInsert = StateError('synthetic insert failure');
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        repository: repo,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      final String expectedPath = ctx.container
+          .read(recordingPracticeControllerProvider)
+          .recordedTakeResult!
+          .resolvedPath;
+
+      // First attempt — fails.
+      final SaveRecordingResult firstAttempt =
+          await controller.saveCurrentTake();
+      expect(firstAttempt, SaveRecordingResult.failure);
+      final RecordingPracticeState afterFail =
+          ctx.container.read(recordingPracticeControllerProvider);
+      expect(afterFail.isSaving, isFalse,
+          reason: 'T033: a save failure must clear isSaving so the user can '
+              'retry');
+      expect(afterFail.isSaved, isFalse,
+          reason: 'T033: savedRecordId must stay null on failure');
+      expect(afterFail.canSave, isTrue,
+          reason: 'T033: canSave must stay true so the user can retry');
+      expect(
+        afterFail.recordedTakeResult!.resolvedPath,
+        expectedPath,
+        reason: 'T033: failure must not clear the in-memory take / path',
+      );
+      // Sanity: the file is still on disk.
+      expect(File(expectedPath).existsSync(), isTrue,
+          reason: 'T033: failure must not touch the audio file on disk');
+      // The repository saw the failed attempt — but the file was
+      // not deleted by the controller.
+      expect(repo.inserted, isEmpty,
+          reason: 'T033: failed insert must not appear in the repo');
+
+      // Retry — must succeed with the same path / takeId.
+      repo.throwOnInsert = null;
+      final SaveRecordingResult retry = await controller.saveCurrentTake();
+      expect(retry, SaveRecordingResult.success);
+      expect(repo.inserted.length, 1,
+          reason: 'T033: one successful retry => exactly one persisted record');
+      final PracticeRecord saved = repo.inserted.single;
+      expect(saved.audioFilePath, expectedPath,
+          reason: 'T033: retry must persist the same path verbatim');
+      expect(saved.id, afterFail.takeId,
+          reason: 'T033: retry must reuse the same takeId so the same logical '
+              'take is persisted, not a new one');
+    });
+
+    test(
+        'T033: a successful save cannot be re-triggered (no duplicate records, '
+        'no path re-use across saves)', () async {
+      // T033 #10: 保存成功后 isSaved 阻断再次保存, repo 不会出现
+      // 两条重复记录或路径错挂. 既有 isSaved 契约已由 canSave
+      // 体现, 本测试同时校验连续两次 saveCurrentTake 行为.
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository();
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        repository: repo,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 1);
+      await controller.stopRecording();
+      await _pumpEventQueue();
+
+      // First save.
+      final SaveRecordingResult first = await controller.saveCurrentTake();
+      expect(first, SaveRecordingResult.success);
+      expect(repo.inserted.length, 1);
+
+      // Second save — should be ignored (isSaved blocks canSave).
+      final SaveRecordingResult second = await controller.saveCurrentTake();
+      expect(second, SaveRecordingResult.ignored,
+          reason: 'T033: a successful save must not re-save');
+      expect(repo.inserted.length, 1,
+          reason: 'T033: re-save must not produce a duplicate record');
+      final PracticeRecord persisted = repo.inserted.single;
+      expect(persisted.audioFilePath, path,
+          reason: 'T033: the persisted record is still associated with the '
+              'original take path; no re-save mutation occurred');
+    });
+
+    test(
+        'T033: existing self-rating / note / duration / dayIndex fields are '
+        'preserved when the audio path is persisted', () async {
+      // T033 #11: 既有 selfRating / note / durationSeconds /
+      // practiceDate / dayIndex / tags 字段不因路径写入而退化.
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository();
+      final ctx = _buildContext(
+        permission: (b) =>
+            b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        repository: repo,
+      );
+      addTearDown(ctx.container.dispose);
+
+      final RecordingPracticeController controller =
+          ctx.container.read(recordingPracticeControllerProvider.notifier);
+      await controller.startRecording();
+      await _pumpEventQueue();
+      final String path = ctx.recorderGateway.lastStartPath!;
+      final File f = File(path);
+      await f.create(recursive: true);
+      await f.writeAsString('fake m4a');
+      ctx.recorderGateway.nextStopResult = _stopPath(path);
+      ctx.playbackGateway.nextLoadResult = const Duration(seconds: 7);
+      await controller.stopRecording();
+      await _pumpEventQueue();
+      controller.setSelfRating(SelfRating.okay);
+      controller.setNote('  录音路径保存回归测试  ');
+      final String expectedTakeId =
+          ctx.container.read(recordingPracticeControllerProvider).takeId!;
+
+      final SaveRecordingResult result = await controller.saveCurrentTake();
+      expect(result, SaveRecordingResult.success);
+      final PracticeRecord saved = repo.inserted.single;
+      expect(saved.id, expectedTakeId);
+      expect(saved.audioFilePath, path);
+      expect(saved.durationSeconds, 7);
+      expect(saved.selfAssessment, SelfAssessment.neutral,
+          reason:
+              'T033: SelfRating.okay must still map to SelfAssessment.neutral');
+      expect(saved.practiceContent, '录音路径保存回归测试',
+          reason: 'T033: note trimming contract preserved');
+      expect(saved.practiceDate, _kTestToday);
+      expect(saved.dayIndex, _kTestDayIndex);
+      expect(saved.practiceTags,
+          <PracticeTag>[PracticeTag.recording, PracticeTag.selfAssessment]);
+      expect(saved.isCompleted, isTrue);
     });
   });
 }

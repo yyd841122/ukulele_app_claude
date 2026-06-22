@@ -1,24 +1,25 @@
-// Recording practice page (T012 + T013.4A).
+// Recording practice page (T012 + T013.4A + T031).
 //
 // Scope:
 // - MVP / placeholder-style page that lets the user walk through
 //   the "record -> stop -> playback -> self-assess -> re-record ->
 //   save-as-PracticeRecord" loop entirely in-memory.
-// - NO microphone, NO audio bytes, NO permission prompt, NO file
-//   I/O — see the task brief §边界限制. The page text makes this
-//   very explicit so a user landing on it is not surprised that
-//   "录音" is actually a simulated flow.
+// - T031 wires the page to [RecordingPracticeController], which in
+//   turn drives [RealAudioRecorderService] /
+//   [RealAudioPlaybackService] / [MicrophonePermissionService].
+//   The page no longer pretends to be "simulated" — copy and
+//   disclaimer have been updated to reflect real microphone +
+//   real audio capture, with the save flow still hard-codes
+//   `audioFilePath: null` because T032 (Drift schema migration)
+//   has not landed. The page is therefore free to be honest
+//   about what the user is doing: they ARE recording through the
+//   microphone, the take IS held as a real .m4a on disk, but
+//   the take is NOT yet linked to a PracticeRecord on save.
 // - The widget tree is split into small private components
 //   (DisclaimerBanner / StatusCard / ElapsedDisplay / ControlRow
 //   / SelfRatingSelector / NoteField / ResetButton / SaveRecordButton)
 //   so this file stays short and each piece is independently
 //   testable via `find.byKey(...)`.
-//
-// T013.4A adds the "保存到练习记录" affordance. The button lives in
-// its own widget (`SaveRecordButton`) and the page only routes
-// taps through to the controller. All state-machine rules live in
-// the Controller — see
-// `lib/features/recording/application/recording_practice_controller.dart`.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -46,9 +47,10 @@ class RecordingPage extends ConsumerWidget {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: <Widget>[
-            // Disclaimer banner — required by the brief. Says
-            // explicitly that we do NOT call the microphone and do
-            // NOT save / play real audio.
+            // T031 disclaimer banner. Says explicitly that the
+            // page uses the real microphone, the take lives in
+            // the app's private storage, and saving into a
+            // PracticeRecord is still being rolled out (T032+).
             const DisclaimerBanner(),
             const SizedBox(height: 16),
             // Live status card.
@@ -128,8 +130,11 @@ class RecordingPage extends ConsumerWidget {
   }
 }
 
-/// Disclaimer banner — required by the brief, must clearly say the
-/// page does NOT touch the microphone / save audio / play audio.
+/// Disclaimer banner — required by T031. Says explicitly that
+/// the page uses the real microphone, that the take lives only
+/// in the current session, and that persisting the take into a
+/// PracticeRecord (so the saved record can replay the audio
+/// later) is still being rolled out by T032+.
 class DisclaimerBanner extends StatelessWidget {
   const DisclaimerBanner({super.key});
 
@@ -154,9 +159,9 @@ class DisclaimerBanner extends StatelessWidget {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              '当前版本是"录音回放流程练习版"。'
-              '不会调用麦克风，不会保存真实音频，也不会播放真实音频。'
-              '这里只用于帮助用户建立"录一遍、听一遍、自我评价"的练习流程。',
+              '本页使用本机麦克风录制练习片段。'
+              '录音暂存在本机，保存到练习记录将在后续步骤接入，'
+              '当前录音仅保存在本次会话中。',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSecondaryContainer,
               ),
@@ -263,16 +268,17 @@ class ElapsedDisplay extends StatelessWidget {
 
 /// Primary controls: start / stop / play / stop-playback.
 ///
-/// The enablement rules come straight from the brief:
-/// - `start` is disabled ONLY while a recording is already in
-///   progress OR while a save is in flight. Tapping it while the
-///   simulated playback is running is allowed and MUST stop
-///   playback + start a new take — the controller enforces the
-///   transition, the UI just routes (T012_FIX_RECORDING_PLAYBACK_START_BUTTON).
-/// - `stop` is disabled unless we are recording (and not saving).
-/// - `play` is disabled unless we have a take AND we are not
-///   recording AND we are not already playing AND we are not
-///   saving.
+/// The enablement rules come straight from the T031 brief:
+/// - `start` is disabled while a recording is in progress, while
+///   a permission check is in flight, while a save is in flight,
+///   or while playback is running. The controller is the
+///   belt-and-braces guard against
+///   `play || recording` mutual exclusion.
+/// - `stop` is disabled unless we are recording (and not
+///   saving / checking permission).
+/// - `play` is disabled unless we have a recorded take AND we
+///   are not recording AND we are not already playing AND we
+///   are not saving AND we are not checking permission.
 /// - `stop-playback` is disabled unless we are playing.
 class ControlRow extends StatelessWidget {
   const ControlRow({
@@ -286,16 +292,18 @@ class ControlRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // `start` is tappable as long as we are not already recording
-    // and not in the middle of a save — including during
-    // playback. The controller will stop playback and start a new
-    // take; the UI just has to expose the button.
-    final bool canStart = !state.isRecording && !state.isSaving;
+    final bool isCheckingPermission =
+        state.permission == RecordingPermissionStatus.checking;
+    final bool canStart = !state.isRecording &&
+        !state.isSaving &&
+        !state.isPlaying &&
+        !isCheckingPermission;
     final bool canStop = state.isRecording && !state.isSaving;
-    final bool canPlay = state.hasRecording &&
+    final bool canPlay = state.hasRecordedTake &&
         !state.isRecording &&
         !state.isPlaying &&
-        !state.isSaving;
+        !state.isSaving &&
+        !isCheckingPermission;
     final bool canStopPlayback = state.isPlaying && !state.isSaving;
 
     return Column(
@@ -306,16 +314,16 @@ class ControlRow extends StatelessWidget {
             Expanded(
               child: FilledButton.icon(
                 key: const ValueKey<String>('recording-start'),
-                onPressed: canStart ? controller.startRecording : null,
+                onPressed: canStart ? () => controller.startRecording() : null,
                 icon: const Icon(Icons.fiber_manual_record),
-                label: const Text('开始模拟录音'),
+                label: const Text('开始录音'),
               ),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: OutlinedButton.icon(
                 key: const ValueKey<String>('recording-stop'),
-                onPressed: canStop ? controller.stopRecording : null,
+                onPressed: canStop ? () => controller.stopRecording() : null,
                 icon: const Icon(Icons.stop),
                 label: const Text('停止录音'),
               ),
@@ -328,16 +336,17 @@ class ControlRow extends StatelessWidget {
             Expanded(
               child: FilledButton.tonalIcon(
                 key: const ValueKey<String>('recording-play'),
-                onPressed: canPlay ? controller.play : null,
+                onPressed: canPlay ? () => controller.play() : null,
                 icon: const Icon(Icons.play_arrow),
-                label: const Text('模拟回放'),
+                label: const Text('回放'),
               ),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: OutlinedButton.icon(
                 key: const ValueKey<String>('recording-stop-playback'),
-                onPressed: canStopPlayback ? controller.stopPlayback : null,
+                onPressed:
+                    canStopPlayback ? () => controller.stopPlayback() : null,
                 icon: const Icon(Icons.stop_circle_outlined),
                 label: const Text('停止回放'),
               ),
@@ -351,9 +360,9 @@ class ControlRow extends StatelessWidget {
 
 /// Secondary "重新录一遍" button. Clears the current take and goes
 /// back to the initial state. Disabled while a recording is in
-/// progress (the user must stop first), while a save is in flight
-/// (must NOT wipe the take being saved), or when nothing has been
-/// recorded yet (nothing to reset).
+/// progress (the user must stop first), while a save is in
+/// flight, or when nothing has been recorded yet (nothing to
+/// reset).
 class ResetButton extends StatelessWidget {
   const ResetButton({
     super.key,
@@ -368,7 +377,11 @@ class ResetButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final bool canReset = !state.isRecording &&
         !state.isSaving &&
-        (state.hasRecording || state.isPlaying);
+        (state.hasRecording ||
+            state.isPlaying ||
+            state.permission == RecordingPermissionStatus.denied ||
+            state.permission == RecordingPermissionStatus.permanentDenied ||
+            state.permission == RecordingPermissionStatus.restricted);
     return OutlinedButton.icon(
       key: const ValueKey<String>('recording-reset'),
       onPressed: canReset ? controller.reset : null,
@@ -383,8 +396,9 @@ class ResetButton extends StatelessWidget {
 /// Renders as a [SegmentedButton] so all three options are visible
 /// at once and tap targets are large.
 ///
-/// Disabled while recording, while saving, and after a successful
-/// save — the saved record is the source of truth.
+/// Disabled while recording, while saving, while checking
+/// permission, and after a successful save — the saved record
+/// is the source of truth.
 class SelfRatingSelector extends StatelessWidget {
   const SelfRatingSelector({
     super.key,
@@ -397,7 +411,12 @@ class SelfRatingSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bool disabled = state.isRecording || state.isSaving || state.isSaved;
+    final bool isCheckingPermission =
+        state.permission == RecordingPermissionStatus.checking;
+    final bool disabled = state.isRecording ||
+        state.isSaving ||
+        state.isSaved ||
+        isCheckingPermission;
     return SegmentedButton<SelfRating>(
       key: const ValueKey<String>('recording-self-rating'),
       segments: const <ButtonSegment<SelfRating>>[
@@ -423,9 +442,6 @@ class SelfRatingSelector extends StatelessWidget {
       onSelectionChanged: disabled
           ? null
           : (Set<SelfRating> selection) {
-              // SegmentedButton with multi=false (default) returns
-              // a set of size 0 or 1. Forward the single value
-              // (or null) to the controller.
               onChanged(selection.isEmpty ? null : selection.first);
             },
     );
@@ -433,12 +449,8 @@ class SelfRatingSelector extends StatelessWidget {
 }
 
 /// Multi-line free-form note field. Disabled while recording,
-/// while saving, and after a successful save.
-///
-/// Kept as a [StatefulWidget] so we own a single
-/// [TextEditingController] for the lifetime of this widget and do
-/// not fight the framework on selection / cursor position every
-/// time the parent rebuilds.
+/// while saving, while checking permission, and after a
+/// successful save.
 class NoteField extends StatefulWidget {
   const NoteField({
     super.key,
@@ -465,10 +477,6 @@ class _NoteFieldState extends State<NoteField> {
   @override
   void didUpdateWidget(covariant NoteField oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // If the controller's text no longer matches the state — e.g.
-    // because the user tapped "重新录一遍" and the state reset to
-    // empty — push the new value into the field. We do NOT push
-    // on every keystroke (the field already mirrors itself).
     if (widget.state.note != _controller.text) {
       _controller.value = TextEditingValue(
         text: widget.state.note,
@@ -486,9 +494,12 @@ class _NoteFieldState extends State<NoteField> {
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
+    final bool isCheckingPermission =
+        widget.state.permission == RecordingPermissionStatus.checking;
     final bool disabled = widget.state.isRecording ||
         widget.state.isSaving ||
-        widget.state.isSaved;
+        widget.state.isSaved ||
+        isCheckingPermission;
     return TextField(
       key: const ValueKey<String>('recording-note'),
       controller: _controller,

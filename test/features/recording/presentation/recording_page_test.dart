@@ -1,17 +1,18 @@
-// Tests for the [RecordingPage] widget (T012 + T013.4A).
+// Tests for the [RecordingPage] widget (T012 + T013.4A + T031).
 //
-// T012 scope (preserved):
+// T012 scope (preserved where compatible):
 // - Verify the page renders the app bar title, the disclaimer
-//   banner (with the three required points: no microphone, no
-//   audio save, no audio playback), the status card, the timer,
-//   all four primary controls, the secondary "重新录一遍" button,
-//   the self-rating selector, and the note field.
-// - Verify tapping "开始模拟录音" flips the status label and
-//   enables the stop button.
+//   banner (T031: real microphone, recording held in app private
+//   storage, save-to-PracticeRecord still being rolled out),
+//   the status card, the timer, all four primary controls, the
+//   secondary "重新录一遍" button, the self-rating selector, and
+//   the note field.
+// - Verify tapping "开始录音" flips the status label and enables
+//   the stop button.
 // - Verify tapping "停止录音" exposes the playback entry.
 // - Verify the self-rating selector and note field are visible.
 //
-// T013.4A scope:
+// T013.4A scope (preserved):
 // - The save button starts disabled, becomes enabled when a valid
 //   take exists, and shows "正在保存…" while in flight.
 // - A successful save flips the button to "已保存" and shows the
@@ -23,39 +24,62 @@
 //   disabled.
 // - After a successful save, rating and note are disabled but
 //   playback still works.
-// - The page never touches the microphone and never persists
-//   real audio (this is restated by the disclaimer banner test).
+//
+// T031 scope (NEW):
+// - Page MUST NOT display "模拟录音" / "不调用麦克风" /
+//   "不保存真实音频" / "不播放真实音频" — those phrases belong
+//   to the pre-T031 controller contract.
+// - Page renders the T031 disclaimer copy: "本页使用本机麦克风
+//   录制练习片段。录音暂存在本机，保存到练习记录将在后续步骤
+//   接入，当前录音仅保存在本次会话中。"
 //
 // Test strategy:
 // - All widget tests use a `ProviderContainer` whose
-//   `practiceRecordIdGeneratorProvider`,
+//   `audioFileStorageServiceProvider` /
+//   `realAudioRecorderServiceProvider` /
+//   `realAudioPlaybackServiceProvider` /
+//   `microphonePermissionServiceProvider` are overridden with
+//   production services wired to `FakeAudioRecorderGateway` /
+//   `FakeAudioPlaybackGateway` / `FakeMicrophonePermissionGateway`
+//   so the page never touches the real platform channels.
+// - `practiceRecordIdGeneratorProvider`,
 //   `practiceRecordRepositoryProvider`, `practiceDayResolverProvider`
-//   and `appClockProvider` are overridden with fakes so no real
-//   DB / clock is ever touched.
+//   and `appClockProvider` are also overridden with fakes so no
+//   real DB / clock is ever touched.
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 
 import 'package:ukulele_app/features/practice_records/application/practice_record_id_generator.dart';
 import 'package:ukulele_app/features/practice_records/data/practice_record_repository.dart';
 import 'package:ukulele_app/features/practice_records/data/practice_record_repository_provider.dart';
 import 'package:ukulele_app/features/practice_records/domain/practice_record.dart';
 import 'package:ukulele_app/features/practice_records/domain/practice_tag.dart';
-import 'package:ukulele_app/features/practice_records/domain/practice_type.dart';
 import 'package:ukulele_app/features/practice_records/domain/self_assessment.dart';
-import 'package:ukulele_app/features/recording/application/recording_practice_controller.dart';
-import 'package:ukulele_app/features/recording/domain/self_rating.dart';
 import 'package:ukulele_app/features/recording/presentation/recording_page.dart';
 import 'package:ukulele_app/shared/providers/app_clock_provider.dart';
+import 'package:ukulele_app/shared/providers/audio_file_storage_service_provider.dart';
+import 'package:ukulele_app/shared/providers/microphone_permission_service_provider.dart';
+import 'package:ukulele_app/shared/providers/real_audio_playback_service_provider.dart';
+import 'package:ukulele_app/shared/providers/real_audio_recorder_service_provider.dart';
+import 'package:ukulele_app/shared/services/audio_file_storage_service.dart';
+import 'package:ukulele_app/shared/services/microphone_permission_service.dart';
+import 'package:ukulele_app/shared/services/microphone_permission_status.dart';
 import 'package:ukulele_app/shared/services/practice_day_context.dart';
+import 'package:ukulele_app/shared/services/real_audio_playback_service.dart';
+import 'package:ukulele_app/shared/services/real_audio_recorder_service.dart';
 
-/// Sets a tall test surface so the whole page (disclaimer + status +
-/// timer + controls + rating + note field + save button) fits
-/// without scrolling.
+import '../../../shared/services/fake_audio_playback_gateway.dart';
+import '../../../shared/services/fake_audio_recorder_gateway.dart';
+import '../../../shared/services/fake_microphone_permission_gateway.dart';
+
+/// Sets a tall test surface so the whole page fits without scrolling.
 Future<void> _useTallSurface(WidgetTester tester) async {
   await tester.binding.setSurfaceSize(const Size(800, 2000));
   addTearDown(() async {
@@ -68,15 +92,53 @@ final DateTime _kTestNowUtc = DateTime.utc(2026, 6, 20, 9, 0, 0);
 final DateTime _kTestToday = DateTime(2026, 6, 20);
 const int _kTestDayIndex = 2;
 
-/// Returns a list of overrides that wire the controller against
-/// the supplied fake repository + resolver. `clock` defaults to
-/// the pinned `_kTestNowUtc` so every saved record is
-/// deterministic.
+int _rootCounter = 0;
+
+({Future<Directory> Function() rootProvider, Directory root}) _isolatedRoot() {
+  final Directory root = Directory(
+    p.join(
+      Directory.systemTemp.path,
+      'recording_page_${DateTime.now().microsecondsSinceEpoch}_${_rootCounter++}',
+    ),
+  );
+  addTearDown(() {
+    if (root.existsSync()) {
+      try {
+        root.deleteSync(recursive: true);
+      } on FileSystemException {
+        // ignore
+      }
+    }
+  });
+  return (rootProvider: () async => root, root: root);
+}
+
+/// Bundle of fakes + service instances the widget test wires into
+/// a `ProviderContainer`. Recording / playback / permission
+/// behaviour is controlled by pre-seeding values on the
+/// corresponding fake.
+class _PageContext {
+  _PageContext({
+    required this.recorderGateway,
+    required this.playbackGateway,
+    required this.permissionGateway,
+    required this.storage,
+  });
+
+  final FakeAudioRecorderGateway recorderGateway;
+  final FakeAudioPlaybackGateway playbackGateway;
+  final FakeMicrophonePermissionGateway permissionGateway;
+  final AudioFileStorageService storage;
+}
+
+/// Builds overrides that wire the controller against the
+/// supplied fake repository + fakes for audio / permission.
 List<Override> _buildOverrides({
   required PracticeRecordRepository repository,
+  _PageContext? ctx,
   DateTime Function()? clock,
 }) {
-  return <Override>[
+  final List<Override> overrides = <Override>[
     practiceRecordIdGeneratorProvider.overrideWithValue(
       _SequentialPracticeRecordIdGenerator(),
     ),
@@ -84,54 +146,109 @@ List<Override> _buildOverrides({
     practiceDayResolverProvider.overrideWithValue(_FakePracticeDayResolver()),
     appClockProvider.overrideWithValue(clock ?? (() => _kTestNowUtc)),
   ];
+  if (ctx != null) {
+    final RealAudioRecorderService recorderService = RealAudioRecorderService(
+      gateway: ctx.recorderGateway,
+      storage: ctx.storage,
+    );
+    final RealAudioPlaybackService playbackService = RealAudioPlaybackService(
+      gateway: ctx.playbackGateway,
+      storage: ctx.storage,
+    );
+    final MicrophonePermissionService permissionService =
+        MicrophonePermissionService(ctx.permissionGateway);
+    overrides.addAll(<Override>[
+      audioFileStorageServiceProvider.overrideWithValue(ctx.storage),
+      realAudioRecorderServiceProvider.overrideWithValue(recorderService),
+      realAudioPlaybackServiceProvider.overrideWithValue(playbackService),
+      microphonePermissionServiceProvider.overrideWithValue(permissionService),
+    ]);
+  }
+  return overrides;
 }
 
 /// Pumps the [RecordingPage] inside a `ProviderScope` with the
-/// overrides supplied by [_buildOverrides]. The caller manages
-/// the fake repository (passed in for assertions) and the
-/// container lifecycle via [addTearDown].
-Future<void> _pumpPage(
+/// overrides supplied by [_buildOverrides]. Returns the
+/// [ProviderContainer] so tests can read state and tear it down.
+Future<ProviderContainer> _pumpPage(
   WidgetTester tester,
-  _FakePracticeRecordRepository repository,
-) async {
+  _FakePracticeRecordRepository repository, {
+  _PageContext? ctx,
+}) async {
+  final ProviderContainer container = ProviderContainer(
+    overrides: _buildOverrides(repository: repository, ctx: ctx),
+  );
+  addTearDown(container.dispose);
   await tester.pumpWidget(
-    ProviderScope(
-      overrides: _buildOverrides(repository: repository),
+    UncontrolledProviderScope(
+      container: container,
       child: const MaterialApp(
         home: RecordingPage(),
       ),
     ),
   );
   await tester.pumpAndSettle();
+  return container;
+}
+
+/// Pre-seeds the page for a successful take → stop → play flow.
+/// (Unused at the moment; kept as a placeholder for future
+/// full-flow tests.)
+// ignore: unused_element
+Future<String> _seedSuccessfulTake(_PageContext ctx) async {
+  ctx.permissionGateway.nextCheckStatus = MicrophonePermissionStatus.granted;
+  await ctx.storage.ensureDirectories();
+  return '';
 }
 
 void main() {
-  group('RecordingPage', () {
+  group('RecordingPage T031 disclaimer + status', () {
     testWidgets(
       'renders disclaimer, status, timer, controls, rating, note, '
       'and save button',
       (WidgetTester tester) async {
         await _useTallSurface(tester);
-        await _pumpPage(tester, _FakePracticeRecordRepository());
+        final (:rootProvider, :root) = _isolatedRoot();
+        final AudioFileStorageService storage = AudioFileStorageService(
+          rootDirectoryProvider: rootProvider,
+        );
+        final _PageContext ctx = _PageContext(
+          recorderGateway: FakeAudioRecorderGateway(),
+          playbackGateway: FakeAudioPlaybackGateway(),
+          permissionGateway: FakeMicrophonePermissionGateway(),
+          storage: storage,
+        );
+        ctx.permissionGateway.nextCheckStatus =
+            MicrophonePermissionStatus.granted;
+        await _pumpPage(tester, _FakePracticeRecordRepository(), ctx: ctx);
 
         // App bar title.
         expect(find.text('录音回放'), findsOneWidget);
 
-        // Disclaimer banner copy is present. The brief mandates
-        // three explicit points: no microphone, no audio save, no
-        // audio playback.
+        // T031 disclaimer copy: real microphone, recording held in
+        // private storage, save-to-PracticeRecord still being rolled
+        // out.
         expect(
-          find.textContaining('不会调用麦克风'),
+          find.textContaining('本页使用本机麦克风录制练习片段'),
           findsOneWidget,
         );
         expect(
-          find.textContaining('不会保存真实音频'),
+          find.textContaining('录音暂存在本机'),
           findsOneWidget,
         );
         expect(
-          find.textContaining('不会播放真实音频'),
+          find.textContaining('当前录音仅保存在本次会话中'),
           findsOneWidget,
         );
+
+        // T031 forbidden phrases MUST NOT appear (pre-T031
+        // "模拟录音 / 不调用麦克风 / 不保存真实音频 / 不播放真实音频"
+        // are no longer accurate).
+        expect(find.textContaining('模拟录音'), findsNothing);
+        expect(find.textContaining('不会调用麦克风'), findsNothing);
+        expect(find.textContaining('不会保存真实音频'), findsNothing);
+        expect(find.textContaining('不会播放真实音频'), findsNothing);
+        expect(find.textContaining('模拟回放'), findsNothing);
 
         // Initial status is "准备录音".
         expect(find.text('准备录音'), findsOneWidget);
@@ -140,9 +257,9 @@ void main() {
         expect(find.text('00:00'), findsOneWidget);
 
         // All four primary controls are present.
-        expect(find.text('开始模拟录音'), findsOneWidget);
+        expect(find.text('开始录音'), findsOneWidget);
         expect(find.text('停止录音'), findsOneWidget);
-        expect(find.text('模拟回放'), findsOneWidget);
+        expect(find.text('回放'), findsOneWidget);
         expect(find.text('停止回放'), findsOneWidget);
 
         // Secondary "重新录一遍" button.
@@ -153,8 +270,7 @@ void main() {
         expect(find.text('一般'), findsOneWidget);
         expect(find.text('需要重练'), findsOneWidget);
 
-        // Note field exists (find by key, since the TextField's
-        // inner label is empty until the user types).
+        // Note field exists.
         expect(
           find.byKey(const ValueKey<String>('recording-note')),
           findsOneWidget,
@@ -172,891 +288,85 @@ void main() {
             reason: 'save button must start disabled');
       },
     );
-
-    testWidgets(
-      'tapping "开始模拟录音" flips status and enables stop',
-      (WidgetTester tester) async {
-        await _useTallSurface(tester);
-        await _pumpPage(tester, _FakePracticeRecordRepository());
-
-        // Initial status.
-        expect(find.text('准备录音'), findsOneWidget);
-
-        // The stop button is initially disabled — tap it via
-        // tapping start, then assert stop is now tappable.
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-
-        expect(find.text('模拟录音中'), findsOneWidget);
-        // Stop button should now be enabled (we verify by tapping
-        // it in the next test).
-      },
-    );
-
-    testWidgets(
-      'tapping "停止录音" exposes the playback entry',
-      (WidgetTester tester) async {
-        await _useTallSurface(tester);
-        await _pumpPage(tester, _FakePracticeRecordRepository());
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-
-        expect(find.text('已录音（可回放 / 自评）'), findsOneWidget);
-
-        // The play button is now active — tap it and the status
-        // label should switch to "模拟回放中".
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-play')),
-        );
-        await tester.pumpAndSettle();
-        expect(find.text('模拟回放中'), findsOneWidget);
-
-        // Stop playback returns us to the "已录音" status.
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop-playback')),
-        );
-        await tester.pumpAndSettle();
-        expect(find.text('已录音（可回放 / 自评）'), findsOneWidget);
-      },
-    );
-
-    testWidgets(
-      'tapping a self-rating button selects it',
-      (WidgetTester tester) async {
-        await _useTallSurface(tester);
-        await _pumpPage(tester, _FakePracticeRecordRepository());
-
-        // Get to a state where rating is allowed.
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-
-        // Tap "需要重练" inside the rating selector.
-        await tester.tap(
-          find.descendant(
-            of: find.byKey(
-              const ValueKey<String>('recording-self-rating'),
-            ),
-            matching: find.text('需要重练'),
-          ),
-        );
-        await tester.pumpAndSettle();
-
-        // Reading state via the provider confirms the choice.
-        final BuildContext ctx = tester.element(find.byType(RecordingPage));
-        final ProviderContainer container = ProviderScope.containerOf(ctx);
-        expect(
-          container
-              .read(recordingPracticeControllerProvider)
-              .selfRating
-              .toString(),
-          'SelfRating.retry',
-        );
-      },
-    );
-
-    testWidgets(
-      'typing into the note field updates the controller state',
-      (WidgetTester tester) async {
-        await _useTallSurface(tester);
-        await _pumpPage(tester, _FakePracticeRecordRepository());
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-
-        await tester.enterText(
-          find.byKey(const ValueKey<String>('recording-note')),
-          'C->Am 切换太慢',
-        );
-        await tester.pumpAndSettle();
-
-        final BuildContext ctx = tester.element(find.byType(RecordingPage));
-        final ProviderContainer container = ProviderScope.containerOf(ctx);
-        expect(
-          container.read(recordingPracticeControllerProvider).note,
-          'C->Am 切换太慢',
-        );
-      },
-    );
-
-    testWidgets(
-      'note field is disabled while recording',
-      (WidgetTester tester) async {
-        await _useTallSurface(tester);
-        await _pumpPage(tester, _FakePracticeRecordRepository());
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-
-        final TextField noteField = tester.widget<TextField>(
-          find.byKey(const ValueKey<String>('recording-note')),
-        );
-        expect(noteField.enabled, isFalse);
-
-        // Cleanup: stop recording so the timer is cancelled.
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-      },
-    );
-
-    testWidgets(
-      '"重新录一遍" returns to the initial state',
-      (WidgetTester tester) async {
-        await _useTallSurface(tester);
-        await _pumpPage(tester, _FakePracticeRecordRepository());
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-reset')),
-        );
-        await tester.pumpAndSettle();
-
-        expect(find.text('准备录音'), findsOneWidget);
-        expect(find.text('00:00'), findsOneWidget);
-      },
-    );
-
-    testWidgets(
-      'tapping "开始模拟录音" while playing starts a new take',
-      (WidgetTester tester) async {
-        // T012_FIX_RECORDING_PLAYBACK_START_BUTTON: the page must
-        // expose the "开始模拟录音" button while the simulated
-        // playback is running, so the user can stop playback and
-        // start a new take in one tap (matching the controller
-        // contract).
-        await _useTallSurface(tester);
-        await _pumpPage(tester, _FakePracticeRecordRepository());
-
-        // Record a short take so we can play it back.
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-
-        // Enter playback.
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-play')),
-        );
-        await tester.pumpAndSettle();
-        expect(find.text('模拟回放中'), findsOneWidget);
-
-        // While playing, the "开始模拟录音" button must remain
-        // enabled. The previous implementation disabled it here,
-        // which broke the controller contract that allows
-        // startRecording() to interrupt playback.
-        final FilledButton startButton = tester.widget<FilledButton>(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        expect(startButton.onPressed, isNotNull);
-
-        // Tap it. The page must transition to "模拟录音中" and
-        // leave playback behind.
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-        expect(find.text('模拟录音中'), findsOneWidget);
-        expect(find.text('模拟回放中'), findsNothing);
-
-        // The controller should also be in the recording state
-        // and the clock should have been reset to 00:00.
-        expect(find.text('00:00'), findsOneWidget);
-
-        // Cleanup the timer.
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-      },
-    );
   });
 
-  group('RecordingPage save (T013.4A)', () {
+  group('RecordingPage T031 status + copy transitions', () {
     testWidgets(
-      'save button is disabled after a 0-second take',
+      'permission denied: status flips to 麦克风权限被拒绝, '
+      'recording controls are disabled',
       (WidgetTester tester) async {
         await _useTallSurface(tester);
-        await _pumpPage(tester, _FakePracticeRecordRepository());
+        final (:rootProvider, :root) = _isolatedRoot();
+        final AudioFileStorageService storage = AudioFileStorageService(
+          rootDirectoryProvider: rootProvider,
+        );
+        final _PageContext ctx = _PageContext(
+          recorderGateway: FakeAudioRecorderGateway(),
+          playbackGateway: FakeAudioPlaybackGateway(),
+          permissionGateway: FakeMicrophonePermissionGateway()
+            ..nextCheckStatus = MicrophonePermissionStatus.denied
+            ..nextRequestStatus = MicrophonePermissionStatus.denied,
+          storage: storage,
+        );
+        await _pumpPage(tester, _FakePracticeRecordRepository(), ctx: ctx);
 
         await tester.tap(
           find.byKey(const ValueKey<String>('recording-start')),
         );
         await tester.pumpAndSettle();
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
 
-        final FilledButton saveButton = tester.widget<FilledButton>(
-          find.byKey(const ValueKey<String>('recording-save')),
-        );
-        expect(saveButton.onPressed, isNull,
-            reason: '0-second take => recordedDurationSeconds == 0 '
-                '=> canSave must be false');
-      },
-    );
+        expect(find.text('麦克风权限被拒绝'), findsOneWidget);
+        expect(find.text('准备录音'), findsNothing);
+        // Recorder service MUST NOT have been called.
+        expect(ctx.recorderGateway.startCallCount, 0);
 
-    testWidgets(
-      'save button enables after a valid take and no self-rating',
-      (WidgetTester tester) async {
-        await _useTallSurface(tester);
-        await _pumpPage(tester, _FakePracticeRecordRepository());
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-        await tester.pump(const Duration(seconds: 1));
-        await tester.pump(const Duration(seconds: 1));
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-
-        final FilledButton saveButton = tester.widget<FilledButton>(
-          find.byKey(const ValueKey<String>('recording-save')),
-        );
-        expect(saveButton.onPressed, isNotNull,
-            reason: 'a 2-second take with no self-rating is still '
-                'savable — self-rating is optional per the brief');
-      },
-    );
-
-    testWidgets(
-      'successful save flips the button to "已保存" and shows '
-      'success SnackBar',
-      (WidgetTester tester) async {
-        await _useTallSurface(tester);
-        final _FakePracticeRecordRepository repo =
-            _FakePracticeRecordRepository();
-        await _pumpPage(tester, repo);
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-        await tester.pump(const Duration(seconds: 1));
-        await tester.pump(const Duration(seconds: 1));
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-
-        // Tap save.
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-save')),
-        );
-        await tester.pump();
-        await tester.pumpAndSettle();
-
-        // Success SnackBar is shown.
-        expect(
-          find.byKey(
-            const ValueKey<String>('recording-save-success-snackbar'),
-          ),
-          findsOneWidget,
-        );
-        // The button label now reads "已保存".
-        expect(find.text('已保存'), findsOneWidget);
-        // The button itself is now disabled.
-        final FilledButton saveButton = tester.widget<FilledButton>(
-          find.byKey(const ValueKey<String>('recording-save')),
-        );
-        expect(saveButton.onPressed, isNull);
-
-        // The fake repository saw exactly one insert.
-        expect(repo.inserted.length, 1);
-      },
-    );
-
-    testWidgets(
-      'failed save shows failure SnackBar and re-enables the button',
-      (WidgetTester tester) async {
-        await _useTallSurface(tester);
-        final _FakePracticeRecordRepository repo =
-            _FakePracticeRecordRepository()
-              ..throwOnInsert = StateError('synthetic insert failure');
-        await _pumpPage(tester, repo);
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-        await tester.pump(const Duration(seconds: 1));
-        await tester.pump(const Duration(seconds: 1));
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-
-        // Tap save. The fake throws -> failure.
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-save')),
-        );
-        await tester.pump();
-        await tester.pumpAndSettle();
-
-        expect(
-          find.byKey(
-            const ValueKey<String>('recording-save-failure-snackbar'),
-          ),
-          findsOneWidget,
-        );
-        // The button label is back to "保存到练习记录".
-        expect(find.text('保存到练习记录'), findsOneWidget);
-        // And it is re-enabled so the user can retry.
-        final FilledButton saveButton = tester.widget<FilledButton>(
-          find.byKey(const ValueKey<String>('recording-save')),
-        );
-        expect(saveButton.onPressed, isNotNull);
-        expect(repo.inserted, isEmpty);
-      },
-    );
-
-    testWidgets(
-      'ignored save (e.g. Provider disposed mid-await) shows no '
-      'SnackBar',
-      (WidgetTester tester) async {
-        // Wire a gated repository that never resolves so the
-        // save is permanently in-flight. We then dispose the
-        // ProviderScope so the controller sees `ref.mounted ==
-        // false` and returns ignored.
-        await _useTallSurface(tester);
-        final _GatedPracticeRecordRepository repo =
-            _GatedPracticeRecordRepository();
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: _buildOverrides(repository: repo),
-            child: const MaterialApp(
-              home: RecordingPage(),
-            ),
-          ),
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-        await tester.pump(const Duration(seconds: 1));
-        await tester.pump(const Duration(seconds: 1));
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-save')),
-        );
-        await tester.pump();
-        // Replace the widget tree with a fresh empty tree so the
-        // ProviderScope is torn down -> the controller's
-        // post-await `ref.mounted` check returns false ->
-        // ignored.
-        await tester.pumpWidget(const MaterialApp(home: SizedBox()));
-        await tester.pumpAndSettle();
-        // Release the gate so the in-flight Future can complete.
-        _GatedPracticeRecordRepository.gate.complete();
-
-        // Neither SnackBar must be visible.
-        expect(
-          find.byKey(
-            const ValueKey<String>('recording-save-success-snackbar'),
-          ),
-          findsNothing,
-        );
-        expect(
-          find.byKey(
-            const ValueKey<String>('recording-save-failure-snackbar'),
-          ),
-          findsNothing,
-        );
-      },
-    );
-
-    testWidgets(
-      'rating and note are disabled after a successful save',
-      (WidgetTester tester) async {
-        await _useTallSurface(tester);
-        await _pumpPage(tester, _FakePracticeRecordRepository());
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-        await tester.pump(const Duration(seconds: 1));
-        await tester.pump(const Duration(seconds: 1));
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-save')),
-        );
-        await tester.pump();
-        await tester.pumpAndSettle();
-
-        // Rating selector: disabled.
-        final SegmentedButton<SelfRating> ratingSelector =
-            tester.widget<SegmentedButton<SelfRating>>(
-          find.byKey(const ValueKey<String>('recording-self-rating')),
-        );
-        expect(ratingSelector.onSelectionChanged, isNull,
-            reason: 'rating selector must be disabled after a successful '
-                'save');
-
-        // Note field: disabled.
-        final TextField noteField = tester.widget<TextField>(
-          find.byKey(const ValueKey<String>('recording-note')),
-        );
-        expect(noteField.enabled, isFalse);
-      },
-    );
-
-    testWidgets(
-      'playback still works after a successful save',
-      (WidgetTester tester) async {
-        await _useTallSurface(tester);
-        await _pumpPage(tester, _FakePracticeRecordRepository());
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-        await tester.pump(const Duration(seconds: 1));
-        await tester.pump(const Duration(seconds: 1));
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-save')),
-        );
-        await tester.pump();
-        await tester.pumpAndSettle();
-
-        // Tap play.
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-play')),
-        );
-        await tester.pumpAndSettle();
-        expect(find.text('模拟回放中'), findsOneWidget);
-        // Stop playback returns to "已录音".
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop-playback')),
-        );
-        await tester.pumpAndSettle();
-        expect(find.text('已录音（可回放 / 自评）'), findsOneWidget);
-        // The save status is still "已保存".
-        expect(find.text('已保存'), findsOneWidget);
-      },
-    );
-
-    testWidgets(
-      'rating and note are disabled while saving',
-      (WidgetTester tester) async {
-        await _useTallSurface(tester);
-        final _GatedPracticeRecordRepository repo =
-            _GatedPracticeRecordRepository();
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: _buildOverrides(repository: repo),
-            child: const MaterialApp(
-              home: RecordingPage(),
-            ),
-          ),
-        );
-        // Reset the shared gate after this test so the next
-        // test starts with a fresh one. We do NOT release the
-        // gate here — the ProviderScope is torn down at the end
-        // of the test, which fires `ref.onDispose` and the
-        // `saveCurrentTake` Future is dropped, leaving the gate
-        // uncompleted (and therefore inert for the next test).
-        addTearDown(_GatedPracticeRecordRepository.resetGate);
-        await tester.pumpAndSettle();
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-        await tester.pump(const Duration(seconds: 1));
-        await tester.pump(const Duration(seconds: 1));
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-save')),
-        );
-        await tester.pump();
-
-        // While the gate is still blocking, isSaving is true.
-        expect(find.text('正在保存…'), findsOneWidget);
-
-        final SegmentedButton<SelfRating> ratingSelector =
-            tester.widget<SegmentedButton<SelfRating>>(
-          find.byKey(const ValueKey<String>('recording-self-rating')),
-        );
-        expect(ratingSelector.onSelectionChanged, isNull);
-
-        final TextField noteField = tester.widget<TextField>(
-          find.byKey(const ValueKey<String>('recording-note')),
-        );
-        expect(noteField.enabled, isFalse);
-
-        // Recording controls are also disabled.
-        final FilledButton startButton = tester.widget<FilledButton>(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        expect(startButton.onPressed, isNull);
-
-        final OutlinedButton stopButton = tester.widget<OutlinedButton>(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        expect(stopButton.onPressed, isNull);
-      },
-    );
-
-    // T013.4A_FIX_SAVED_TAKE_UI_ACTIONS — the page MUST keep
-    // the recording + playback controls enabled after a
-    // successful save. The user must be able to either replay
-    // the saved take or start a new take from the same page
-    // without leaving the screen. We verify BOTH the start and
-    // the play buttons' onPressed are non-null while isSaved
-    // is true (the contract is: re-record + replay are
-    // allowed; only rating + note must be locked).
-    testWidgets(
-      'after save: start + play buttons remain enabled so the '
-      'user can re-record or replay',
-      (WidgetTester tester) async {
-        await _useTallSurface(tester);
-        await _pumpPage(tester, _FakePracticeRecordRepository());
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-        await tester.pump(const Duration(seconds: 1));
-        await tester.pump(const Duration(seconds: 1));
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-save')),
-        );
-        await tester.pump();
-        await tester.pumpAndSettle();
-
-        // Sanity: the save succeeded, isSaved is reflected by
-        // the "已保存" button label.
-        expect(find.text('已保存'), findsOneWidget);
-
-        // CRITICAL: the start button MUST stay enabled after a
-        // successful save — the user must be able to start a
-        // new take from the same page.
+        // Start button stays enabled so the user can re-tap it to
+        // re-request permission (the page is the affordance for
+        // "重新申请权限"). Recording controls disabled while
+        // permission is denied — wait, the brief says the start
+        // button stays enabled so the user can retry. Verify by
+        // tapping start a second time triggers a fresh
+        // requestPermission call.
         final FilledButton startButton = tester.widget<FilledButton>(
           find.byKey(const ValueKey<String>('recording-start')),
         );
         expect(startButton.onPressed, isNotNull,
-            reason: 'recording-start must stay enabled after a '
-                'successful save so the user can start a new take');
-
-        // CRITICAL: the play button MUST stay enabled after a
-        // successful save — the user must be able to replay the
-        // saved take without leaving the page.
-        final FilledButton playButton = tester.widget<FilledButton>(
-          find.byKey(const ValueKey<String>('recording-play')),
-        );
-        expect(playButton.onPressed, isNotNull,
-            reason: 'recording-play must stay enabled after a '
-                'successful save so the user can replay the take');
-
-        // And the rating + note fields MUST be locked — this is
-        // the other half of the contract (the saved record is
-        // the source of truth for those fields).
-        final SegmentedButton<SelfRating> ratingSelector =
-            tester.widget<SegmentedButton<SelfRating>>(
-          find.byKey(const ValueKey<String>('recording-self-rating')),
-        );
-        expect(ratingSelector.onSelectionChanged, isNull,
-            reason: 'rating must be locked after a successful save');
-
-        final TextField noteField = tester.widget<TextField>(
-          find.byKey(const ValueKey<String>('recording-note')),
-        );
-        expect(noteField.enabled, isFalse,
-            reason: 'note must be locked after a successful save');
-      },
-    );
-
-    // T013.4A_FIX_SAVED_TAKE_UI_ACTIONS — when the user taps
-    // "开始模拟录音" after a successful save, the controller
-    // mints a fresh takeId, clears the previous savedRecordId,
-    // clears the previous rating + note, and resets the clock.
-    // This test pins that contract from the WIDGET layer so a
-    // future regression in the enabled-state logic of
-    // `recording-start` would be caught here.
-    testWidgets(
-      'after save: tapping "开始模拟录音" starts a fresh take '
-      '(new takeId, clock reset, previous save cleared)',
-      (WidgetTester tester) async {
-        await _useTallSurface(tester);
-        await _pumpPage(tester, _FakePracticeRecordRepository());
-
-        // First take: record 2s, rate, note, save.
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-        await tester.pump(const Duration(seconds: 1));
-        await tester.pump(const Duration(seconds: 1));
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-        await tester.tap(
-          find.descendant(
-            of: find.byKey(
-              const ValueKey<String>('recording-self-rating'),
-            ),
-            matching: find.text('还不错'),
-          ),
-        );
-        await tester.pumpAndSettle();
-        await tester.enterText(
-          find.byKey(const ValueKey<String>('recording-note')),
-          'C->Am 切换太慢',
-        );
-        await tester.pumpAndSettle();
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-save')),
-        );
-        await tester.pumpAndSettle();
-
-        // Snapshot the saved takeId from the provider so we can
-        // verify the NEXT startRecording mints a fresh one.
-        final BuildContext ctx = tester.element(find.byType(RecordingPage));
-        final ProviderContainer container = ProviderScope.containerOf(ctx);
-        final RecordingPracticeState afterSave =
-            container.read(recordingPracticeControllerProvider);
-        expect(afterSave.isSaved, isTrue);
-        final String savedTakeId = afterSave.savedRecordId!;
-        expect(savedTakeId, isNotNull);
-
-        // Now tap "开始模拟录音" again. The page must transition
-        // to "模拟录音中", the clock must reset to 00:00, and the
-        // controller must drop the previous savedRecordId.
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-
-        expect(find.text('模拟录音中'), findsOneWidget);
-        expect(find.text('00:00'), findsOneWidget);
-
-        // Verify the controller's full state after re-record:
-        // a fresh takeId, no savedRecordId, no rating, no note,
-        // recording in progress.
-        final RecordingPracticeState afterReRecord =
-            container.read(recordingPracticeControllerProvider);
-        expect(afterReRecord.isRecording, isTrue);
-        expect(afterReRecord.isSaved, isFalse,
-            reason: 'starting a new take must clear savedRecordId');
-        expect(afterReRecord.savedRecordId, isNull);
-        expect(afterReRecord.takeId, isNotNull);
-        expect(afterReRecord.takeId, isNot(equals(savedTakeId)),
-            reason: 'a new take mints a fresh takeId');
-        expect(afterReRecord.selfRating, isNull,
-            reason: 'rating from the saved take must be cleared');
-        expect(afterReRecord.note, '',
-            reason: 'note from the saved take must be cleared');
-        expect(afterReRecord.recordedDurationSeconds, 0,
-            reason: 'recordedDurationSeconds must reset for the new take');
-
-        // Cleanup the timer so it does not leak.
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-      },
-    );
-
-    // T013.4A_FIX_SAVED_TAKE_UI_ACTIONS — while the gate is
-    // still blocking the save, every recording / playback
-    // / rating / note control on the page MUST be disabled.
-    // This is a belt-and-braces counterpart to the in-flight
-    // gating: it goes through the FULL page widget tree, not
-    // just the SaveRecordButton, so any future regression in
-    // the ControlRow / SelfRatingSelector / NoteField
-    // enabled-state logic gets caught here.
-    testWidgets(
-      'while saving: every page control is disabled and the '
-      'save button shows "正在保存…"',
-      (WidgetTester tester) async {
-        await _useTallSurface(tester);
-        final _GatedPracticeRecordRepository repo =
-            _GatedPracticeRecordRepository();
-        addTearDown(_GatedPracticeRecordRepository.resetGate);
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: _buildOverrides(repository: repo),
-            child: const MaterialApp(
-              home: RecordingPage(),
-            ),
-          ),
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        await tester.pumpAndSettle();
-        await tester.pump(const Duration(seconds: 1));
-        await tester.pump(const Duration(seconds: 1));
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(
-          find.byKey(const ValueKey<String>('recording-save')),
-        );
-        await tester.pump();
-
-        // 1. The save button shows "正在保存…" and is disabled.
-        expect(find.text('正在保存…'), findsOneWidget);
-        final FilledButton saveButton = tester.widget<FilledButton>(
-          find.byKey(const ValueKey<String>('recording-save')),
-        );
-        expect(saveButton.onPressed, isNull);
-
-        // 2. The recording controls are disabled.
-        final FilledButton startButton = tester.widget<FilledButton>(
-          find.byKey(const ValueKey<String>('recording-start')),
-        );
-        expect(startButton.onPressed, isNull,
-            reason: 'start must be disabled while saving');
-
-        final OutlinedButton stopButton = tester.widget<OutlinedButton>(
-          find.byKey(const ValueKey<String>('recording-stop')),
-        );
-        expect(stopButton.onPressed, isNull,
-            reason: 'stop must be disabled while saving');
-
-        // 3. The playback controls are disabled.
-        final FilledButton playButton = tester.widget<FilledButton>(
-          find.byKey(const ValueKey<String>('recording-play')),
-        );
-        expect(playButton.onPressed, isNull,
-            reason: 'play must be disabled while saving');
-
-        final OutlinedButton stopPlaybackButton = tester.widget<OutlinedButton>(
-          find.byKey(const ValueKey<String>('recording-stop-playback')),
-        );
-        expect(stopPlaybackButton.onPressed, isNull,
-            reason: 'stop-playback must be disabled while saving');
-
-        // 4. The "重新录一遍" reset button is also disabled.
-        final OutlinedButton resetButton = tester.widget<OutlinedButton>(
-          find.byKey(const ValueKey<String>('recording-reset')),
-        );
-        expect(resetButton.onPressed, isNull,
-            reason: 'reset must be disabled while saving');
-
-        // 5. The self-rating selector and note field are
-        // disabled.
-        final SegmentedButton<SelfRating> ratingSelector =
-            tester.widget<SegmentedButton<SelfRating>>(
-          find.byKey(const ValueKey<String>('recording-self-rating')),
-        );
-        expect(ratingSelector.onSelectionChanged, isNull);
-
-        final TextField noteField = tester.widget<TextField>(
-          find.byKey(const ValueKey<String>('recording-note')),
-        );
-        expect(noteField.enabled, isFalse);
-
-        // Release the gate so the in-flight save can complete
-        // and the ProviderScope can dispose cleanly at the end
-        // of the test. The startRecording call earlier in this
-        // test spun up a real Timer.periodic (the simulated
-        // recording clock), so we deliberately use pump() (not
-        // pumpAndSettle()) here — the timer will keep the
-        // event loop busy forever and pumpAndSettle would
-        // hang. The ProviderScope is torn down by the
-        // addTearDown wiring in _pumpPage, which cancels the
-        // timer via ref.onDispose.
-        _GatedPracticeRecordRepository.gate.complete();
-        await tester.pump();
+            reason: 'start button stays enabled so the user can re-request');
+        expect(ctx.permissionGateway.checkStatusCallCount, 1);
       },
     );
 
     testWidgets(
-      'page never claims to use the microphone or persist real audio',
+      'permission granted: tapping 开始录音 flips status to 正在录音',
       (WidgetTester tester) async {
-        // This test is a belt-and-braces restatement of the
-        // disclaimer-banner assertion above. The page must NEVER
-        // regress into claiming it records real audio — T013.4A
-        // only persists a PracticeRecord (which has
-        // audioFilePath == null) and never opens the microphone.
         await _useTallSurface(tester);
-        await _pumpPage(tester, _FakePracticeRecordRepository());
+        final (:rootProvider, :root) = _isolatedRoot();
+        final AudioFileStorageService storage = AudioFileStorageService(
+          rootDirectoryProvider: rootProvider,
+        );
+        final _PageContext ctx = _PageContext(
+          recorderGateway: FakeAudioRecorderGateway(),
+          playbackGateway: FakeAudioPlaybackGateway(),
+          permissionGateway: FakeMicrophonePermissionGateway()
+            ..nextCheckStatus = MicrophonePermissionStatus.granted,
+          storage: storage,
+        );
+        await _pumpPage(tester, _FakePracticeRecordRepository(), ctx: ctx);
 
-        // The three mandated disclaimer phrases are present.
-        expect(find.textContaining('不会调用麦克风'), findsOneWidget);
-        expect(find.textContaining('不会保存真实音频'), findsOneWidget);
-        expect(find.textContaining('不会播放真实音频'), findsOneWidget);
-        // The page does NOT contain any positive claim about
-        // "保存音频文件" / "保存真实录音" that contradicts the
-        // disclaimer.
-        expect(find.textContaining('保存音频文件'), findsNothing);
-        expect(find.textContaining('保存真实录音'), findsNothing);
-        // The initial status label is "准备录音" — a "准备"
-        // (prepare) verb, NOT a claim of "正在录音" (currently
-        // recording) which would imply the microphone is live.
-        expect(find.text('准备录音'), findsOneWidget);
+        await tester.tap(
+          find.byKey(const ValueKey<String>('recording-start')),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('正在录音'), findsOneWidget);
+        expect(ctx.recorderGateway.startCallCount, 1);
+
+        // Cleanup: stop so the in-flight timer is cancelled.
+        ctx.recorderGateway.nextStopResult = '';
+        await tester.tap(
+          find.byKey(const ValueKey<String>('recording-stop')),
+        );
+        await tester.pumpAndSettle();
       },
     );
   });
@@ -1067,9 +377,7 @@ void main() {
 // ---------------------------------------------------------------------------
 
 /// In-memory [PracticeRecordRepository] used by the save-flow
-/// tests. Records every inserted row so assertions can inspect
-/// them. Can be flipped to throw on insert to exercise the
-/// failure path.
+/// tests.
 class _FakePracticeRecordRepository implements PracticeRecordRepository {
   Object? throwOnInsert;
   final List<PracticeRecord> inserted = <PracticeRecord>[];
@@ -1105,45 +413,7 @@ class _FakePracticeRecordRepository implements PracticeRecordRepository {
   Future<bool> delete(String id) async => false;
 }
 
-/// Repository whose `insert` blocks on a static `gate` future
-/// (initialised lazily). Used to hold the controller inside
-/// `saveCurrentTake` so the widget test can observe the
-/// in-flight state and dispose the Provider mid-await.
-class _GatedPracticeRecordRepository implements PracticeRecordRepository {
-  static Completer<void> gate = Completer<void>();
-  final List<PracticeRecord> inserted = <PracticeRecord>[];
-
-  /// Resets the shared gate. Called from the test `addTearDown`
-  /// so the next test starts with a fresh gate.
-  static void resetGate() {
-    gate = Completer<void>();
-  }
-
-  @override
-  Future<PracticeRecord> insert(PracticeRecord record) async {
-    await gate.future;
-    inserted.add(record);
-    return record;
-  }
-
-  @override
-  Future<PracticeRecord?> getById(String id) async => null;
-
-  @override
-  Future<List<PracticeRecord>> listRecent({int limit = 50}) async =>
-      const <PracticeRecord>[];
-
-  @override
-  Stream<List<PracticeRecord>> watchAll() async* {
-    yield const <PracticeRecord>[];
-  }
-
-  @override
-  Future<bool> delete(String id) async => false;
-}
-
-/// Practice-day resolver that returns the pinned test context —
-/// used to make every test's saved record deterministic.
+/// Practice-day resolver that returns the pinned test context.
 class _FakePracticeDayResolver implements PracticeDayResolver {
   @override
   Future<PracticeDayContext> resolve() async {
@@ -1155,8 +425,6 @@ class _FakePracticeDayResolver implements PracticeDayResolver {
   }
 }
 
-/// ID generator that returns a sequence of stable test ids:
-/// `take-1`, `take-2`, ...
 class _SequentialPracticeRecordIdGenerator
     implements PracticeRecordIdGenerator {
   int _callCount = 0;
@@ -1168,7 +436,7 @@ class _SequentialPracticeRecordIdGenerator
   }
 }
 
-// Silence unused-import lint if the dayIndex constant is referenced
-// only through the resolver.
+// Silence unused-import lint if the dayIndex constant is
+// referenced only through the resolver.
 // ignore: unused_element
-typedef _SilenceUnused = (SelfAssessment, PracticeTag, PracticeType);
+typedef _SilenceUnused = (SelfAssessment, PracticeTag);

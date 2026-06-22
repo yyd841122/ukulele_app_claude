@@ -117,6 +117,35 @@ class RealAudioPlaybackService {
   /// 当前文件总时长（未知时为 `null`）。
   Duration? get duration => _activeDuration;
 
+  /// 当前播放位置流（按 gateway 推送节奏，典型 16-200ms 一次）。
+  ///
+  /// T031 暴露给 [RecordingPracticeController] 订阅，让 UI 的
+  /// elapsed MM:SS 反映真实播放进度。Controller 用 `listen`
+  /// 即可，无需自行轮询。
+  ///
+  /// - 在第一次 [loadFile] 后由内部 `_ensureSubscriptions` 建立；
+  /// - dispose 时统一取消；
+  /// - 不会重复 emit 相同值给订阅者（由 gateway 决定）。
+  Stream<Duration> get positionStream {
+    _ensureSubscriptions();
+    return _gateway.positionStream;
+  }
+
+  /// 当前文件总时长流（未知时为 `null`）。
+  Stream<Duration?> get durationStream {
+    _ensureSubscriptions();
+    return _gateway.durationStream;
+  }
+
+  /// just_audio 播放器状态流（playing bool + ProcessingState）。
+  ///
+  /// T031 用于监听"自然完成"事件以驱动 Controller 把 `isPlaying`
+  /// 翻回 `false`。
+  Stream<PlaybackPlayerState> get playerStateStream {
+    _ensureSubscriptions();
+    return _gateway.playerStateStream;
+  }
+
   /// 加载 [filePath] 作为播放源。
   ///
   /// 行为：

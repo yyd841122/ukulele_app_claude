@@ -173,6 +173,7 @@ import 'package:ukulele_app/features/practice_records/data/practice_record_repos
 import 'package:ukulele_app/features/practice_records/domain/practice_record.dart';
 import 'package:ukulele_app/features/practice_records/domain/practice_tag.dart';
 import 'package:ukulele_app/features/practice_records/domain/practice_type.dart';
+import 'package:ukulele_app/features/recording/application/recording_page_exit_stop_result.dart';
 import 'package:ukulele_app/features/recording/application/self_rating_mapper.dart';
 import 'package:ukulele_app/features/recording/domain/self_rating.dart';
 import 'package:ukulele_app/shared/providers/app_clock_provider.dart';
@@ -180,6 +181,7 @@ import 'package:ukulele_app/shared/providers/microphone_permission_service_provi
 import 'package:ukulele_app/shared/providers/real_audio_playback_service_provider.dart';
 import 'package:ukulele_app/shared/providers/real_audio_recorder_service_provider.dart';
 import 'package:ukulele_app/shared/services/audio_playback_gateway.dart';
+import 'package:ukulele_app/shared/services/audio_playback_state.dart';
 import 'package:ukulele_app/shared/services/audio_recorder_state.dart';
 import 'package:ukulele_app/shared/services/microphone_permission_service.dart';
 import 'package:ukulele_app/shared/services/microphone_permission_status.dart';
@@ -471,6 +473,17 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
   /// the first and could re-introduce the real-device
   /// "playback loops forever" regression T031I is fixing.
   bool _handlingNaturalCompletion = false;
+
+  /// T037B1 — page-exit stop in-flight coordination.
+  ///
+  /// The first call to [requestStopForPageExit] creates the
+  /// `Future`; concurrent callers (a same-frame AppBar double-
+  /// tap, an AppBar back + immediate Android system back, etc.)
+  /// `await` the same Future instead of firing their own.
+  /// Cleared in the `finally` block so the next genuine exit
+  /// request (after the user retries a failed stop) can start
+  /// a fresh in-flight Future.
+  Future<PageExitStopResult>? _pageExitStopFuture;
 
   @override
   RecordingPracticeState build() {
@@ -808,6 +821,432 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
       isPlaying: false,
       currentPlaybackPosition: Duration.zero,
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Page-exit stop (T037B)
+  // ---------------------------------------------------------------------------
+
+  /// T037B — **page-exit stop with awaitable semantics**. Public
+  /// seam for the recording page's exit coordination
+  /// ([RecordingPage] wires AppBar back, Android system back /
+  /// back-gesture, and route-pop through this single
+  /// chokepoint).
+  ///
+  /// T037B1 — **in-flight coordination wrapper**. The method is
+  /// split into two layers:
+  /// 1. The public [requestStopForPageExit] is a thin
+  ///    re-entrancy guard: a single [_pageExitStopFuture] is
+  ///    shared across concurrent callers so a same-frame AppBar
+  ///    double-tap (or AppBar back + immediate Android system
+  ///    back) cannot double-fire the underlying
+  ///    `recorder.stop()` / `playback.stop()`. The Future is
+  ///    cleared in a `finally` block so the next genuine exit
+  ///    request (after a failure + retry) starts fresh.
+  /// 2. [_performPageExitStop] is the internal worker that owns
+  ///    the per-branch stop + retry semantics. The page is
+  ///    the sole caller of the public method.
+  ///
+  /// Contract (the page is the sole caller — no other call site
+  /// is allowed):
+  /// - **Skips** when the controller is in a state that does
+  ///   not need a stop:
+  ///   * `_disposed || !ref.mounted` →
+  ///     [PageExitStopSkipped] with reason
+  ///     [PageExitStopSkipReason.disposed];
+  ///   * `takeId == null && !isRecording && !isPlaying` →
+  ///     [PageExitStopSkipped] with reason
+  ///     [PageExitStopSkipReason.idle] (the recording page is
+  ///     effectively idle; nothing to stop).
+  /// - **Stops** when an active session exists. The decision
+  ///   table is:
+  ///   * `isRecording == true` → `await _recorder.stop()`.
+  ///     The ticker is stopped BEFORE the await so the MM:SS
+  ///     readout does not advance while the platform-channel
+  ///     stop is in flight. `isRecording` is NOT flipped to
+  ///     false before the await (see T037B1 failure-retry
+  ///     contract below). On success, `isRecording` is
+  ///     flipped to `false` and `recordedTakeResult` is
+  ///     populated so the user can resume / save after
+  ///     re-entering the page (or after cancelling the back
+  ///     gesture). On failure, [PageExitStopFailure] carries
+  ///     the friendly `停止录音失败，请重试` message.
+  ///   * `isPlaying == true` (or `isPlaying == false` but
+  ///     `recordedTakeResult != null`, i.e. the page has a
+  ///     loaded playback session that the user can resume) →
+  ///     `await _playback.stop()`. `isPlaying` is NOT flipped
+  ///     to false before the await (see T037B1 failure-retry
+  ///     contract below). On success, `isPlaying` is
+  ///     flipped to `false` and the active session is
+  ///     released. On failure, [PageExitStopFailure] carries
+  ///     the friendly `停止播放失败，请重试` message.
+  /// - **Bumps the playback session id** BEFORE the playback
+  ///   `await stop()` so any `completed` event delivered as a
+  ///   side-effect of `stop()` is tagged as a prior-session
+  ///   event and discarded by the playback service's
+  ///   `_onPlayerState` callback (T035A invariant — the
+  ///   recording controller subscribes to the same shared
+  ///   `RealAudioPlaybackService.playerStateStream`).
+  /// - **Defensive** against the controller's state machine
+  ///   reporting an active session while the underlying
+  ///   service is already in a terminal state
+  ///   (`AudioRecorderState.idle` /
+  ///   `AudioPlaybackState.idle` /
+  ///   `AudioPlaybackState.disposed` / etc.). In that case
+  ///   the controller short-circuits to
+  ///   [PageExitStopSkipped] with reason
+  ///   [PageExitStopSkipReason.serviceAlreadyTerminal] and
+  ///   does NOT call `service.stop()` — calling `stop()` on
+  ///   a service that is already in the wrong state throws
+  ///   [InvalidRecorderStateException] /
+  ///   [InvalidPlaybackStateException] and would surface a
+  ///   misleading failure SnackBar to the user.
+  /// - **Never** disposes the shared recorder / playback
+  ///   services. Both services are owned by their respective
+  ///   providers and outlive this controller.
+  /// - **Throws nothing** — every failure mode returns a
+  ///   [PageExitStopResult]. The page layer treats any result
+  ///   as "do not crash".
+  /// - **Does NOT delete the on-disk take file** when the
+  ///   user exits with an unsaved take. The take file stays
+  ///   on disk under the audio root's `temp/` directory; the
+  ///   user can re-enter the recording page (the controller
+  ///   state is preserved across pops because the
+  ///   `recordingPracticeControllerProvider` is **not**
+  ///   `autoDispose`) and either save it as a
+  ///   [PracticeRecord] or start a new take. This matches
+  ///   the T033 + T034 file-lifecycle contract: only
+  ///   `AudioFileStorageService` may delete product audio
+  ///   files, and only as part of a successful save-or-delete
+  ///   flow on the detail page. The recording page's
+  ///   `requestStopForPageExit` path is explicitly NOT
+  ///   allowed to call `recorder.cancel()` (which would
+  ///   delete the file via the storage service).
+  ///
+  /// T037B1 — failure-retry contract (replaces the pre-fix
+  /// "flip isRecording/isPlaying to false before await"
+  /// behaviour that made a second exit call observe the
+  /// page as idle and skip the actual stop):
+  /// - **In-flight coordination**: a single in-flight
+  ///   [_pageExitStopFuture] is shared across concurrent
+  ///   callers. The first caller creates the Future; the
+  ///   second caller `await`s the same Future instead of
+  ///   firing its own. The Future is cleared in a
+  ///   `finally` block so the next genuine exit request
+  ///   (after a failure + retry) can start fresh.
+  /// - **Recording branch**:
+  ///   * `isRecording` is NOT flipped to false before the
+  ///     `await recorder.stop()`. The flag stays true so a
+  ///     retry call observes the recording branch again.
+  ///   * On success, `isRecording` flips to false and the
+  ///     ticker stops.
+  ///   * On failure, the recorder service has already
+  ///     cleared its session internally
+  ///     (`_state = idle` — see `RealAudioRecorderService
+  ///     .stop` catch block), so the controller
+  ///     synchronously mirrors that by flipping
+  ///     `isRecording` to false (the service is the source
+  ///     of truth for "is the native recorder running"),
+  ///     stops the ticker (the service will reject a second
+  ///     `stop()` with `InvalidRecorderStateException` so
+  ///     the ticker has nothing left to drive), and
+  ///     returns [PageExitStopFailure] so the page stays
+  ///     mounted.
+  ///   * A retry call observes `takeId != null && !isRecording
+  ///     && !isPlaying` and re-enters the recording branch;
+  ///     the recorder service is in `idle` so the
+  ///     controller short-circuits to
+  ///     [PageExitStopSkipped] with reason
+  ///     [PageExitStopSkipReason.serviceAlreadyTerminal].
+  ///     This is the "second exit finally pops" path.
+  /// - **Playback branch**:
+  ///   * `isPlaying` is NOT flipped to false before the
+  ///     `await playback.stop()`. The playback service
+  ///     contract restores `state` to the pre-stop value on
+  ///     failure (`_state = previousState`), so the service
+  ///     is still in a stoppable state when the user
+  ///     retries — the controller mirrors this by keeping
+  ///     `isPlaying = true` on the page side.
+  ///   * On success, `isPlaying` flips to false.
+  ///   * On failure, [PageExitStopFailure] is returned and
+  ///     `isPlaying` stays true so a retry call re-enters
+  ///     the playback branch.
+  ///   * A retry call observes `isPlaying == true && takeId
+  ///     != null` and re-enters the playback branch — the
+  ///     playback service is in `playing` (or `paused` /
+  ///     `ready` / `loading` — the playback service's
+  ///     `stop()` is safe in all of those), so a second
+  ///     `playback.stop()` call is issued. This is the
+  ///     "real-device retry actually retries" path.
+  Future<PageExitStopResult> requestStopForPageExit() async {
+    if (_disposed || !ref.mounted) {
+      return const PageExitStopResult.skipped(
+        reason: PageExitStopSkipReason.disposed,
+      );
+    }
+    // T037B1 — in-flight coordination. The first caller
+    // installs the Future; concurrent callers await the
+    // same Future instead of firing their own
+    // recorder.stop() / playback.stop(). The Future is
+    // cleared in `finally` so the next genuine exit
+    // request (after a failure + retry) starts fresh.
+    final Future<PageExitStopResult>? existingFuture = _pageExitStopFuture;
+    if (existingFuture != null) {
+      return existingFuture;
+    }
+    final Completer<PageExitStopResult> completer =
+        Completer<PageExitStopResult>();
+    _pageExitStopFuture = completer.future;
+    try {
+      final PageExitStopResult result = await _performPageExitStop();
+      if (!completer.isCompleted) {
+        completer.complete(result);
+      }
+      return result;
+    } on Object catch (e, st) {
+      // The body explicitly does not throw — this branch
+      // is defense-in-depth only. Map any unexpected
+      // throw to the recording-failure variant so the
+      // page keeps itself mounted and surfaces a SnackBar.
+      debugPrint(
+        'RecordingPracticeController requestStopForPageExit '
+        'unexpected throw: $e\n$st',
+      );
+      if (!completer.isCompleted) {
+        completer.complete(
+          const PageExitStopResult.failure(
+            message: '停止录音失败，请重试',
+          ),
+        );
+      }
+      rethrow;
+    } finally {
+      _pageExitStopFuture = null;
+    }
+  }
+
+  /// T037B1 — internal implementation of
+  /// [requestStopForPageExit]. Owns the recording / playback
+  /// branch decision table and the per-branch stop + retry
+  /// semantics. The public method is an in-flight
+  /// coordination wrapper that funnels concurrent calls
+  /// through a single Future.
+  Future<PageExitStopResult> _performPageExitStop() async {
+    final RecordingPracticeState current = state;
+    // Snapshot the activity flags + takeId so a concurrent
+    // state write (e.g. a natural-completion event landing
+    // while we await the stop) cannot change WHICH branch we
+    // take mid-flight. The snapshot is a local — the
+    // underlying `state` may move, but the decision table
+    // already saw a coherent view.
+    final bool wasRecording = current.isRecording;
+    final bool wasPlaying = current.isPlaying;
+    final String? snapshotTakeId = current.takeId;
+
+    if (!wasRecording && !wasPlaying && snapshotTakeId == null) {
+      // No active session. The page is effectively idle and
+      // the user is leaving a clean state. No-op.
+      return const PageExitStopResult.skipped(
+        reason: PageExitStopSkipReason.idle,
+      );
+    }
+
+    // T037B1 — recording branch. We stop the ticker (so the
+    // MM:SS readout does not advance while the
+    // platform-channel stop is in flight), but we DO NOT
+    // flip `isRecording` to false before the await — the
+    // failure-retry contract requires the controller to
+    // still report an active recording session to a
+    // concurrent / retry caller so it can re-enter this
+    // branch and issue a real `recorder.stop()`. The
+    // in-flight coordination in [requestStopForPageExit]
+    // is the canonical re-entrancy guard; the flag-flip
+    // was the wrong layer (it conflated "internal stop
+    // attempt in progress" with "no recording").
+    if (wasRecording) {
+      final RealAudioRecorderService recorder = _recorder;
+      // Defensive: if the service is already in a terminal
+      // state (the previous attempt threw AND cleaned up,
+      // OR a prior route lifecycle cleared the session),
+      // do NOT call `service.stop()` — it would throw
+      // `InvalidRecorderStateException`. Mirror the
+      // service-level terminal state to the controller
+      // and let the page pop.
+      if (recorder.state == AudioRecorderState.idle ||
+          recorder.state == AudioRecorderState.disposed) {
+        _stopTicker();
+        _tickerSeconds = 0;
+        if (ref.mounted) {
+          state = current.copyWith(
+            isRecording: false,
+            elapsedSeconds: current.recordedDurationSeconds,
+            clearLastError: true,
+          );
+        }
+        return const PageExitStopResult.skipped(
+          reason: PageExitStopSkipReason.serviceAlreadyTerminal,
+        );
+      }
+      _stopTicker();
+      try {
+        final AudioRecorderTakeResult result = await recorder.stop();
+        if (_disposed || !ref.mounted) {
+          return const PageExitStopResult.skipped(
+            reason: PageExitStopSkipReason.disposed,
+          );
+        }
+        // Stop was successful — adopt the take result so
+        // the user can save the take after re-entering the
+        // page. We deliberately do NOT clear `takeId` (so
+        // the user retains the "this is the take you just
+        // recorded" identity) and we do NOT clear
+        // `recordedTakeResult` (so a follow-up
+        // `saveCurrentTake` call can still resolve the
+        // verbatim path).
+        Duration? resolvedDuration;
+        try {
+          resolvedDuration = await _probeRecordingDuration(result.resolvedPath);
+        } on Object {
+          resolvedDuration = null;
+        }
+        final int resolvedSeconds = resolvedDuration != null
+            ? resolvedDuration.inSeconds
+            : (current.elapsedSeconds > 0 ? current.elapsedSeconds : 1);
+        _tickerSeconds = 0;
+        state = current.copyWith(
+          isRecording: false,
+          hasRecording: true,
+          recordedTakeResult: result,
+          recordedDurationSeconds: resolvedSeconds,
+          elapsedSeconds: resolvedSeconds,
+          currentPlaybackDuration: resolvedDuration,
+          currentPlaybackPosition: Duration.zero,
+          clearLastError: true,
+        );
+        return const PageExitStopResult.success();
+      } on Object catch (e, st) {
+        // T037B1 — recorder.stop threw. Per the
+        // RealAudioRecorderService contract, the service
+        // has ALREADY cleared its active session and
+        // flipped `_state` to `idle` in the catch block
+        // (see `RealAudioRecorderService.stop`). The
+        // service is the source of truth for "is the
+        // native recorder running" — and after this
+        // throw the service says no. We mirror that on
+        // the controller side: flip `isRecording` to
+        // false so the page's UI state machine
+        // (recording controls disabled / playback
+        // enabled) lands in a sane state for the retry
+        // attempt. The ticker stays stopped (the
+        // service will reject a second `stop()` with
+        // `InvalidRecorderStateException`; creating a
+        // duplicate `Timer.periodic` here would
+        // re-publish `elapsedSeconds` that no longer
+        // corresponds to a real recording). Return
+        // failure so the page keeps itself mounted.
+        //
+        // The retry call observes
+        // `takeId != null && !isRecording && !isPlaying`
+        // and re-enters the recording branch; the
+        // service-terminal-state guard above catches it
+        // and returns
+        // `skipped(serviceAlreadyTerminal)` so the page
+        // can finally pop.
+        //
+        // Caveat (documented in TECH_DEBT): when the
+        // service throws, we cannot tell whether the
+        // native `record` package actually stopped. If
+        // it did not, the audio file on disk may keep
+        // growing and the user's take will be lost.
+        // This is a service-layer limitation, not a
+        // controller-layer one; the controller preserves
+        // the user's retry path and surfaces the
+        // honest SnackBar.
+        debugPrint(
+          'RecordingPracticeController requestStopForPageExit '
+          'recorder.stop failed: $e\n$st',
+        );
+        _stopTicker();
+        _tickerSeconds = 0;
+        if (ref.mounted) {
+          state = current.copyWith(
+            isRecording: false,
+            elapsedSeconds: current.recordedDurationSeconds,
+            clearLastError: true,
+          );
+        }
+        return const PageExitStopResult.failure(
+          message: '停止录音失败，请重试',
+        );
+      }
+    }
+
+    // T037B1 — playback branch. This covers BOTH
+    // `isPlaying == true` (an active `play()`) AND
+    // `isPlaying == false` with `recordedTakeResult != null`
+    // (a `paused` / `ready` / `loading` session that the
+    // user can resume). The playback service's `stop()` is
+    // safe to call in any of those states (the service
+    // documents that as a supported state transition).
+    final RealAudioPlaybackService playback = _playback;
+    // Defensive: if the service is already in a terminal
+    // state, do NOT call `service.stop()` (it would throw
+    // `InvalidPlaybackStateException`). Mirror the
+    // service-level terminal state and let the page pop.
+    if (playback.state == AudioPlaybackState.idle ||
+        playback.state == AudioPlaybackState.disposed) {
+      if (ref.mounted) {
+        state = current.copyWith(
+          isPlaying: false,
+          currentPlaybackPosition: Duration.zero,
+          clearLastError: true,
+        );
+      }
+      return const PageExitStopResult.skipped(
+        reason: PageExitStopSkipReason.serviceAlreadyTerminal,
+      );
+    }
+    // T037B1 — do NOT flip `isPlaying` to false BEFORE
+    // the `await playback.stop()`. The playback service
+    // contract restores `state` to the pre-stop value on
+    // failure (`_state = previousState`), so the service
+    // is still in a stoppable state when the user
+    // retries. Mirroring that by keeping `isPlaying = true`
+    // on the controller side lets a retry call re-enter
+    // this branch and issue a real second `playback.stop()`
+    // — the failure-retry contract.
+    try {
+      await playback.stop();
+    } on Object catch (e, st) {
+      debugPrint(
+        'RecordingPracticeController requestStopForPageExit '
+        'playback.stop failed: $e\n$st',
+      );
+      if (!ref.mounted) {
+        return const PageExitStopResult.skipped(
+          reason: PageExitStopSkipReason.disposed,
+        );
+      }
+      // Keep the page mounted; do NOT flip `isPlaying`
+      // back to false — the service may still be in a
+      // stoppable state and a retry must be able to
+      // re-enter this branch and issue a fresh
+      // `playback.stop()`.
+      return const PageExitStopResult.failure(
+        message: '停止播放失败，请重试',
+      );
+    }
+    if (_disposed || !ref.mounted) {
+      return const PageExitStopResult.skipped(
+        reason: PageExitStopSkipReason.disposed,
+      );
+    }
+    state = current.copyWith(
+      isPlaying: false,
+      currentPlaybackPosition: Duration.zero,
+      clearLastError: true,
+    );
+    return const PageExitStopResult.success();
   }
 
   // ---------------------------------------------------------------------------

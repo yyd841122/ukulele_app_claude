@@ -1,4 +1,4 @@
-// Recording practice page (T012 + T013.4A + T031).
+// Recording practice page (T012 + T013.4A + T031 + T037B).
 //
 // Scope:
 // - MVP / placeholder-style page that lets the user walk through
@@ -20,75 +20,341 @@
 //   / SelfRatingSelector / NoteField / ResetButton / SaveRecordButton)
 //   so this file stays short and each piece is independently
 //   testable via `find.byKey(...)`.
+//
+// T037B — page-exit audio stop coordination (real-device fix):
+// - Root-cause (real-device reproduction): recording a take
+//   and then tapping the AppBar back arrow (or pressing the
+//   Android system back / back-gesture) left the underlying
+//   `just_audio` player still audible after the route
+//   transition completed — mirroring the same T037A
+//   regression on the detail page. For the recording page
+//   the problem is amplified: leaving the page WHILE a
+//   recording is in progress leaves the native `record`
+//   plugin's microphone capture running AND the MM:SS
+//   ticker continuing to advance. The previous
+//   fire-and-forget stop inside the controller's
+//   `ref.onDispose` raced the route pop; the page did not
+//   await the platform-channel stop before the Navigator
+//   popped.
+// - Fix: the page drives the AppBar back arrow + the
+//   Android system back / back-gesture through a single
+//   chokepoint [_handleExit]. The chokepoint awaits
+//   [RecordingPracticeController.requestStopForPageExit]
+//   — a NEW public method that returns an awaitable
+//   [PageExitStopResult] (sealed class with three
+//   variants: success / skipped / failure). The actual
+//   `recorder.stop()` / `playback.stop()` is awaited (NOT
+//   fire-and-forget) so the platform-channel stop
+//   resolves BEFORE the Navigator pops. On failure the
+//   page surfaces a friendly SnackBar AND keeps itself
+//   mounted so the user can retry the back gesture.
+// - [PopScope] wraps the [Scaffold] so Android system back
+//   invokes the same chokepoint. `canPop` is gated on
+//   [_exitInFlight] AND on whether the controller
+//   currently holds an active session (so the system
+//   back still works normally on the idle state, where
+//   there is nothing to coordinate).
+// - [_exitInFlight] serialises concurrent exit attempts
+//   so a double-tap on the AppBar back arrow (or the
+//   AppBar back + an immediate Android system back)
+//   cannot double-pop or double-stop. The guard is
+//   intentionally a plain bool — the page is
+//   single-threaded on the UI isolate and no async gap
+//   exists between read and write.
+// - The controller's existing `ref.onDispose` hook is
+//   preserved as a non-cooperative safety net (a parent
+//   route replaced, or a test that drops the widget
+//   tree without calling the page's exit handler). The
+//   page's [_handleExit] is the SOLE normal exit
+//   path.
+// - Failure mode: when
+//   [RecordingPracticeController.requestStopForPageExit]
+//   returns [PageExitStopFailure] the page surfaces a
+//   friendly SnackBar AND keeps the page mounted
+//   (does NOT pop). The user can retry the back
+//   gesture after seeing the SnackBar. The SnackBar
+//   copy is "停止录音失败，请重试" or
+//   "停止播放失败，请重试" — never the absolute path,
+//   the exception class name, or any other PII.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
+import 'package:ukulele_app/features/recording/application/recording_page_exit_stop_result.dart';
 import 'package:ukulele_app/features/recording/application/recording_practice_controller.dart';
 import 'package:ukulele_app/features/recording/domain/self_rating.dart';
 import 'package:ukulele_app/features/recording/presentation/widgets/save_record_button.dart';
 
-class RecordingPage extends ConsumerWidget {
+class RecordingPage extends ConsumerStatefulWidget {
   const RecordingPage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<RecordingPage> createState() => _RecordingPageState();
+}
+
+class _RecordingPageState extends ConsumerState<RecordingPage> {
+  /// T037B — exit-coordination re-entrancy guard. While an
+  /// exit is in flight (we are awaiting the controller's
+  /// [RecordingPracticeController.requestStopForPageExit] OR
+  /// we are in the microtask window between stop completion
+  /// and the actual pop) we refuse additional exit requests
+  /// so a double-tap on the AppBar back arrow (or AppBar back
+  /// + immediate Android system back) cannot double-pop or
+  /// double-stop the audio services. The guard is intentionally
+  /// a plain bool — the page is single-threaded on the UI
+  /// isolate and no async gap exists between read and write.
+  bool _exitInFlight = false;
+
+  @override
+  Widget build(BuildContext context) {
     final RecordingPracticeState state =
         ref.watch(recordingPracticeControllerProvider);
     final RecordingPracticeController controller =
         ref.read(recordingPracticeControllerProvider.notifier);
     final ThemeData theme = Theme.of(context);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('录音回放'),
-      ),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: <Widget>[
-            // T031 disclaimer banner. Says explicitly that the
-            // page uses the real microphone, the take lives in
-            // the app's private storage, and saving into a
-            // PracticeRecord is still being rolled out (T032+).
-            const DisclaimerBanner(),
-            const SizedBox(height: 16),
-            // Live status card.
-            StatusCard(state: state),
-            const SizedBox(height: 16),
-            // MM:SS timer.
-            ElapsedDisplay(state: state),
-            const SizedBox(height: 16),
-            // Primary controls.
-            ControlRow(state: state, controller: controller),
-            const SizedBox(height: 16),
-            // "重新录一遍" secondary action.
-            ResetButton(state: state, controller: controller),
-            const SizedBox(height: 24),
-            // Self-rating section.
-            _SectionTitle(theme: theme, text: '本次自评'),
-            const SizedBox(height: 8),
-            SelfRatingSelector(
-              state: state,
-              onChanged: controller.setSelfRating,
-            ),
-            const SizedBox(height: 24),
-            // Free-form note section.
-            _SectionTitle(theme: theme, text: '备注（哪里弹错了 / 下次注意什么）'),
-            const SizedBox(height: 8),
-            NoteField(state: state, onChanged: controller.setNote),
-            const SizedBox(height: 16),
-            // Save section (T013.4A). Lives in its own widget so
-            // the visual state machine ("disabled / enabled /
-            // 正在保存… / 已保存") is testable in isolation.
-            SaveRecordButton(
-              state: state,
-              onPressed: () => _onSavePressed(context, controller),
-            ),
-          ],
+    // T037B — the page drives the AppBar back arrow and the
+    // Android system back / back-gesture through a single
+    // chokepoint ([_handleExit]). PopScope intercepts the
+    // latter; canPop is gated on [_exitInFlight] AND on
+    // whether the controller currently holds an active
+    // session (so the system back still works normally on
+    // the idle state, where there is nothing to
+    // coordinate).
+    final bool hasActiveSession = _hasActiveSession(state);
+    return PopScope(
+      canPop: !_exitInFlight && !hasActiveSession,
+      onPopInvokedWithResult: (bool didPop, Object? result) {
+        if (didPop) {
+          // The framework already popped (no active session,
+          // no in-flight exit). Nothing to coordinate.
+          return;
+        }
+        // canPop was false → drive the exit coordination.
+        _handleExit();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('录音回放'),
+          leading: BackButton(
+            // T037B — route AppBar back through the same
+            // chokepoint as Android system back. We use
+            // the stock [BackButton] widget (NOT a
+            // custom `IconButton`) so Flutter's built-in
+            // back-button heuristics (e.g. widget
+            // testing's `pageBack` helper, the Cupertino
+            // back-button fallback) still recognise the
+            // leading affordance as a "back button" —
+            // the [BackButton] widget preserves the
+            // `BackButton` type identity while letting us
+            // override `onPressed` to drive
+            // [_handleExit]. The visual is identical to
+            // the pre-T037B default AppBar leading.
+            key: const ValueKey<String>('recording-back-button'),
+            onPressed: _handleExit,
+          ),
+        ),
+        body: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            children: <Widget>[
+              // T031 disclaimer banner. Says explicitly that the
+              // page uses the real microphone, the take lives in
+              // the app's private storage, and saving into a
+              // PracticeRecord is still being rolled out (T032+).
+              const DisclaimerBanner(),
+              const SizedBox(height: 16),
+              // Live status card.
+              StatusCard(state: state),
+              const SizedBox(height: 16),
+              // MM:SS timer.
+              ElapsedDisplay(state: state),
+              const SizedBox(height: 16),
+              // Primary controls.
+              ControlRow(state: state, controller: controller),
+              const SizedBox(height: 16),
+              // "重新录一遍" secondary action.
+              ResetButton(state: state, controller: controller),
+              const SizedBox(height: 24),
+              // Self-rating section.
+              _SectionTitle(theme: theme, text: '本次自评'),
+              const SizedBox(height: 8),
+              SelfRatingSelector(
+                state: state,
+                onChanged: controller.setSelfRating,
+              ),
+              const SizedBox(height: 24),
+              // Free-form note section.
+              _SectionTitle(theme: theme, text: '备注（哪里弹错了 / 下次注意什么）'),
+              const SizedBox(height: 8),
+              NoteField(state: state, onChanged: controller.setNote),
+              const SizedBox(height: 16),
+              // Save section (T013.4A). Lives in its own widget so
+              // the visual state machine ("disabled / enabled /
+              // 正在保存… / 已保存") is testable in isolation.
+              SaveRecordButton(
+                state: state,
+                onPressed: () => _onSavePressed(context, controller),
+              ),
+            ],
+          ),
         ),
       ),
     );
+  }
+
+  /// T037B — returns `true` iff the current watched state
+  /// implies an active audio session that must be stopped
+  /// before navigation.
+  ///
+  /// The state machine has four "active" branches:
+  /// - `isRecording == true` — the recorder service is
+  ///   actively capturing from the microphone; the
+  ///   platform-channel stop MUST be awaited before the
+  ///   page exits or the microphone stays open.
+  /// - `isPlaying == true` — the playback service is
+  ///   actively driving the underlying player; the
+  ///   platform-channel stop MUST be awaited before the
+  ///   page exits or the user hears audio bleeding past
+  ///   the page boundary (the T037A regression).
+  /// - `isPlaying == false && takeId != null && !isRecording`
+  ///   — the page has a recorded take ready for replay
+  ///   (or paused mid-playback); the playback service may
+  ///   still hold the on-disk file handle. The page-exit
+  ///   stop releases the file handle so a subsequent
+  ///   `deleteIfExists` (during save-or-delete on the
+  ///   detail page) does not race the player.
+  bool _hasActiveSession(RecordingPracticeState state) {
+    if (state.isRecording) {
+      return true;
+    }
+    if (state.isPlaying) {
+      return true;
+    }
+    if (state.takeId != null) {
+      return true;
+    }
+    return false;
+  }
+
+  /// T037B — single chokepoint for every page-exit gesture.
+  ///
+  /// Flow:
+  /// 1. Re-entrancy: if [_exitInFlight] is already true,
+  ///    refuse the call so a double-tap on the AppBar back
+  ///    (or AppBar back + immediate Android system back)
+  ///    cannot double-stop or double-pop.
+  /// 2. Await the controller's
+  ///    [RecordingPracticeController.requestStopForPageExit].
+  ///    This is the actual fix: the stop is awaited (NOT
+  ///    fire-and-forget) so the platform-channel stop
+  ///    resolves before the Navigator pops.
+  /// 3. If the result is [PageExitStopSuccess] or
+  ///    [PageExitStopSkipped] → pop the route.
+  /// 4. If the result is [PageExitStopFailure] → render
+  ///    the supplied friendly SnackBar AND keep the page
+  ///    mounted. The guard is released so the user can
+  ///    retry the back gesture after the SnackBar
+  ///    dismisses.
+  ///
+  /// The method is intentionally fire-and-forget from the
+  /// framework's perspective (the AppBar `onPressed` /
+  /// `onPopInvokedWithResult` cannot be `async` directly),
+  /// but every await is bracketed inside the function so
+  /// the actual navigation only happens after the stop
+  /// resolves.
+  void _handleExit() {
+    if (_exitInFlight) {
+      return;
+    }
+    _exitInFlight = true;
+    // ignore: discarded_futures
+    _runExit();
+  }
+
+  Future<void> _runExit() async {
+    PageExitStopResult result;
+    try {
+      final RecordingPracticeController controller = ref.read(
+        recordingPracticeControllerProvider.notifier,
+      );
+      result = await controller.requestStopForPageExit();
+    } on Object catch (e, st) {
+      // The controller explicitly never throws, but we
+      // belt-and-braces this branch: an unexpected throw
+      // must NOT leave the page in an un-poppable state.
+      debugPrint(
+        'RecordingPage _runExit unexpected throw: '
+        '$e\n$st',
+      );
+      // The throw must be mapped to the playback failure
+      // variant because the controller's stop surface is
+      // exclusively a playback / recording stop. We pick
+      // the recording-failure message as the conservative
+      // default because the throw happened OUTSIDE the
+      // controller's expected branches — there is no
+      // context for the page to pick a more specific
+      // message. The full exception is debugPrint-ed.
+      result = const PageExitStopResult.failure(
+        message: '停止录音失败，请重试',
+      );
+    }
+    // The widget may have been disposed while we awaited
+    // (e.g. a parent route replaced the recording page).
+    // In that case `mounted` is false and we must not
+    // touch BuildContext.
+    if (!mounted) {
+      return;
+    }
+    if (result.hasUserFacingError) {
+      final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+      // T037B — distinguish recorder-stop failures from
+      // playback-stop failures by inspecting the
+      // controller's current state. The recorder-stop
+      // failure message is "停止录音失败，请重试" and the
+      // playback-stop failure message is
+      // "停止播放失败，请重试". The controller already
+      // returns the correct message in the failure
+      // result; we re-derive the key from the message so
+      // the SnackBar key (which tests use to find the
+      // SnackBar) is stable.
+      final String message = result.message ?? '停止录音失败，请重试';
+      final String key = message == '停止播放失败，请重试'
+          ? 'recording-page-exit-stop-playback-failure-snackbar'
+          : 'recording-page-exit-stop-recording-failure-snackbar';
+      messenger.showSnackBar(
+        SnackBar(
+          key: ValueKey<String>(key),
+          content: Text(message),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      // Keep the page mounted; release the guard so the
+      // user can retry the back gesture.
+      _exitInFlight = false;
+      return;
+    }
+    // Success or skip — pop. The Navigator's `pop` does
+    // NOT itself trigger another `_handleExit` because
+    // the page is being torn down.
+    _popOrGoHome(context);
+    // `_popOrGoHome` is synchronous from the page's
+    // perspective; the guard is intentionally not
+    // released here because the page is on its way out.
+  }
+
+  /// Pops back to the parent route. If the page was reached
+  /// without a parent route on the stack (a direct push
+  /// from somewhere else), falls back to a router-level
+  /// `go` so the user is never left stranded on a dead-end
+  /// page.
+  void _popOrGoHome(BuildContext context) {
+    if (context.canPop()) {
+      context.pop();
+      return;
+    }
+    context.go('/');
   }
 
   /// Drives the save flow and surfaces the contract-mandated

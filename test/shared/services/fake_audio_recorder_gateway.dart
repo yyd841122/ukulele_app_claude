@@ -14,6 +14,14 @@
 //   service passed the right `RecordConfig` and temp path.
 // - Supports the canonical "stop returns null" and "stop returns
 //   wrong path" cases via `nextStopResult`.
+// - T037B — `stopGate: Completer<void>?` mirrors the playback
+//   fake's T037A `stopGate`. Tests install a gate to make
+//   `stop()` await the gate's completion so the controller's
+//   `requestStopForPageExit` future can be asserted to stay
+//   pending until the platform-channel stop resolves (proves
+//   the awaitable contract, not a fire-and-forget).
+
+import 'dart:async';
 
 import 'package:record/record.dart';
 
@@ -45,6 +53,16 @@ class FakeAudioRecorderGateway implements AudioRecorderGateway {
   /// If set, [dispose] throws this exception instead of completing.
   Object? nextDisposeException;
 
+  /// T037B — when non-null, [stop] awaits this Completer
+  /// instead of completing immediately. Tests use this to
+  /// race a pending stop against a concurrent exit
+  /// request, asserting that the controller's
+  /// `requestStopForPageExit` future does NOT resolve
+  /// until the gate is completed. Cleared by every
+  /// successful stop call. Mirrors the playback fake's
+  /// T037A `stopGate`.
+  Completer<void>? stopGate;
+
   // ---- recorded calls (assertions) ----
 
   int startCallCount = 0;
@@ -72,6 +90,15 @@ class FakeAudioRecorderGateway implements AudioRecorderGateway {
     stopCallCount += 1;
     if (nextStopException != null) {
       throw nextStopException!;
+    }
+    // T037B — if a gate is installed, await it before
+    // completing. This lets tests race a pending stop
+    // against concurrent callers. Mirrors the playback
+    // fake's T037A `stopGate`.
+    final Completer<void>? gate = stopGate;
+    if (gate != null) {
+      await gate.future;
+      stopGate = null;
     }
     return nextStopResult;
   }

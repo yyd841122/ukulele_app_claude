@@ -65,6 +65,7 @@ import 'package:ukulele_app/features/practice_records/data/practice_record_repos
 import 'package:ukulele_app/features/practice_records/domain/practice_record.dart';
 import 'package:ukulele_app/features/practice_records/domain/practice_tag.dart';
 import 'package:ukulele_app/features/practice_records/domain/self_assessment.dart';
+import 'package:ukulele_app/features/recording/application/recording_page_exit_stop_result.dart';
 import 'package:ukulele_app/features/recording/application/recording_practice_controller.dart';
 import 'package:ukulele_app/features/recording/domain/self_rating.dart';
 import 'package:ukulele_app/shared/providers/app_clock_provider.dart';
@@ -3877,6 +3878,902 @@ void main() {
           <PracticeTag>[PracticeTag.recording, PracticeTag.selfAssessment]);
       expect(saved.isCompleted, isTrue);
     });
+  });
+
+  // ===========================================================================
+  // T037B — page-exit stop coordination (controller level).
+  //
+  // The T037B recording-page fix mirrors the T037A detail-page fix:
+  // a NEW public method
+  // [RecordingPracticeController.requestStopForPageExit] returns
+  // an awaitable [PageExitStopResult] so the page can hold the
+  // route transition until the underlying `recorder.stop()` /
+  // `playback.stop()` has actually resolved. The controller is
+  // the source of truth for the awaitable contract; the page is
+  // the source of truth for the user-facing SnackBar copy and
+  // the navigation gesture. This group pins the controller
+  // contract.
+  // ===========================================================================
+
+  group('T037B page-exit stop', () {
+    test(
+      'idle: requestStopForPageExit returns skipped(idle) '
+      'without calling recorder.stop or playback.stop',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        final int stopsBefore = ctx.recorderGateway.stopCallCount;
+        final int pbStopsBefore = ctx.playbackGateway.stopCallCount;
+
+        final PageExitStopResult result =
+            await controller.requestStopForPageExit();
+        expect(result, isA<PageExitStopSkipped>());
+        final PageExitStopSkipped skipped = result as PageExitStopSkipped;
+        expect(skipped.reason, PageExitStopSkipReason.idle);
+        expect(result.shouldPop, isTrue);
+        expect(result.hasUserFacingError, isFalse);
+        expect(
+          ctx.recorderGateway.stopCallCount,
+          stopsBefore,
+          reason: 'idle exit must NOT call recorder.stop',
+        );
+        expect(
+          ctx.playbackGateway.stopCallCount,
+          pbStopsBefore,
+          reason: 'idle exit must NOT call playback.stop',
+        );
+      },
+    );
+
+    test(
+      'recording: requestStopForPageExit awaits recorder.stop, '
+      'flips isRecording to false, preserves takeId, returns success',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        // Pre-create the audio file in the real I/O zone so
+        // the controller's `_probeRecordingDuration` can
+        // resolve a real duration when stopRecording /
+        // requestStopForPageExit reads it back.
+        final String path = ctx.recorderGateway.lastStartPath!;
+        await File(path).create(recursive: true);
+        await File(path).writeAsString('fake m4a');
+        ctx.recorderGateway.nextStopResult = _stopPath(path);
+        ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+
+        final PageExitStopResult result =
+            await controller.requestStopForPageExit();
+        expect(result, isA<PageExitStopSuccess>(),
+            reason: 'recording exit must succeed when stop is clean');
+        expect(result.shouldPop, isTrue);
+        expect(result.hasUserFacingError, isFalse);
+        expect(ctx.recorderGateway.stopCallCount, 1,
+            reason: 'recording exit must call recorder.stop exactly once');
+        final RecordingPracticeState state =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(state.isRecording, isFalse,
+            reason: 'recording exit must flip isRecording to false');
+        expect(state.hasRecording, isTrue,
+            reason: 'recording exit must preserve hasRecording so the user '
+                'can save / re-record after re-entry');
+        expect(state.takeId, isNotNull,
+            reason: 'recording exit must preserve takeId');
+        expect(state.recordedTakeResult, isNotNull,
+            reason: 'recording exit must populate recordedTakeResult');
+      },
+    );
+
+    test(
+      'playing: requestStopForPageExit awaits playback.stop, '
+      'flips isPlaying to false, returns success',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        final String path = ctx.recorderGateway.lastStartPath!;
+        await File(path).create(recursive: true);
+        await File(path).writeAsString('fake m4a');
+        ctx.recorderGateway.nextStopResult = _stopPath(path);
+        ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+        await controller.stopRecording();
+        await _pumpEventQueue();
+        await controller.play();
+        await _pumpEventQueue();
+
+        final int pbStopsBefore = ctx.playbackGateway.stopCallCount;
+        final PageExitStopResult result =
+            await controller.requestStopForPageExit();
+        expect(result, isA<PageExitStopSuccess>());
+        expect(result.shouldPop, isTrue);
+        expect(ctx.playbackGateway.stopCallCount, pbStopsBefore + 1,
+            reason: 'playing exit must call playback.stop exactly once');
+        final RecordingPracticeState state =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(state.isPlaying, isFalse,
+            reason: 'playing exit must flip isPlaying to false');
+        // The take identity is preserved so the user can
+        // resume / re-enter / save after popping.
+        expect(state.takeId, isNotNull);
+        expect(state.hasRecording, isTrue);
+      },
+    );
+
+    test(
+      'paused / hasRecording with take loaded: requestStopForPageExit '
+      'calls playback.stop to release the file handle, returns success',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        final String path = ctx.recorderGateway.lastStartPath!;
+        await File(path).create(recursive: true);
+        await File(path).writeAsString('fake m4a');
+        ctx.recorderGateway.nextStopResult = _stopPath(path);
+        ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+        await controller.stopRecording();
+        await _pumpEventQueue();
+        await controller.play();
+        await _pumpEventQueue();
+        // Drive the controller into a "loaded but not
+        // playing" state by emitting a natural-completion
+        // event. After natural completion the playback
+        // service's `_clearActiveSession()` clears the
+        // active path; the controller's `isPlaying` flips
+        // to `false` synchronously. The controller state
+        // now has `isPlaying == false`, `hasRecording ==
+        // true`, and `takeId != null` — which is the
+        // "paused" / "ready" / "has take loaded" branch
+        // the T037B page-exit path must handle.
+        ctx.playbackGateway.emitPlayerState(const PlaybackPlayerState(
+          playing: false,
+          processingState: PlaybackProcessingState.completed,
+        ));
+        await _pumpEventQueue();
+        final RecordingPracticeState afterCompletion =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(afterCompletion.isPlaying, isFalse,
+            reason: 'sanity: natural completion flips isPlaying to false');
+        expect(afterCompletion.hasRecording, isTrue);
+        expect(afterCompletion.takeId, isNotNull);
+
+        // The T037B contract: a page-exit stop MUST
+        // release the playback service's file handle even
+        // when `isPlaying == false` but a take is loaded,
+        // so a subsequent `deleteIfExists` (during
+        // save-or-delete on the detail page) does not
+        // race the player. The T035I natural-completion
+        // handler already calls `playback.stop()` once
+        // synchronously; the page-exit stop should be a
+        // no-op (or a defensive no-op against the
+        // already-cleared session). The result is
+        // therefore `success` (the playback service
+        // accepts the call and reports a no-op) — what
+        // matters is that the page does NOT leak the file
+        // handle past the route pop.
+        final int pbStopsBefore = ctx.playbackGateway.stopCallCount;
+        final PageExitStopResult result =
+            await controller.requestStopForPageExit();
+        expect(result.shouldPop, isTrue,
+            reason: 'paused/loaded page-exit must be a clean pop');
+        expect(result.hasUserFacingError, isFalse);
+        // The page-exit stop is either a `playback.stop()`
+        // call (if the service still has an active session
+        // for this take — unusual, since natural completion
+        // already cleared it) or a `skipped` because the
+        // service is already `idle`. Both are safe. We
+        // assert that the controller never reports a
+        // failure: the user should be able to exit cleanly
+        // after a natural completion.
+        expect(result, isNot(isA<PageExitStopFailure>()));
+        // `stopCallCount` is EITHER equal to `pbStopsBefore`
+        // (the page-exit call short-circuited because the
+        // service is already `idle`) OR exactly
+        // `pbStopsBefore + 1` (the page-exit call drove a
+        // fresh stop). Both are valid.
+        expect(
+          ctx.playbackGateway.stopCallCount,
+          anyOf(equals(pbStopsBefore), equals(pbStopsBefore + 1)),
+          reason: 'paused/loaded page-exit must NOT call playback.stop '
+              'more than once and must NOT throw',
+        );
+        // takeId is preserved.
+        final RecordingPracticeState state =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(state.takeId, isNotNull);
+        expect(state.hasRecording, isTrue);
+      },
+    );
+
+    test(
+      'recording.stop throws: requestStopForPageExit returns failure '
+      'with the safe recording-failure message and shouldPop=false',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        // Inject a synthetic stop failure that contains
+        // forbidden substrings (PII / exception class /
+        // file extension). The friendly message MUST NOT
+        // leak any of these.
+        ctx.recorderGateway.nextStopException =
+            Exception('synthetic recorder stop failure at /abs/path/r.m4a');
+
+        final PageExitStopResult result =
+            await controller.requestStopForPageExit();
+        expect(result, isA<PageExitStopFailure>());
+        final PageExitStopFailure failure = result as PageExitStopFailure;
+        expect(failure.message, '停止录音失败，请重试',
+            reason: 'recording-stop failure message must be the safe '
+                'recording-failure copy');
+        expect(result.shouldPop, isFalse,
+            reason: 'failure result must keep the page mounted');
+        expect(result.hasUserFacingError, isTrue);
+        // PII / forbidden-substring guard. Mirrors the
+        // T037A assertion shape so cross-page debugging is
+        // uniform.
+        expect(failure.message, isNot(contains('synthetic')),
+            reason: 'failure message must NOT leak the synthetic '
+                'exception token');
+        expect(failure.message, isNot(contains('Exception')));
+        expect(failure.message, isNot(contains('.m4a')),
+            reason: 'failure message must NOT leak the file extension');
+        expect(failure.message, isNot(contains('/abs/path')),
+            reason: 'failure message must NOT leak the absolute path');
+        expect(failure.message, isNot(contains('停止播放')));
+        // The controller flips `isRecording` to false on
+        // failure so the page's UI state machine is in a
+        // sane state for the retry attempt.
+        final RecordingPracticeState state =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(state.isRecording, isFalse);
+        // takeId is preserved so the user can still see
+        // the (failed) take identity on the page.
+        expect(state.takeId, isNotNull);
+      },
+    );
+
+    test(
+      'playback.stop throws: requestStopForPageExit returns failure '
+      'with the safe playback-failure message and shouldPop=false',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        final String path = ctx.recorderGateway.lastStartPath!;
+        await File(path).create(recursive: true);
+        await File(path).writeAsString('fake m4a');
+        ctx.recorderGateway.nextStopResult = _stopPath(path);
+        ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+        await controller.stopRecording();
+        await _pumpEventQueue();
+        await controller.play();
+        await _pumpEventQueue();
+        // Inject a synthetic playback stop failure.
+        ctx.playbackGateway.nextStopException =
+            Exception('synthetic playback stop failure at /abs/path/r.m4a');
+
+        final PageExitStopResult result =
+            await controller.requestStopForPageExit();
+        expect(result, isA<PageExitStopFailure>());
+        final PageExitStopFailure failure = result as PageExitStopFailure;
+        expect(failure.message, '停止播放失败，请重试',
+            reason: 'playback-stop failure message must be the safe '
+                'playback-failure copy');
+        expect(result.shouldPop, isFalse);
+        expect(result.hasUserFacingError, isTrue);
+        expect(failure.message, isNot(contains('synthetic')));
+        expect(failure.message, isNot(contains('Exception')));
+        expect(failure.message, isNot(contains('.m4a')));
+        expect(failure.message, isNot(contains('/abs/path')));
+        expect(failure.message, isNot(contains('停止录音')),
+            reason: 'playback-failure message must use 停止播放 not 停止录音');
+      },
+    );
+
+    test(
+      'recording stopGate: requestStopForPageExit future does NOT '
+      'resolve until the gateway stop completes (proves the '
+      'awaitable contract, not a fire-and-forget)',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        final String path = ctx.recorderGateway.lastStartPath!;
+        await File(path).create(recursive: true);
+        await File(path).writeAsString('fake m4a');
+        ctx.recorderGateway.nextStopResult = _stopPath(path);
+        ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+        // T037B — install a stop gate so the gateway's
+        // `stop()` blocks until the gate is completed.
+        // This is the load-bearing assertion: the
+        // controller's `requestStopForPageExit` future
+        // MUST NOT complete while the platform-channel
+        // stop is still in flight.
+        final Completer<void> stopGate = Completer<void>();
+        ctx.recorderGateway.stopGate = stopGate;
+
+        // Fire the request without awaiting — we will
+        // assert that the future stays pending until we
+        // complete the gate.
+        final Future<PageExitStopResult> pendingResult =
+            controller.requestStopForPageExit();
+        // Drain microtasks to give the controller a
+        // chance to enter its await. The future MUST still
+        // be pending.
+        await _pumpEventQueue();
+        expect(ctx.recorderGateway.stopCallCount, 1,
+            reason: 'recorder.stop must have been called');
+        // The pendingResult should not have resolved yet
+        // — the gate is still open.
+        var completed = false;
+        // ignore: unawaited_futures
+        pendingResult.then((_) => completed = true);
+        await _pumpEventQueue();
+        expect(completed, isFalse,
+            reason: 'requestStopForPageExit future MUST stay pending while '
+                'recorder.stop is gated (this is the T037B real-device '
+                'fix: awaitable, not fire-and-forget)');
+        // Complete the gate and verify the future resolves.
+        stopGate.complete();
+        final PageExitStopResult result = await pendingResult;
+        expect(result, isA<PageExitStopSuccess>(),
+            reason: 'after the gate completes the controller must report '
+                'success');
+        expect(completed, isTrue,
+            reason: 'pendingResult future must resolve AFTER the gate is '
+                'completed');
+      },
+    );
+
+    test(
+      'duplicate requestStopForPageExit while the first is in flight: '
+      'recorder.stop is called exactly once (no double-stop); '
+      'concurrent callers share the in-flight Future',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        final String path = ctx.recorderGateway.lastStartPath!;
+        await File(path).create(recursive: true);
+        await File(path).writeAsString('fake m4a');
+        ctx.recorderGateway.nextStopResult = _stopPath(path);
+        ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+        final Completer<void> stopGate = Completer<void>();
+        ctx.recorderGateway.stopGate = stopGate;
+
+        // T037B1 — fire the first request, which will
+        // block on the gate. The controller no longer
+        // flips `isRecording` to false before the await
+        // (the in-flight Future is the canonical
+        // re-entrancy guard — see the controller source
+        // for the rationale). A concurrent caller must
+        // observe the same in-flight Future and resolve
+        // to the same result.
+        final Future<PageExitStopResult> firstRequest =
+            controller.requestStopForPageExit();
+        await _pumpEventQueue();
+        // recorder.stop has been called exactly once.
+        expect(ctx.recorderGateway.stopCallCount, 1,
+            reason: 'first call must drive recorder.stop');
+        // The second concurrent call MUST observe the
+        // in-flight Future — the controller does NOT
+        // re-enter the recording branch (which would
+        // call recorder.stop a second time and throw
+        // InvalidRecorderStateException because the
+        // recorder is in the `stopping` state).
+        final Future<PageExitStopResult> secondRequest =
+            controller.requestStopForPageExit();
+        // Stop gate is still open; both Futures MUST be
+        // pending.
+        expect(ctx.recorderGateway.stopCallCount, 1,
+            reason: 'concurrent page-exit requests must share the in-flight '
+                'Future and MUST NOT call recorder.stop twice');
+        // Drain microtasks: the second call should have
+        // returned the existingFuture WITHOUT entering
+        // _performPageExitStop (which would have
+        // incremented the stop call count).
+        await _pumpEventQueue();
+        expect(ctx.recorderGateway.stopCallCount, 1,
+            reason: 'in-flight coordination: concurrent call did NOT drive '
+                'recorder.stop a second time');
+        // Resolve the gate; both Futures resolve to the
+        // SAME result (success — the underlying stop
+        // completed cleanly).
+        stopGate.complete();
+        final PageExitStopResult firstResult = await firstRequest;
+        final PageExitStopResult secondResult = await secondRequest;
+        expect(firstResult, isA<PageExitStopSuccess>(),
+            reason: 'first request resolves with success after the gate');
+        expect(secondResult, isA<PageExitStopSuccess>(),
+            reason: 'concurrent caller resolves to the SAME result — '
+                'no double-stop, no failure');
+        // Both Futures resolve to the same identity
+        // (they are the SAME Future).
+        expect(identical(firstResult, secondResult), isTrue,
+            reason: 'in-flight coordination: both callers share the SAME '
+                'PageExitStopResult instance (the completer completed once)');
+      },
+    );
+
+    test(
+      'dispose + in-flight page-exit stop failure: no unhandled '
+      'async error, controller never throws',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        ctx.recorderGateway.nextStopException =
+            Exception('synthetic stop failure during dispose');
+        // Dispose the container; the onDispose hook must
+        // run cleanly even with an injected stop failure.
+        // The T037B page-exit path itself is not yet
+        // exercised here — this test pins the dispose-
+        // time safety net so a non-cooperative page
+        // removal (e.g. an automated test that drops the
+        // widget tree without going through the page's
+        // exit handler) cannot produce an unhandled async
+        // error.
+        ctx.container.dispose();
+        // Calling requestStopForPageExit on a disposed
+        // controller must return skipped(disposed), not
+        // throw.
+        final PageExitStopResult result =
+            await controller.requestStopForPageExit();
+        expect(result, isA<PageExitStopSkipped>());
+        expect(
+          (result as PageExitStopSkipped).reason,
+          PageExitStopSkipReason.disposed,
+        );
+        // A subsequent stopRecording on the disposed
+        // controller must be a clean no-op.
+        await controller.stopRecording();
+        await controller.play();
+      },
+    );
+
+    // =======================================================================
+    // T037B1 — failure-retry contract.
+    //
+    // The pre-fix implementation flipped `isRecording=false` /
+    // `isPlaying=false` BEFORE awaiting the underlying stop,
+    // then relied on a "second call observes idle, pops the
+    // page" path. That was wrong:
+    //
+    // - the recorder branch threw, the second call did NOT
+    //   re-enter the recorder branch (it fell through to the
+    //   playback branch and called playback.stop instead);
+    // - the playback branch threw, the second call re-entered
+    //   but had no consistency guarantee on isPlaying;
+    // - the ticker was unconditionally stopped, even when the
+    //   service was still in a stoppable state.
+    //
+    // The fix introduces a single in-flight Future
+    // ([_pageExitStopFuture]) plus per-branch retry semantics:
+    // recording failures mirror the service-level "already
+    // terminal" state, playback failures preserve the
+    // pre-stop playback service state.
+    // =======================================================================
+
+    test(
+      'T037B1 — recording stop failure: page is retained, '
+      'failure message returned, isRecording flipped to false '
+      '(service is the source of truth)',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        ctx.recorderGateway.nextStopException =
+            Exception('synthetic recorder stop failure at /abs/path/r.m4a');
+
+        final PageExitStopResult result =
+            await controller.requestStopForPageExit();
+        expect(result, isA<PageExitStopFailure>(),
+            reason: 'recording-stop failure must return failure so the page '
+                'stays mounted for retry');
+        expect(result.shouldPop, isFalse);
+        final PageExitStopFailure failure = result as PageExitStopFailure;
+        expect(failure.message, '停止录音失败，请重试');
+        // T037B1 — the service contract says the recorder
+        // service has ALREADY cleared its active session
+        // when stop() throws. The controller mirrors that
+        // by flipping isRecording to false (the service
+        // is the source of truth for "is the native
+        // recorder running"). takeId is preserved so the
+        // user retains the identity of the failed take.
+        final RecordingPracticeState state =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(state.isRecording, isFalse,
+            reason: 'T037B1: isRecording must mirror the service-level '
+                'idle state after recorder.stop throws');
+        expect(state.takeId, isNotNull,
+            reason: 'takeId is preserved so the retry call sees the '
+                'recording branch');
+        expect(state.hasRecording, isFalse);
+      },
+    );
+
+    test(
+      'T037B1 — recording retry: second requestStopForPageExit '
+      'after a recorder.stop failure resolves to skipped '
+      '(service-already-terminal) and lets the page finally pop',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        // First attempt: stop throws.
+        ctx.recorderGateway.nextStopException =
+            Exception('synthetic recorder stop failure');
+        final PageExitStopResult first =
+            await controller.requestStopForPageExit();
+        expect(first, isA<PageExitStopFailure>());
+
+        // Second attempt: the recorder service has already
+        // cleared its session internally (state == idle,
+        // per the RealAudioRecorderService.stop catch
+        // block). The controller must NOT call
+        // recorder.stop again (it would throw
+        // InvalidRecorderStateException) — it must
+        // short-circuit to skipped(serviceAlreadyTerminal)
+        // so the page can finally pop.
+        final int stopsBefore = ctx.recorderGateway.stopCallCount;
+        final PageExitStopResult second =
+            await controller.requestStopForPageExit();
+        expect(second, isA<PageExitStopSkipped>());
+        expect((second as PageExitStopSkipped).reason,
+            PageExitStopSkipReason.serviceAlreadyTerminal,
+            reason: 'T037B1: after recorder.stop threw the service is '
+                'already terminal; the retry must short-circuit and '
+                'let the page pop');
+        expect(second.shouldPop, isTrue);
+        expect(second.hasUserFacingError, isFalse);
+        expect(ctx.recorderGateway.stopCallCount, stopsBefore,
+            reason: 'T037B1: the retry MUST NOT call recorder.stop again '
+                '(service is already idle — calling stop again would '
+                'throw InvalidRecorderStateException)');
+      },
+    );
+
+    test(
+      'T037B1 — playback stop failure: page is retained, '
+      'failure message returned, isPlaying STAYS true '
+      '(service state is restored to previousState on failure)',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        final String path = ctx.recorderGateway.lastStartPath!;
+        await File(path).create(recursive: true);
+        await File(path).writeAsString('fake m4a');
+        ctx.recorderGateway.nextStopResult = _stopPath(path);
+        ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+        await controller.stopRecording();
+        await _pumpEventQueue();
+        await controller.play();
+        await _pumpEventQueue();
+        ctx.playbackGateway.nextStopException =
+            Exception('synthetic playback stop failure');
+
+        final PageExitStopResult result =
+            await controller.requestStopForPageExit();
+        expect(result, isA<PageExitStopFailure>(),
+            reason: 'playback-stop failure must return failure so the page '
+                'stays mounted for retry');
+        expect(result.shouldPop, isFalse);
+        final PageExitStopFailure failure = result as PageExitStopFailure;
+        expect(failure.message, '停止播放失败，请重试');
+        // T037B1 — the playback service contract restores
+        // its state to previousState on failure. The
+        // controller mirrors that by keeping isPlaying =
+        // true on the page side so a retry call can
+        // re-enter the playback branch and call
+        // playback.stop again. The retry path is the
+        // real-device retry actually retries contract.
+        final RecordingPracticeState state =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(state.isPlaying, isTrue,
+            reason: 'T037B1: isPlaying must STAY true after playback.stop '
+                'throws — the service state is restored, the page '
+                'should re-enter the playback branch on retry');
+        expect(state.takeId, isNotNull);
+      },
+    );
+
+    test(
+      'T037B1 — playback retry: second requestStopForPageExit '
+      'after a playback.stop failure re-calls playback.stop '
+      'exactly once and resolves to success',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        final String path = ctx.recorderGateway.lastStartPath!;
+        await File(path).create(recursive: true);
+        await File(path).writeAsString('fake m4a');
+        ctx.recorderGateway.nextStopResult = _stopPath(path);
+        ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+        await controller.stopRecording();
+        await _pumpEventQueue();
+        await controller.play();
+        await _pumpEventQueue();
+        // First attempt: stop throws.
+        ctx.playbackGateway.nextStopException =
+            Exception('synthetic playback stop failure');
+        final PageExitStopResult first =
+            await controller.requestStopForPageExit();
+        expect(first, isA<PageExitStopFailure>());
+
+        // Second attempt: the playback service's state
+        // has been restored to previousState (still
+        // playing). The retry MUST re-call
+        // playback.stop and succeed.
+        ctx.playbackGateway.nextStopException = null;
+        final int pbStopsBefore = ctx.playbackGateway.stopCallCount;
+        final PageExitStopResult second =
+            await controller.requestStopForPageExit();
+        expect(second, isA<PageExitStopSuccess>(),
+            reason: 'T037B1: the playback retry must drive a real second '
+                'playback.stop and succeed when the service state is '
+                'restored');
+        expect(second.shouldPop, isTrue);
+        expect(ctx.playbackGateway.stopCallCount, pbStopsBefore + 1,
+            reason: 'T037B1: the retry MUST call playback.stop exactly '
+                'one more time');
+        final RecordingPracticeState finalState =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(finalState.isPlaying, isFalse,
+            reason: 'after the retry succeeds, isPlaying flips to false');
+      },
+    );
+
+    test(
+      'T037B1 — concurrent callers share the same in-flight Future '
+      '(only one recorder.stop is issued even under contention)',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        final String path = ctx.recorderGateway.lastStartPath!;
+        await File(path).create(recursive: true);
+        await File(path).writeAsString('fake m4a');
+        ctx.recorderGateway.nextStopResult = _stopPath(path);
+        ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+        final Completer<void> stopGate = Completer<void>();
+        ctx.recorderGateway.stopGate = stopGate;
+
+        // Fire four concurrent callers while the gate
+        // is held.
+        final Future<PageExitStopResult> r1 =
+            controller.requestStopForPageExit();
+        final Future<PageExitStopResult> r2 =
+            controller.requestStopForPageExit();
+        final Future<PageExitStopResult> r3 =
+            controller.requestStopForPageExit();
+        final Future<PageExitStopResult> r4 =
+            controller.requestStopForPageExit();
+        await _pumpEventQueue();
+        expect(ctx.recorderGateway.stopCallCount, 1,
+            reason: 'T037B1: concurrent callers must share the in-flight '
+                'Future; only one recorder.stop is issued');
+        stopGate.complete();
+        final List<PageExitStopResult> results = await Future.wait(
+          <Future<PageExitStopResult>>[r1, r2, r3, r4],
+        );
+        for (final PageExitStopResult r in results) {
+          expect(r, isA<PageExitStopSuccess>(),
+              reason: 'T037B1: every concurrent caller resolves to the '
+                  'same success result');
+          expect(r.shouldPop, isTrue);
+        }
+        // All four resolve to the SAME instance (the
+        // completer completed once).
+        final PageExitStopResult r0 = results.first;
+        for (final PageExitStopResult r in results.skip(1)) {
+          expect(identical(r0, r), isTrue,
+              reason: 'T037B1: every concurrent caller observes the same '
+                  'PageExitStopResult identity (single completer '
+                  'completion)');
+        }
+      },
+    );
+
+    test(
+      'T037B1 — recorder retry after the in-flight Future has '
+      'resolved: a NEW in-flight Future is created (the gate '
+      'is gone, the in-flight coordinator must start fresh)',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        final String path = ctx.recorderGateway.lastStartPath!;
+        await File(path).create(recursive: true);
+        await File(path).writeAsString('fake m4a');
+        ctx.recorderGateway.nextStopResult = _stopPath(path);
+        ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
+        // First exit: stop throws.
+        ctx.recorderGateway.nextStopException =
+            Exception('synthetic recorder stop failure');
+        final PageExitStopResult first =
+            await controller.requestStopForPageExit();
+        expect(first, isA<PageExitStopFailure>());
+
+        // Second exit: the in-flight Future has been
+        // cleared (finally block ran). The retry MUST
+        // start a fresh in-flight Future. The recorder
+        // service is already idle (it cleared itself in
+        // its own catch block), so the retry resolves to
+        // skipped(serviceAlreadyTerminal) — letting the
+        // page finally pop.
+        ctx.recorderGateway.nextStopException = null;
+        final PageExitStopResult second =
+            await controller.requestStopForPageExit();
+        expect(second, isA<PageExitStopSkipped>());
+        expect((second as PageExitStopSkipped).reason,
+            PageExitStopSkipReason.serviceAlreadyTerminal);
+        expect(second.shouldPop, isTrue);
+      },
+    );
+
+    test(
+      'T037B1 — recorder.stop failure does NOT create a duplicate '
+      'Timer (the ticker remains stopped across failure)',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        ctx.recorderGateway.nextStopException =
+            Exception('synthetic recorder stop failure');
+        final PageExitStopResult first =
+            await controller.requestStopForPageExit();
+        expect(first, isA<PageExitStopFailure>());
+
+        // The ticker was stopped inside the recording
+        // branch's await chain BEFORE the await (so the
+        // MM:SS readout does not advance while the
+        // platform-channel stop is in flight) and again
+        // after the failure (the service says the
+        // recorder is idle). A second `_stopTicker` call
+        // on an already-cancelled timer is a cheap no-op
+        // — the ticker field is null. The important
+        // invariant is that no NEW Timer.periodic was
+        // created (the controller must NOT call
+        // `_startTicker` on the failure path because
+        // that would re-publish elapsedSeconds for a
+        // recording that the service says is over).
+        // We assert this indirectly: after the failure
+        // + retry (which resolves to skipped), the
+        // controller state has isRecording=false and
+        // elapsedSeconds still equals the recorded
+        // duration. If a duplicate Timer were running it
+        // would have advanced elapsedSeconds past the
+        // recorded duration.
+        final PageExitStopResult second =
+            await controller.requestStopForPageExit();
+        expect(second, isA<PageExitStopSkipped>());
+        final RecordingPracticeState state =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(state.isRecording, isFalse);
+        // elapsedSeconds is reset to recordedDurationSeconds
+        // by the failure handler (so the MM:SS readout
+        // displays the take's final length even though
+        // the take itself failed to materialise).
+        expect(state.elapsedSeconds, state.recordedDurationSeconds,
+            reason: 'elapsedSeconds MUST stay pinned to '
+                'recordedDurationSeconds after a failed exit — a '
+                'duplicate Timer would have advanced it past the '
+                'recorded duration');
+      },
+    );
   });
 }
 

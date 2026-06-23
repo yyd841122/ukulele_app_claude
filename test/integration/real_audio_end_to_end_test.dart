@@ -1,5 +1,55 @@
-// T036_REAL_AUDIO_END_TO_END_INTEGRATION_TEST
+// T036A_PROVE_PRE_DELETE_STOP_ORDER
 //
+// Augments the T036 main closed-loop test with a deterministic
+// shared event log that proves, at the integration-test level,
+// that the pre-delete playback stop happens strictly BEFORE the
+// repository delete. The Chief-Architect review of T036
+// highlighted that the existing assertions only proved:
+//
+//   * playback.stop eventually happens;
+//   * repository.delete eventually happens;
+//   * the production source happens to put `stop` before `delete`.
+//
+// They did NOT prove the call ORDER end-to-end. A future
+// regression that flipped the source order (e.g. "delete first,
+// then stop") would still satisfy those assertions.
+//
+// T036A closes the evidence gap by installing two test-only spy
+// wrappers around the production components:
+//
+//   1. `_PlaybackStopSpyGateway` wraps the existing
+//      [FakeAudioPlaybackGateway] (NOT replacing it) and records
+//      a `playbackStop` event on every `stop()` call, BEFORE
+//      delegating to the underlying fake. The wrapper still
+//      implements the full [AudioPlaybackGateway] contract and
+//      still feeds the production [RealAudioPlaybackService] —
+//      no production code is bypassed.
+//
+//   2. `_RepositoryEventSpy` wraps the REAL
+//      [DriftPracticeRecordRepository] (NOT a mock) and records
+//      a `repositoryDelete` event on every `delete(id)` call,
+//      BEFORE delegating to the underlying real repository. All
+//      other Repository methods pass through verbatim.
+//
+// Both spies share a single `List<_TestEvent>` owned by an
+// `_EventRecorder` instance. The test snapshots
+// `_eventRecorder.events.length` right before tapping the delete
+// button, then asserts, on the post-delete slice:
+//
+//   * a `playbackStop` event is present;
+//   * a `repositoryDelete` event is present;
+//   * `playbackStop` index < `repositoryDelete` index.
+//
+// The baseline snapshot is the loadFile / natural-completion
+// / replay stops that predate the delete tap. Those are NOT
+// part of the delete flow and MUST NOT pollute the assertion.
+//
+// This is the ONLY test infrastructure added for T036A. No
+// production code, shared fake, schema, Manifest, dependency,
+// permission, or public contract is modified.
+//
+// T036 ORIGINAL HEADER (kept for documentation continuity):
+// ---------------------------------------------------------------------------
 // End-to-end (vertical) integration test for the real audio
 // closed loop. The test mounts the real production `appRouter`
 // and the real production pages, wired against a real in-memory
@@ -61,6 +111,11 @@
 // T036. It contributes 4 `testWidgets` blocks (1 main closed
 // loop + 3 additional scenarios). The baseline before this task
 // was 619; after this task it is 623 (619 + 4 - 0).
+// T036A does NOT add or remove any `testWidgets` block; the
+// 4-block count is preserved. T036A only installs two spy
+// wrappers in the main closed-loop test to record the
+// pre-delete stop / repository delete ordering. The total
+// test count remains 623.
 //
 // Real Components Used:
 //   * RealAudioRecorderService           (production service)
@@ -89,6 +144,17 @@
 //   * realAudioRecorderServiceProvider   -> RealAudioRecorderService(fakeRecorder, storage)
 //   * realAudioPlaybackServiceProvider   -> RealAudioPlaybackService(fakePlayback, storage)
 //   * microphonePermissionServiceProvider-> MicrophonePermissionService(fakePermission)
+//
+// T036A delta (main closed-loop test only — the 3 additional
+// scenarios are unaffected):
+//   * `realAudioPlaybackServiceProvider` -> RealAudioPlaybackService
+//                                          (_PlaybackStopSpyGateway, storage)
+//   * `practiceRecordRepositoryProvider` -> _RepositoryEventSpy(
+//                                          real DriftPracticeRecordRepository)
+//
+// The spy layers are installed INSIDE the main closed-loop
+// test's `ProviderScope` overrides; the 3 additional scenarios
+// retain the T036 plain overrides.
 
 import 'dart:io';
 
@@ -104,6 +170,7 @@ import 'package:ukulele_app/app/app.dart';
 import 'package:ukulele_app/data/database/app_database.dart';
 import 'package:ukulele_app/data/database/app_database_provider.dart';
 import 'package:ukulele_app/features/practice_records/application/practice_record_id_generator.dart';
+import 'package:ukulele_app/features/practice_records/data/drift_practice_record_repository.dart';
 import 'package:ukulele_app/features/practice_records/data/practice_record_repository.dart';
 import 'package:ukulele_app/features/practice_records/data/practice_record_repository_provider.dart';
 import 'package:ukulele_app/features/practice_records/domain/practice_record.dart';
@@ -265,11 +332,248 @@ Future<AppDatabase> _buildDatabase() async {
   return db;
 }
 
+// =============================================================================
+// T036A — Shared event log + spy wrappers
+// =============================================================================
+//
+// The two spies below are the SOLE test infrastructure added for
+// T036A. They wrap the production components (real Drift
+// repository + real playback service) WITHOUT replacing them and
+// WITHOUT touching any production source. The wrapping is purely
+// "record event, then delegate" — the production behaviour is
+// bit-for-bit unchanged.
+//
+// `playbackStop` MUST be recorded BEFORE the fake gateway's
+// `stop()` future resolves; the controller's `_stopPlaybackIfActive`
+// `await`s the service's stop future, so the event lands
+// synchronously on entry and is observable in the event log
+// before any subsequent `repositoryDelete` could be recorded.
+//
+// `repositoryDelete` MUST be recorded BEFORE the real
+// Drift repository's delete runs; the decorator pattern records
+// synchronously on entry and only then forwards to the real
+// repository. The production controller's `await repository.delete`
+// therefore observes the recorded event before the actual SQL
+// delete completes.
+
+/// Immutable event recorded by the T036A spies.
+///
+/// Sealed so the test exhaustively matches the small event set:
+/// `playbackStop` and `repositoryDelete`. Anything else in the
+/// log is a contract violation by construction.
+sealed class _TestEvent {
+  const _TestEvent();
+
+  /// Returns a short human-readable label for failure messages.
+  String get label;
+}
+
+/// Recorded by `_PlaybackStopSpyGateway.stop()` on entry, BEFORE
+/// delegating to the underlying fake gateway.
+class _PlaybackStopEvent extends _TestEvent {
+  const _PlaybackStopEvent();
+
+  @override
+  String get label => 'playback.stop';
+}
+
+/// Recorded by `_RepositoryEventSpy.delete()` on entry, BEFORE
+/// delegating to the real `DriftPracticeRecordRepository`.
+class _RepositoryDeleteEvent extends _TestEvent {
+  const _RepositoryDeleteEvent(this.id);
+  final String id;
+
+  @override
+  String get label => 'repository.delete($id)';
+}
+
+/// Single shared event log consumed by the T036A main closed-loop
+/// test. Both spies write into the SAME instance's [events] list
+/// so the test can slice it from a single baseline snapshot.
+///
+/// The recorder is intentionally minimal: append-only list, no
+/// timestamps, no de-duplication. The test asserts on the
+/// ORDER of events, not their timing — Dart's single-threaded
+/// event loop guarantees the recorded index reflects the
+/// call-order observed by the spies.
+class _EventRecorder {
+  final List<_TestEvent> events = <_TestEvent>[];
+
+  /// Returns the index in [events] of the FIRST occurrence of
+  /// an event matching [predicate], or `-1` if none was found.
+  int indexWhere(bool Function(_TestEvent event) predicate) {
+    for (int i = 0; i < events.length; i++) {
+      if (predicate(events[i])) {
+        return i;
+      }
+    }
+    return -1;
+  }
+}
+
+/// Test-only spy wrapper around an existing
+/// [FakeAudioPlaybackGateway].
+///
+/// Implements the full [AudioPlaybackGateway] contract (so the
+/// production `RealAudioPlaybackService` can talk to it without
+/// knowing it is a spy) but intercepts `stop()` to record a
+/// `_PlaybackStopEvent` in the shared [_recorder] BEFORE
+/// delegating to the underlying fake. All other methods pass
+/// through verbatim — including T035B's listener install count,
+/// `completeOnNextPlay`, `keepPlayPending`, and every error /
+/// result knob on the wrapped fake.
+///
+/// The wrapper does NOT modify any production behaviour:
+/// - loadFile / play / pause / seek / dispose → delegate as-is;
+/// - stop → record event → delegate as-is;
+/// - playerStateStream / positionStream / durationStream /
+///   position / duration getters → delegate as-is.
+///
+/// The wrapped fake remains reachable via [fake] so existing
+/// test assertions (`stopCallCount`, `loadFileCallCount`,
+/// `lastLoadPath`, `playerStateListenerInstallCount`, etc.) keep
+/// working — T036A does not change the test surface, only adds
+/// to it.
+class _PlaybackStopSpyGateway implements AudioPlaybackGateway {
+  _PlaybackStopSpyGateway({
+    required this.fake,
+    required this.recorder,
+  });
+
+  /// The wrapped fake gateway. Existing tests continue to
+  /// assert on this object exactly as before.
+  final FakeAudioPlaybackGateway fake;
+
+  /// Shared event log.
+  final _EventRecorder recorder;
+
+  @override
+  Future<Duration?> loadFile(String filePath) => fake.loadFile(filePath);
+
+  @override
+  Future<void> setLoopModeOff() => fake.setLoopModeOff();
+
+  @override
+  Future<void> play() => fake.play();
+
+  @override
+  Future<void> pause() => fake.pause();
+
+  @override
+  Future<void> seek(Duration? position) => fake.seek(position);
+
+  @override
+  Future<void> stop() {
+    // Record the event BEFORE delegating. The production
+    // controller's `_stopPlaybackIfActive` awaits this future,
+    // so the event is observable in the log before any
+    // subsequent `repository.delete` could fire.
+    recorder.events.add(const _PlaybackStopEvent());
+    return fake.stop();
+  }
+
+  @override
+  Future<void> dispose() => fake.dispose();
+
+  @override
+  Stream<PlaybackPlayerState> get playerStateStream => fake.playerStateStream;
+
+  @override
+  Stream<Duration> get positionStream => fake.positionStream;
+
+  @override
+  Stream<Duration?> get durationStream => fake.durationStream;
+
+  @override
+  Duration get position => fake.position;
+
+  @override
+  Duration? get duration => fake.duration;
+}
+
+/// Test-only spy decorator around a REAL
+/// [DriftPracticeRecordRepository].
+///
+/// Records a `_RepositoryDeleteEvent` on entry to `delete()`,
+/// BEFORE delegating to the underlying repository. All other
+/// methods pass through verbatim.
+///
+/// The decorator is intentionally NOT a mock: it preserves the
+/// real production repository's behaviour (including all Drift
+/// writes, SQL queries, and stream emissions) and only adds the
+/// event-record seam. This means:
+///
+/// - The DB row still goes away when `delete` returns `true`.
+/// - `watchAll` still streams the updated list.
+/// - `hasAudioPathReference` still hits the real SQL.
+/// - `insert` / `getById` / `listRecent` are byte-equivalent to
+///   the unwrapped repository.
+///
+/// The decorator is the SOLE place where the
+/// `repository.delete` event enters the shared log. The
+/// production code path never bypasses the decorator in the
+/// main closed-loop test (the Provider override REPLACES the
+/// production repository provider, NOT the real repository).
+class _RepositoryEventSpy implements PracticeRecordRepository {
+  _RepositoryEventSpy({
+    required this.delegate,
+    required this.recorder,
+  });
+
+  /// The REAL Drift-backed repository. Every call (including
+  /// `delete`) is forwarded here after the event is recorded.
+  final PracticeRecordRepository delegate;
+
+  /// Shared event log.
+  final _EventRecorder recorder;
+
+  @override
+  Future<PracticeRecord> insert(PracticeRecord record) =>
+      delegate.insert(record);
+
+  @override
+  Future<PracticeRecord?> getById(String id) => delegate.getById(id);
+
+  @override
+  Future<List<PracticeRecord>> listRecent({int limit = 50}) =>
+      delegate.listRecent(limit: limit);
+
+  @override
+  Stream<List<PracticeRecord>> watchAll() => delegate.watchAll();
+
+  @override
+  Future<bool> delete(String id) {
+    // Record the event BEFORE delegating. The production
+    // controller's `await repository.delete(...)` therefore
+    // observes the event in the log before the actual SQL
+    // delete completes.
+    recorder.events.add(_RepositoryDeleteEvent(id));
+    return delegate.delete(id);
+  }
+
+  @override
+  Future<bool> hasAudioPathReference(String audioFilePath) =>
+      delegate.hasAudioPathReference(audioFilePath);
+}
+
 /// Pumps the production `UkuleleApp` (which uses the production
 /// `appRouter`) inside a `ProviderScope` with all the
 /// environment's Provider overrides. The home page is the
 /// initial route, so the test always starts at `/`.
-Future<void> _pumpApp(WidgetTester tester, _Env env, AppDatabase db) async {
+///
+/// T036A: [playbackServiceOverride] and [repositoryOverride] are
+/// optional. When supplied, the test installs the spy wrappers
+/// (T036A evidence) for the playback service and repository
+/// respectively. The 3 additional scenarios pass `null` for both
+/// to retain the T036 plain wiring; the main closed-loop test
+/// passes the spy-instrumented service / repository.
+Future<void> _pumpApp(
+  WidgetTester tester,
+  _Env env,
+  AppDatabase db, {
+  RealAudioPlaybackService? playbackServiceOverride,
+  PracticeRecordRepository? repositoryOverride,
+}) async {
   // Tall surface so the recording page (disclaimer + status +
   // timer + controls + rating + note + save) fits without
   // scrolling. The detail page also benefits from a taller
@@ -295,7 +599,16 @@ Future<void> _pumpApp(WidgetTester tester, _Env env, AppDatabase db) async {
         ),
         audioFileStorageServiceProvider.overrideWithValue(env.storage),
         realAudioRecorderServiceProvider.overrideWithValue(env.recorderService),
-        realAudioPlaybackServiceProvider.overrideWithValue(env.playbackService),
+        realAudioPlaybackServiceProvider
+            .overrideWithValue(playbackServiceOverride ?? env.playbackService),
+        // T036A: only override the repository provider when the
+        // test supplies a spy-decorated instance. The 3
+        // additional scenarios pass `null` and therefore keep
+        // the production `practiceRecordRepositoryProvider`
+        // default (the real Drift-backed repository).
+        if (repositoryOverride != null)
+          practiceRecordRepositoryProvider
+              .overrideWithValue(repositoryOverride),
         microphonePermissionServiceProvider
             .overrideWithValue(env.permissionService),
       ],
@@ -373,13 +686,43 @@ void main() {
   testWidgets(
     'T036 vertical flow: record -> save -> list -> detail -> '
     'play/pause/resume/stop -> replay -> natural complete -> '
-    'delete while playing -> DB row gone -> file cleaned up',
+    'delete while playing -> DB row gone -> file cleaned up '
+    '[T036A: pre-delete stop < repository delete, proven by '
+    'shared event log]',
     (WidgetTester tester) async {
       final _Env env = _buildEnv(tester);
       env.permissionGateway.nextCheckStatus =
           MicrophonePermissionStatus.granted;
       final AppDatabase db = await _buildDatabase();
-      await _pumpApp(tester, env, db);
+
+      // T036A — wire the two spy wrappers and the shared
+      // event log. The playback spy wraps the existing
+      // FakeAudioPlaybackGateway in place (no fake mutation,
+      // no real-service bypass); the repository spy wraps the
+      // REAL Drift-backed repository (no mock, no fake).
+      // Both spies share the same `_EventRecorder`.
+      final _EventRecorder eventRecorder = _EventRecorder();
+      final _PlaybackStopSpyGateway playbackSpy = _PlaybackStopSpyGateway(
+        fake: env.playbackGateway,
+        recorder: eventRecorder,
+      );
+      final RealAudioPlaybackService playbackServiceWithSpy =
+          RealAudioPlaybackService(
+        gateway: playbackSpy,
+        storage: env.storage,
+      );
+      final _RepositoryEventSpy repositorySpy = _RepositoryEventSpy(
+        delegate: DriftPracticeRecordRepository(database: db),
+        recorder: eventRecorder,
+      );
+
+      await _pumpApp(
+        tester,
+        env,
+        db,
+        playbackServiceOverride: playbackServiceWithSpy,
+        repositoryOverride: repositorySpy,
+      );
 
       // ---------------------------------------------------------------
       // 1. Database is empty at startup.
@@ -663,8 +1006,19 @@ void main() {
       // 19-20. Delete. The controller's `_stopPlaybackIfActive`
       // MUST run before `repository.delete` (controller
       // source-level contract).
+      //
+      // T036A — record the event-log baseline right BEFORE
+      // tapping the delete button. The slice
+      // `[events.length before tap .. end]` is the only
+      // set of events we treat as part of THIS delete flow.
+      // Anything recorded earlier (e.g. `_probeRecordingDuration`'s
+      // internal stop, the loadFile-driven stop, the user's
+      // explicit stop at step 14) is part of the playback
+      // session lifecycle and is intentionally NOT part of
+      // this assertion.
       // ---------------------------------------------------------------
       final int stopsBeforeDelete = env.playbackGateway.stopCallCount;
+      final int eventBaselineBeforeDelete = eventRecorder.events.length;
       await tester.tap(find.byKey(
           const ValueKey<String>('practice-record-detail-delete-button')));
       await tester.pump();
@@ -690,6 +1044,82 @@ void main() {
         greaterThanOrEqualTo(stopsBeforeDelete + 1),
         reason: 'stopCallCount MUST grow by >= 1 after delete (1 from '
             'pre-delete helper)',
+      );
+
+      // ---------------------------------------------------------------
+      // 20A. T036A — prove pre-delete stop < repository delete
+      // via the shared event log.
+      //
+      // The pre-delete stop fires inside
+      // `_stopPlaybackIfActive` BEFORE the controller calls
+      // `repository.delete`. Both spies record their event
+      // synchronously on entry, so the recorded order
+      // exactly matches the call order observed by the
+      // production controller. The slice
+      // `[eventBaselineBeforeDelete .. eventRecorder.events.length)`
+      // is the post-delete-tap event set; baseline events
+      // (loadFile-internal stops, natural-completion stop-less
+      // transitions, the user's step-14 stop) are excluded.
+      // ---------------------------------------------------------------
+      final List<_TestEvent> deleteSlice =
+          eventRecorder.events.sublist(eventBaselineBeforeDelete);
+      // Defensive diagnostic — if a future regression adds
+      // an unexpected event in the slice, surface the full
+      // sequence first so the failure message is informative.
+      if (deleteSlice.isEmpty) {
+        fail(
+          'T036A: event log slice is empty — the delete flow '
+          'produced no spy events. full event log: '
+          '${eventRecorder.events.map((_TestEvent e) => e.label).toList()}',
+        );
+      }
+      // `playbackStop` MUST be the first stop in the delete
+      // flow (i.e. the pre-delete helper's call). The spy
+      // also tracks any subsequent stop calls; we accept
+      // the pre-delete stop to be ANY playbackStop in the
+      // slice, since the production controller only fires
+      // the pre-delete stop exactly once before the delete
+      // (a second stop would be a T035A regression that
+      // surfaces as a separate test failure).
+      final int playbackStopIndexInSlice = deleteSlice.indexWhere(
+        (_TestEvent e) => e is _PlaybackStopEvent,
+      );
+      final int repositoryDeleteIndexInSlice = deleteSlice.indexWhere(
+        (_TestEvent e) => e is _RepositoryDeleteEvent,
+      );
+      expect(
+        playbackStopIndexInSlice,
+        isNonNegative,
+        reason: 'T036A: delete slice MUST contain a playback.stop event '
+            '(controller\'s _stopPlaybackIfActive should have fired). '
+            'slice: ${deleteSlice.map((_TestEvent e) => e.label).toList()}',
+      );
+      expect(
+        repositoryDeleteIndexInSlice,
+        isNonNegative,
+        reason: 'T036A: delete slice MUST contain a repository.delete '
+            'event (controller\'s deleteCurrentRecord should have '
+            'called repository.delete). slice: '
+            '${deleteSlice.map((_TestEvent e) => e.label).toList()}',
+      );
+      expect(
+        playbackStopIndexInSlice < repositoryDeleteIndexInSlice,
+        isTrue,
+        reason: 'T036A: playback.stop MUST happen strictly BEFORE '
+            'repository.delete in the delete flow. slice: '
+            '${deleteSlice.map((_TestEvent e) => e.label).toList()} '
+            '(playbackStopIndex=$playbackStopIndexInSlice, '
+            'repositoryDeleteIndex=$repositoryDeleteIndexInSlice)',
+      );
+      // The repository.delete event MUST reference the saved
+      // record id verbatim (not a different id, not a copy).
+      final _RepositoryDeleteEvent repositoryDeleteEvent =
+          deleteSlice[repositoryDeleteIndexInSlice] as _RepositoryDeleteEvent;
+      expect(
+        repositoryDeleteEvent.id,
+        saved.id,
+        reason: 'T036A: repository.delete event MUST reference the '
+            'saved record id verbatim, not a different row',
       );
 
       // ---------------------------------------------------------------

@@ -93,3 +93,19 @@
 - **未**修改生产代码 / 测试代码（除允许范围内 1 个 test 文件） / 文档（本 TECH_DEBT 条目 + TASK_LEDGER + AGENT_QUALITY_METRICS）/ 依赖 / Android 配置 / Drift schema / `PracticeRecord` 域模型 / Repository / DAO / `audioFilePath` 字段 / `RealAudioRecorderService` / `RealAudioPlaybackService`（既有契约已足够，无修改）/ `AudioFileStorageService` / `RecordingController` / `RecordingPage` / 详情页 UI / 录音页 UI / Manifest / 隐私政策 / `tool/verify_release_artifacts.dart` / `key.properties` / `.gitignore` / 构建产物 / 既有 fake helper 文件。
 - **未**实现真实麦克风调用 / **未**实现后台播放 / **未**实现波形 / **未**实现拖动进度 / **未**实现倍速 / **未**实现循环播放 / **未**实现剪辑 / **未**新增第二套播放服务 / **未**修改现有 fake gateway / **未**修改现有 controller / **未**修改现有 service / **未**调用底层 gateway 直连 / **未**申请 INTERNET / **未**修改 Manifest / **未**读取敏感文件。
 - **T037 仍待启动** —— `T037_REAL_AUDIO_ANDROID_DEVICE_ACCEPTANCE`（真机验收），由 GPT 首席架构师独立 Prompt 启动。T036 + T036A 自动化证据闭环完成，但**不替代**真机用户验收。
+
+---
+
+## TD-014: T037A 详情页退出播放停止（fire-and-forget 竞争）— 闭环说明
+
+**问题**：T037 真机验收发现 — 打开已保存录音的练习记录详情 → 点击播放 → 真实声音正常 → 点击页面顶部 AppBar 返回箭头 → 页面成功返回列表，但**声音继续播放**。其他行为（播放/暂停/继续/停止 / 删除 / 强行停止后重启）均正常，无崩溃或错误提示。
+
+**根因（最关键审计结论）**：`RealAudioPlaybackService.stop()` 是异步 future 调用，T035A 既有的 dispose-time stop 是 `cachedService.stop().catchError(...)` fire-and-forget；Flutter 3.44 + Riverpod 3.x 的 autoDispose 在 pop 时同步触发 `_onDispose`，但 native `just_audio` 的 platform-channel stop 在真机上需要数毫秒到数十毫秒才真正让音频解码器静音。go_router 的 route pop 动画与 fire-and-forget stop **并发执行** —— Navigator 已弹出页面，但 stop future 仍在 in-flight，结果是用户在列表页仍听到声音继续播放。
+
+**解决（closed）**：`T037A_FIX_DETAIL_BACK_NAVIGATION_PLAYBACK_STOP` —— ① controller 暴露 `Future<PageExitStopResult> requestStopForPageExit()` awaitable 接口（skip / success / failure 三态 sealed class）；② Page 层新增 `_handleExit()` 单点 chokepoint 把 AppBar 返回箭头 + PopScope.onPopInvokedWithResult 都汇入 `_await controller.requestStopForPageExit() → success→pop / failure→SnackBar+保留页面` 单一路径；③ `_exitInFlight: bool` 串行守卫防止 AppBar 重复点击 / AppBar + 系统返回并发；④ PopScope 包装 Scaffold 让 Android 系统返回走相同 chokepoint；⑤ T035A dispose-time stop 保留作为 non-cooperative safety net；⑥ `service.dispose()` **不**调用（共享 service 由 Riverpod scope teardown）。
+
+**回归证据**：净增 15 项测试（8 controller + 7 widget）。`stopGate` 机制直接证明 `requestStopForPageExit` future 在 service.stop 解析前**真的 pending** —— 这正是真机 fix 的核心断言（fire-and-forget 设计下 future 立即 resolved；awaitable 设计下 future 必须等待 service.stop）；T035B 跨会话回归显式 pin（A play → A page-exit stop → B play → B emit completed → B 翻 idle）；既有 623 测试零回归。
+
+**未**修改生产代码（除允许范围内 2 个 lib 文件）/ 测试代码（除允许范围内 3 个 test 文件：1 controller + 1 widget + 1 fake helper）/ Manifest / schema / 依赖 / 共享 service 所有权契约。
+
+**T037 仍待用户真机验收** —— 由 `T037_REAL_AUDIO_ANDROID_DEVICE_ACCEPTANCE_RESUME` 接力，需用户在真机上**手动重放 T037 验收场景**确认声音在返回时立刻停止；自动化测试覆盖已就位（638 tests passed），但真机 audio stop 时序受 native `just_audio` 实现影响，最终用户体验仍需用户真机验证。

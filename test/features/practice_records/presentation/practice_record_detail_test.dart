@@ -1903,6 +1903,492 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
+  // T037A — page-exit playback stop coordination (widget level)
+  //
+  // These tests pin the page-level contract:
+  //   - AppBar back arrow awaits the controller's
+  //     `requestStopForPageExit` BEFORE the route pops.
+  //   - Android system back / back-gesture is routed
+  //     through the SAME chokepoint (PopScope) so the
+  //     page exits cleanly.
+  //   - Duplicate exit attempts (AppBar back + system
+  //     back, or rapid AppBar back taps) do not double-
+  //     pop or double-stop.
+  //   - When `service.stop()` throws, the page is
+  //     RETAINED (does not pop) and a friendly SnackBar
+  //     is shown.
+  //   - When playback is idle, the page pops without
+  //     driving a needless `service.stop()` call.
+  //   - The T035A dispose hook is preserved as a non-
+  //     cooperative safety net.
+  //
+  // Why the helpers are inlined rather than reusing
+  // `pumpDetailPage` / `settleGetById` / `buildIsolatedPlayback`:
+  // those helpers are declared as local functions INSIDE
+  // the `PracticeRecordDetailPage` group closure; Dart
+  // `group()` callbacks are `void Function()` so a nested
+  // `group` is a closure-within-a-closure, but the type
+  // system treats them as fresh scopes and the inner
+  // closure cannot access the outer closure's local
+  // functions without explicit capture. To keep the
+  // T037A tests self-contained AND to avoid
+  // refactoring the existing group's helper scoping,
+  // the T037A tests inline the minimum boilerplate they
+  // need (router + provider + service wiring + a real
+  // `.m4a` planted in a temp root).
+  // ---------------------------------------------------------------------------
+
+  group('T037A page-exit playback stop coordination', () {
+    Future<void> pumpAndSettleWithRealAsync(
+      WidgetTester tester, {
+      Duration settle = const Duration(milliseconds: 200),
+    }) async {
+      // Real disk I/O for `playback.loadFile` / `play` /
+      // `stop` must run inside `tester.runAsync` so the
+      // fake-async clock is not blocked. The T037A tests
+      // exercise the real `RealAudioPlaybackService` wired
+      // to a `FakeAudioPlaybackGateway`; the gateway's
+      // `setLoopModeOff` / `loadFile` / `stop` calls are
+      // async and we want the awaitable stop to actually
+      // resolve before the assertion runs.
+      await tester.runAsync(() async {
+        await Future<void>.delayed(settle);
+      });
+      await tester.pump();
+    }
+
+    /// Bundles the T037A test setup: an isolated
+    /// playback service + a real audio file path
+    /// inside the service's storage root. The temp
+    /// directory is registered with `addTearDown` so
+    /// it is removed at the end of the test.
+    ({
+      RealAudioPlaybackService service,
+      FakeAudioPlaybackGateway gateway,
+      AudioFileStorageService storage,
+      String audioPath,
+    }) setupT037A() {
+      final Directory root = Directory.systemTemp.createTempSync(
+        't037a_widget_',
+      );
+      addTearDown(() {
+        if (root.existsSync()) {
+          try {
+            root.deleteSync(recursive: true);
+          } on FileSystemException {
+            // best-effort
+          }
+        }
+      });
+      final AudioFileStorageService storage = AudioFileStorageService(
+        rootDirectoryProvider: () async => root,
+      );
+      final FakeAudioPlaybackGateway gateway = FakeAudioPlaybackGateway();
+      final RealAudioPlaybackService service = RealAudioPlaybackService(
+        gateway: gateway,
+        storage: storage,
+      );
+      final Directory saved = Directory(p.join(root.path, 'saved'))
+        ..createSync(recursive: true);
+      final File audio = File(p.join(saved.path, 'r.m4a'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('bytes');
+      return (
+        service: service,
+        gateway: gateway,
+        storage: storage,
+        audioPath: audio.path,
+      );
+    }
+
+    /// Builds a GoRouter that mounts
+    /// [PracticeRecordDetailPage] at /records/:recordId
+    /// with a sentinel list page as the parent route,
+    /// wires the supplied repository / storage /
+    /// playback service into Riverpod, and pumps the
+    /// page until the initial getById resolves.
+    Future<void> pumpT037A(
+      WidgetTester tester, {
+      required _FakePracticeRecordRepository repository,
+      required AudioFileStorageService storage,
+      required RealAudioPlaybackService playbackService,
+      String id = 'r-1',
+    }) async {
+      final GoRouter router = GoRouter(
+        initialLocation: '/records/$id',
+        routes: <RouteBase>[
+          GoRoute(
+            path: '/records',
+            name: 'records',
+            builder: (BuildContext context, GoRouterState state) =>
+                const _RecordsSentinelPage(),
+            routes: <RouteBase>[
+              GoRoute(
+                path: ':recordId',
+                name: 'record-detail',
+                builder: (BuildContext context, GoRouterState state) =>
+                    PracticeRecordDetailPage(
+                  recordId: state.pathParameters['recordId'] ?? '',
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: <Override>[
+            practiceRecordRepositoryProvider.overrideWithValue(repository),
+            audioFileStorageServiceProvider.overrideWithValue(storage),
+            realAudioPlaybackServiceProvider.overrideWithValue(playbackService),
+          ],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+      // Drive the initial getById through the real
+      // async clock so the page can transition out of
+      // the loading state.
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pump();
+    }
+
+    testWidgets(
+        'T037A — AppBar back arrow while playing awaits '
+        'requestStopForPageExit, then pops back to the list '
+        '(the real-device regression test)', (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) = setupT037A();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpT037A(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+
+      // Start playback.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await pumpAndSettleWithRealAsync(tester);
+
+      expect(gateway.loadFileCallCount, 1,
+          reason: 'play must drive service.loadFile once');
+
+      // Capture stopCallCount before the back gesture.
+      final int stopCountBefore = gateway.stopCallCount;
+
+      // Tap the AppBar back arrow. The page MUST
+      // await requestStopForPageExit BEFORE popping.
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      // Pump a few frames to let the awaited stop
+      // resolve and the route transition start.
+      await pumpAndSettleWithRealAsync(tester);
+      // The go_router pop animation needs additional
+      // pumps to settle.
+      await tester.pumpAndSettle();
+
+      expect(gateway.stopCallCount, stopCountBefore + 1,
+          reason: 'AppBar back must drive service.stop exactly once');
+      // The detail page has popped; the sentinel list
+      // is on top.
+      expect(find.byType(_RecordsSentinelPage), findsOneWidget,
+          reason: 'detail page must pop back to the list');
+    });
+
+    testWidgets(
+        'T037A — AppBar back arrow from `paused` state calls '
+        'service.stop exactly once and pops back to the list',
+        (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) = setupT037A();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpT037A(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+
+      // Start playback, then pause.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await pumpAndSettleWithRealAsync(tester);
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-pause-button')));
+      await pumpAndSettleWithRealAsync(tester);
+
+      // Sanity: the page shows the resume + stop
+      // buttons (we are in `paused`).
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-resume-button')),
+        findsOneWidget,
+      );
+
+      final int stopCountBefore = gateway.stopCallCount;
+
+      // Tap AppBar back.
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await pumpAndSettleWithRealAsync(tester);
+      await tester.pumpAndSettle();
+
+      expect(gateway.stopCallCount, stopCountBefore + 1,
+          reason: 'AppBar back from `paused` must drive service.stop '
+              'exactly once');
+      expect(find.byType(_RecordsSentinelPage), findsOneWidget);
+    });
+
+    testWidgets(
+        'T037A — AppBar back arrow from `idle` (no playback) '
+        'pops without driving a needless service.stop call',
+        (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) = setupT037A();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpT037A(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+
+      // Precondition: no play tap, so playbackStatus is
+      // `idle`.
+      expect(find.text('准备播放'), findsOneWidget);
+      final int stopCountBefore = gateway.stopCallCount;
+
+      // Tap AppBar back.
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(gateway.stopCallCount, stopCountBefore,
+          reason: 'idle page exit must not call service.stop');
+      expect(find.byType(_RecordsSentinelPage), findsOneWidget);
+    });
+
+    testWidgets(
+        'T037A — Android system back while playing is routed through '
+        'PopScope → requestStopForPageExit → service.stop → pop',
+        (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) = setupT037A();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpT037A(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+
+      // Start playback.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await pumpAndSettleWithRealAsync(tester);
+
+      final int stopCountBefore = gateway.stopCallCount;
+
+      // Drive the Android system back gesture via
+      // `tester.binding.handlePopRoute()`. This is
+      // the path Flutter takes on Android when the
+      // user presses the system back button or
+      // performs the back-gesture: the framework
+      // routes it through the [WidgetsBinding] →
+      // [Navigator] → [PopScope] chain. The
+      // `handlePopRoute` is the production entry
+      // point used by the Android engine to invoke
+      // the Flutter navigation stack.
+      final bool didHandle = await tester.binding.handlePopRoute();
+      // Whether or not `handlePopRoute` returns true
+      // (which depends on whether the Navigator
+      // ultimately popped) is a separate question
+      // from whether the PopScope intercepted the
+      // back — the PopScope's `canPop = false` is
+      // the gating signal. The test asserts on the
+      // post-coordination state: the page must have
+      // called service.stop and the page must have
+      // popped.
+      // ignore: avoid_print
+      print('handlePopRoute returned: $didHandle');
+      await pumpAndSettleWithRealAsync(tester);
+      await tester.pumpAndSettle();
+
+      expect(gateway.stopCallCount, stopCountBefore + 1,
+          reason: 'system back while playing must drive service.stop '
+              'exactly once');
+      expect(find.byType(_RecordsSentinelPage), findsOneWidget,
+          reason: 'after the awaited stop, the page must pop');
+    });
+
+    testWidgets(
+        'T037A — duplicate back gesture (AppBar back + system back) '
+        'calls service.stop exactly once and pops exactly once',
+        (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) = setupT037A();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpT037A(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+
+      // Start playback.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await pumpAndSettleWithRealAsync(tester);
+
+      final int stopCountBefore = gateway.stopCallCount;
+
+      // Tap AppBar back twice in quick succession.
+      // The second tap is fired while the awaited
+      // stop is still in flight. The page's
+      // `_exitInFlight` guard MUST refuse the second
+      // exit so service.stop is called exactly once.
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      // Pump a few frames — the first awaited stop
+      // is in flight.
+      await tester.pump();
+      // Try to tap again. The IconButton is still in
+      // the tree (the page has not yet popped), so
+      // `tester.tap` dispatches a synthetic tap that
+      // hits the same onPressed callback. The page
+      // guard MUST refuse.
+      await tester.tap(find.byIcon(Icons.arrow_back), warnIfMissed: false);
+      await pumpAndSettleWithRealAsync(tester);
+      await tester.pumpAndSettle();
+
+      expect(gateway.stopCallCount, stopCountBefore + 1,
+          reason: 'duplicate AppBar back taps must drive service.stop '
+              'exactly once (the page-exit guard)');
+      expect(find.byType(_RecordsSentinelPage), findsOneWidget,
+          reason: 'page must pop exactly once');
+    });
+
+    testWidgets(
+        'T037A — service.stop throws: page is retained, friendly '
+        'SnackBar is shown, no unhandled async error, no double-pop',
+        (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) = setupT037A();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpT037A(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+
+      // Start playback.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await pumpAndSettleWithRealAsync(tester);
+
+      // Inject a stop failure so the awaited
+      // requestStopForPageExit returns failure.
+      gateway.nextStopException = Exception('synthetic stop failure');
+
+      // Tap AppBar back.
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await pumpAndSettleWithRealAsync(tester);
+      await tester.pump();
+
+      // The page MUST be retained (no pop).
+      expect(find.byType(PracticeRecordDetailPage), findsOneWidget,
+          reason: 'page must stay mounted when service.stop throws');
+      // The page MUST surface a friendly SnackBar.
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-exit-stop-failure-snackbar')),
+        findsOneWidget,
+        reason: 'page must render the dedicated failure SnackBar',
+      );
+      // The SnackBar copy must be safe: no synthetic,
+      // no path, no exception class name.
+      expect(find.textContaining('synthetic'), findsNothing,
+          reason: 'the rendered SnackBar copy must NOT contain the '
+              'exception message');
+      expect(find.textContaining('.m4a'), findsNothing);
+      // The detail page's delete button is still on
+      // the tree (so the user can perform other
+      // actions while the failure SnackBar is up).
+      expect(
+          find.byKey(
+              const ValueKey<String>('practice-record-detail-delete-button')),
+          findsOneWidget);
+      // No unhandled async error.
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+        'T037A — dispose-time stop is preserved as a non-cooperative '
+        'safety net (T035A dispose contract is intact)',
+        (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) = setupT037A();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpT037A(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+
+      // Start playback.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await pumpAndSettleWithRealAsync(tester);
+
+      final int stopCountBefore = gateway.stopCallCount;
+
+      // Drop the widget tree WITHOUT going through
+      // the page's exit handler. The T035A dispose
+      // hook is the safety net for this non-
+      // cooperative removal — it must still drive
+      // service.stop exactly once.
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      await pumpAndSettleWithRealAsync(tester);
+
+      expect(gateway.stopCallCount, stopCountBefore + 1,
+          reason: 'T035A dispose-time stop remains the safety net for '
+              'non-cooperative page removals');
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // T035 — real-audio playback section (page-level)
   //
   // The T035 group exercises the [_PlaybackSection] widget:

@@ -82,6 +82,39 @@
 //   do NOT introduce a second copy of these mappings — the brief
 //   requires "复用 T013.4B 已有的日期、时长、PracticeType 和
 //   SelfAssessment 显示映射，不得创建互相矛盾的第二套文案".
+//
+// T037A — page-exit playback stop coordination:
+// - Root-cause (real-device reproduction): opening a recorded
+//   playback detail, tapping play, then tapping the AppBar back
+//   arrow (or pressing Android system back) left the underlying
+//   `just_audio` player still audible after the route
+//   transition completed. The previous T035A dispose hook was
+//   fire-and-forget, so the Navigator popped while the
+//   platform-channel stop future was still in flight.
+// - Fix: a single chokepoint [_handleExit] is the SOLE entry
+//   point for all exit gestures (AppBar back, Android system
+//   back / back-gesture, route pop). It awaits the
+//   controller's NEW [PracticeRecordDetailController
+//   .requestStopForPageExit] and only then drives the
+//   navigation. [_exitInFlight] serialises concurrent exit
+//   attempts so a double-tap on the AppBar back arrow (or the
+//   AppBar back + an immediate Android system back) cannot
+//   double-pop or double-stop.
+// - [PopScope] wraps the page body so Android system back
+//   invokes the same chokepoint. When [_exitInFlight] is true
+//   (or the controller is awaiting stop), [PopScope.canPop] is
+//   false and [onPopInvokedWithResult] drives the exit
+//   coordination. When no exit is in flight AND no active
+//   playback exists, the controller reports `skipped` and the
+//   page lets the system back pop normally (so the system back
+//   still works on the not-found / loading / idle states).
+// - Failure mode: when [requestStopForPageExit] returns
+//   [PageExitStopFailure] the page surfaces a friendly SnackBar
+//   AND keeps itself mounted (does NOT pop). The user can retry
+//   the back gesture after seeing the SnackBar.
+// - The T035A dispose hook is preserved as a non-cooperative
+//   safety net (a parent route replaced, or a test that drops
+//   the widget tree without calling the page's exit handler).
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -108,63 +141,206 @@ class PracticeRecordDetailPage extends ConsumerStatefulWidget {
 
 class _PracticeRecordDetailPageState
     extends ConsumerState<PracticeRecordDetailPage> {
+  /// T037A — exit-coordination re-entrancy guard. While an
+  /// exit is in flight (we are awaiting the controller's
+  /// [requestStopForPageExit] OR we are in the microtask
+  /// window between stop completion and the actual pop) we
+  /// refuse additional exit requests so a double-tap on the
+  /// AppBar back arrow (or AppBar back + immediate Android
+  /// system back) cannot double-pop or double-stop the
+  /// playback service. The guard is intentionally a plain
+  /// bool — the page is single-threaded on the UI isolate
+  /// and no async gap exists between read and write.
+  bool _exitInFlight = false;
+
   @override
   Widget build(BuildContext context) {
     final AsyncValue<PracticeRecordDetailState> asyncState = ref.watch(
       practiceRecordDetailControllerProvider(widget.recordId),
     );
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('练习记录详情'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          // Go back via the router so the navigation contract is
-          // owned by GoRouter. If the page was opened directly
-          // (no parent on the stack), fall back to /records so
-          // the user is never stranded.
-          onPressed: () => _popOrGoRecords(context),
+    // T037A — the page drives the AppBar back arrow and the
+    // Android system back / back-gesture through a single
+    // chokepoint ([_handleExit]). PopScope intercepts the
+    // latter; canPop is gated on [_exitInFlight] AND on
+    // whether the controller currently holds an active
+    // playback session (so the system back still works
+    // normally on the not-found / loading / idle states).
+    final bool hasActivePlayback = _hasActivePlayback(asyncState);
+    return PopScope(
+      // When an exit is already in flight we MUST NOT let
+      // the framework pop — that would double-pop. When a
+      // playback session is active we also intercept, so
+      // we can await the stop first. Otherwise (idle /
+      // not-found / loading / error) we let the system
+      // back pop normally.
+      canPop: !_exitInFlight && !hasActivePlayback,
+      onPopInvokedWithResult: (bool didPop, Object? result) {
+        if (didPop) {
+          // The framework already popped (no active session,
+          // no in-flight exit). Nothing to coordinate.
+          return;
+        }
+        // canPop was false → drive the exit coordination.
+        _handleExit();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('练习记录详情'),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            // T037A — route AppBar back through the same
+            // chokepoint as Android system back. `_popOrGoRecords`
+            // is preserved for the not-found / failure cases
+            // (the not-found view has its own "返回练习记录列表"
+            // button that calls _popOrGoRecords directly because
+            // it is reached only when no active playback exists).
+            onPressed: _handleExit,
+          ),
         ),
-      ),
-      body: SafeArea(
-        child: asyncState.when(
-          loading: () => const _LoadingView(),
-          error: (Object error, StackTrace stackTrace) {
-            debugPrint(
-              'practiceRecordDetailControllerProvider build failed: '
-              '$error\n$stackTrace',
-            );
-            return _ErrorView(
-              onRetry: () => ref.invalidate(
-                practiceRecordDetailControllerProvider(widget.recordId),
-              ),
-            );
-          },
-          data: (PracticeRecordDetailState state) {
-            if (state.isNotFound) {
-              return _NotFoundView(
-                onBackToList: () => _popOrGoRecords(context),
+        body: SafeArea(
+          child: asyncState.when(
+            loading: () => const _LoadingView(),
+            error: (Object error, StackTrace stackTrace) {
+              debugPrint(
+                'practiceRecordDetailControllerProvider build failed: '
+                '$error\n$stackTrace',
               );
-            }
-            final PracticeRecord record = state.record!;
-            final PracticeRecordDetailController controller = ref.read(
-              practiceRecordDetailControllerProvider(widget.recordId).notifier,
-            );
-            // The in-flight signal is read from the WATCHED
-            // state — this is the only source of truth for the
-            // UI. When the controller publishes
-            // `isDeleting = true`, the parent `ref.watch` rebuilds
-            // us and the button is disabled in the same frame.
-            return _DataView(
-              record: record,
-              state: state,
-              isDeleting: state.isDeleting,
-              onDeletePressed: () => _confirmAndDelete(context, controller),
-            );
-          },
+              return _ErrorView(
+                onRetry: () => ref.invalidate(
+                  practiceRecordDetailControllerProvider(widget.recordId),
+                ),
+              );
+            },
+            data: (PracticeRecordDetailState state) {
+              if (state.isNotFound) {
+                return _NotFoundView(
+                  onBackToList: () => _popOrGoRecords(context),
+                );
+              }
+              final PracticeRecord record = state.record!;
+              final PracticeRecordDetailController controller = ref.read(
+                practiceRecordDetailControllerProvider(widget.recordId)
+                    .notifier,
+              );
+              // The in-flight signal is read from the WATCHED
+              // state — this is the only source of truth for the
+              // UI. When the controller publishes
+              // `isDeleting = true`, the parent `ref.watch` rebuilds
+              // us and the button is disabled in the same frame.
+              return _DataView(
+                record: record,
+                state: state,
+                isDeleting: state.isDeleting,
+                onDeletePressed: () => _confirmAndDelete(context, controller),
+              );
+            },
+          ),
         ),
       ),
     );
+  }
+
+  /// T037A — returns `true` iff the current watched state
+  /// implies an active playback session that must be stopped
+  /// before navigation. Mirrors
+  /// [PracticeRecordDetailState.canStop] but inlined here so
+  /// `build` does not need to descend through the
+  /// AsyncValue's data branch on every navigation gesture
+  /// (the AsyncValue may be in `loading` — in that case
+  /// `canStop` is vacuously false).
+  bool _hasActivePlayback(AsyncValue<PracticeRecordDetailState> asyncState) {
+    final PracticeRecordDetailState? s = asyncState.value;
+    if (s == null) {
+      return false;
+    }
+    return s.canStop;
+  }
+
+  /// T037A — single chokepoint for every page-exit gesture.
+  ///
+  /// Flow:
+  /// 1. Re-entrancy: if [_exitInFlight] is already true,
+  ///    refuse the call so a double-tap on the AppBar back
+  ///    (or AppBar back + immediate Android system back)
+  ///    cannot double-stop or double-pop.
+  /// 2. Await the controller's
+  ///    [PracticeRecordDetailController.requestStopForPageExit].
+  ///    This is the actual fix: the stop is awaited (NOT
+  ///    fire-and-forget) so the platform-channel stop
+  ///    resolves before the Navigator pops.
+  /// 3. If the result is [PageExitStopSuccess] or
+  ///    [PageExitStopSkipped] → pop the route.
+  /// 4. If the result is [PageExitStopFailure] → render
+  ///    the supplied friendly SnackBar AND keep the page
+  ///    mounted. The guard is released so the user can
+  ///    retry the back gesture after the SnackBar
+  ///    dismisses.
+  ///
+  /// The method is intentionally fire-and-forget from the
+  /// framework's perspective (the AppBar `onPressed` /
+  /// `onPopInvokedWithResult` cannot be `async` directly),
+  /// but every await is bracketed inside the function so
+  /// the actual navigation only happens after the stop
+  /// resolves.
+  void _handleExit() {
+    if (_exitInFlight) {
+      return;
+    }
+    _exitInFlight = true;
+    // ignore: discarded_futures
+    _runExit();
+  }
+
+  Future<void> _runExit() async {
+    PageExitStopResult result;
+    try {
+      final PracticeRecordDetailController controller = ref.read(
+        practiceRecordDetailControllerProvider(widget.recordId).notifier,
+      );
+      result = await controller.requestStopForPageExit();
+    } on Object catch (e, st) {
+      // The controller explicitly never throws, but we
+      // belt-and-braces this branch: an unexpected throw
+      // must NOT leave the page in an un-poppable state.
+      debugPrint(
+        'PracticeRecordDetailPage _runExit unexpected throw: '
+        '$e\n$st',
+      );
+      result = const PageExitStopResult.failure(
+        message: '停止录音失败，请重试',
+      );
+    }
+    // The widget may have been disposed while we awaited
+    // (e.g. a parent route replaced the detail page). In
+    // that case `mounted` is false and we must not touch
+    // BuildContext.
+    if (!mounted) {
+      return;
+    }
+    if (result.hasUserFacingError) {
+      final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+      messenger.showSnackBar(
+        SnackBar(
+          key: const ValueKey<String>(
+            'practice-record-detail-exit-stop-failure-snackbar',
+          ),
+          content: Text(result.message ?? '停止录音失败，请重试'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      // Keep the page mounted; release the guard so the
+      // user can retry the back gesture.
+      _exitInFlight = false;
+      return;
+    }
+    // Success or skip — pop. The Navigator's `pop` does
+    // NOT itself trigger another `_handleExit` because
+    // the page is being torn down.
+    _popOrGoRecords(context);
+    // `_popOrGoRecords` is synchronous from the page's
+    // perspective; the guard is intentionally not
+    // released here because the page is on its way out.
   }
 
   /// Pops back to the list. If the page was reached without a

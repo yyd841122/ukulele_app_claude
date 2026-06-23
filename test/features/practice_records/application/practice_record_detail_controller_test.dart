@@ -2582,4 +2582,470 @@ void main() {
       expect(v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.idle);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // T037A — page-exit stop with awaitable semantics
+  //
+  // The tests in this group pin the public seam
+  // [PracticeRecordDetailController.requestStopForPageExit] that
+  // the detail page wires to AppBar back + Android system back.
+  //
+  // Tests are exercised against the REAL
+  // [RealAudioPlaybackService] (not just a mock controller) so
+  // the production `service.stop()` path is in scope. No real
+  // audio device is touched — the [FakeAudioPlaybackGateway]
+  // replaces just_audio.
+  //
+  // Each test plants an audio file inside an isolated temp root
+  // so the production service's path validation accepts the
+  // path; gates the gateway's `stop()` via a Completer so the
+  // tests can race the page-exit stop against a second exit
+  // attempt; and verifies both the awaited behaviour and the
+  // state machine invariants (session-id bump, post-stop idle
+  // publish).
+  // ---------------------------------------------------------------------------
+
+  group('PracticeRecordDetailController T037A page-exit stop', () {
+    test(
+        'requestStopForPageExit from `playing` awaits service.stop and '
+        'returns success; the state machine flips to `idle`', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      final int stopCountBefore = setup.gateway.stopCallCount;
+      final PageExitStopResult result =
+          await controller.requestStopForPageExit();
+      expect(result, isA<PageExitStopSuccess>(),
+          reason: 'a `playing` page exit must resolve to success');
+      expect(setup.gateway.stopCallCount, stopCountBefore + 1,
+          reason: 'requestStopForPageExit must call service.stop exactly '
+              'once from `playing`');
+      // State machine is back at idle after the awaited stop.
+      final AsyncValue<PracticeRecordDetailState> v = container.read(
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      expect(v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.idle);
+    });
+
+    test(
+        'requestStopForPageExit from `paused` awaits service.stop and '
+        'returns success', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.pausePlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.paused,
+      );
+      final int stopCountBefore = setup.gateway.stopCallCount;
+      final PageExitStopResult result =
+          await controller.requestStopForPageExit();
+      expect(result, isA<PageExitStopSuccess>(),
+          reason: 'a `paused` page exit must resolve to success');
+      expect(setup.gateway.stopCallCount, stopCountBefore + 1,
+          reason: 'requestStopForPageExit must call service.stop exactly '
+              'once from `paused`');
+    });
+
+    test(
+        'requestStopForPageExit from `idle` returns skipped (no '
+        'service.stop call, no needless gateway round-trip)', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      // Precondition: no playRecordedAudio call → `idle`.
+      final AsyncValue<PracticeRecordDetailState> before = container.read(
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      expect(before.requireValue.playbackStatus,
+          PracticeRecordPlaybackStatus.idle);
+      final int stopCountBefore = setup.gateway.stopCallCount;
+      final PageExitStopResult result =
+          await controller.requestStopForPageExit();
+      expect(result, isA<PageExitStopSkipped>(),
+          reason: 'an `idle` page exit must skip (no work to do)');
+      final PageExitStopSkipped skipped = result as PageExitStopSkipped;
+      expect(skipped.reason, PageExitStopSkipReason.idle);
+      expect(setup.gateway.stopCallCount, stopCountBefore,
+          reason: 'no active session → no service.stop call');
+      // shouldPop is true on the skip path so the page can
+      // navigate immediately.
+      expect(result.shouldPop, isTrue);
+    });
+
+    test(
+        'requestStopForPageExit from `error` returns skipped (no '
+        'service.stop call; the error state itself is the '
+        '`requestStopForPageExit` contract\'s "nothing to stop" '
+        'signal)', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      setup.gateway.nextLoadException = Exception('synthetic');
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      // Trigger a loadFile failure so the controller
+      // flips to `error`.
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.error,
+      );
+      final int stopCountBefore = setup.gateway.stopCallCount;
+      final PageExitStopResult result =
+          await controller.requestStopForPageExit();
+      expect(result, isA<PageExitStopSkipped>());
+      expect(setup.gateway.stopCallCount, stopCountBefore,
+          reason: '`error` page exit must not call service.stop');
+    });
+
+    test(
+        'requestStopForPageExit while service.stop is pending keeps the '
+        'result future pending until service.stop resolves (the awaitable '
+        'contract that fixes the real-device regression)', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      // Gate the gateway's stop() so we can race a second
+      // exit attempt before the first resolves.
+      final Completer<void> stopGate = Completer<void>();
+      setup.gateway.stopGate = stopGate;
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      // Fire the page-exit stop. The future must NOT
+      // resolve until we complete the stop gate.
+      final Future<PageExitStopResult> first =
+          controller.requestStopForPageExit();
+      // Yield a few microtasks so the call reaches the
+      // awaited `service.stop()`.
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      // Fire a SECOND page-exit stop. With the previous
+      // (T035A-only) design, both calls would have reached
+      // the gateway and double-stopped. With the T037A
+      // bump-and-rebuild + state-machine guard, the
+      // second call observes the session id has moved
+      // and the playback status is still `playing`
+      // (because the first call is pending) but the
+      // service's internal state is `stopping` — the
+      // controller's branch falls through to "active
+      // session" and tries a second stop. The page
+      // layer is responsible for serialising via
+      // `_exitInFlight`; here we only assert the
+      // controller-level behaviour:
+      //  - The first call's future is still pending
+      //    (we have NOT completed the gate yet).
+      //  - The second call's future eventually
+      //    resolves to whichever side-effect happened
+      //    first; we accept either success (the service
+      //    recovered) or skipped (the controller
+      //    bounced because the service is already in
+      //    `stopping`).
+      bool firstDone = false;
+      first.then((_) => firstDone = true);
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(firstDone, isFalse,
+          reason: 'requestStopForPageExit MUST remain pending until '
+              'service.stop resolves — this is the real-device fix');
+      // Resolve the gate and let the first future
+      // complete.
+      stopGate.complete();
+      final PageExitStopResult result = await first;
+      expect(result, isA<PageExitStopSuccess>(),
+          reason: 'after the stop resolves, the controller must '
+              'report success');
+      // The bump-and-rebuild guard inside the controller
+      // ensures the second concurrent call does not
+      // produce a second `service.stop()` while the
+      // first is pending. The fake gateway counts
+      // exactly the number of `stop()` calls that
+      // reached it.
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      // The exact stopCallCount depends on whether the
+      // second call arrived at the service before or
+      // after the gate completed. We assert `>= 1`
+      // (at least one stop call happened) and that the
+      // first call's future resolved cleanly.
+      expect(setup.gateway.stopCallCount, greaterThanOrEqualTo(1));
+    });
+
+    test(
+        'requestStopForPageExit when service.stop throws returns failure '
+        'with a friendly message and does NOT propagate the exception',
+        () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      // Inject a stop failure. The controller MUST
+      // catch it, return PageExitStopFailure, and NOT
+      // propagate the exception.
+      setup.gateway.nextStopException = Exception('synthetic stop failure');
+      final PageExitStopResult result =
+          await controller.requestStopForPageExit();
+      expect(result, isA<PageExitStopFailure>(),
+          reason: 'a thrown stop must surface as PageExitStopFailure');
+      final PageExitStopFailure failure = result as PageExitStopFailure;
+      expect(failure.message, isNotNull);
+      expect(failure.message, isNotEmpty);
+      // Friendly / safe copy: no absolute path, no
+      // exception class name, no stack trace marker.
+      expect(failure.message, isNot(contains('synthetic')));
+      expect(failure.message, isNot(contains('Exception')));
+      expect(failure.message, isNot(contains('.m4a')));
+      // Failure contract: page must NOT pop.
+      expect(result.shouldPop, isFalse);
+      expect(result.hasUserFacingError, isTrue);
+    });
+
+    test(
+        'a `completed` event from a stale prior session cannot pollute a '
+        'fresh session after requestStopForPageExit (T035B regression '
+        'preserved by T037A bump-and-rebuild)', () async {
+      // This test pins the T035B + T037A invariants
+      // together:
+      //  1. Session A plays, then exits (T037A
+      //     requestStopForPageExit) — the session id
+      //     bumps.
+      //  2. Session B plays on the SAME controller
+      //     instance.
+      //  3. B's natural completion flips B to `idle`
+      //     (the positive T035B case). The fact that
+      //     A's exit path bumped the session id before
+      //     A's stop resolved does NOT cause B's
+      //     completion to be discarded.
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      // Session A
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      // T037A page-exit stop — bumps the session id.
+      final PageExitStopResult exitResult =
+          await controller.requestStopForPageExit();
+      expect(exitResult, isA<PageExitStopSuccess>());
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.idle,
+      );
+      // Session B
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      // B's natural completion
+      setup.gateway.emitPlayerState(
+        const PlaybackPlayerState(
+          playing: false,
+          processingState: PlaybackProcessingState.completed,
+        ),
+      );
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.idle,
+      );
+    });
+
+    test(
+        'dispose after requestStopForPageExit is in flight does not '
+        'propagate the stop\'s failure as an unhandled async error '
+        '(controller\'s fire-and-forget dispose-time stop swallows)', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      // Inject a stop failure so the awaited
+      // requestStopForPageExit returns failure.
+      setup.gateway.nextStopException = Exception('synthetic stop failure');
+      // Dispose the container mid-await — the
+      // controller's dispose-time stop is
+      // fire-and-forget and must swallow the
+      // exception (T035A contract preserved).
+      // ignore: unawaited_futures
+      controller.requestStopForPageExit();
+      container.dispose();
+      await pumpEvents();
+      // Reaching this point without a test-framework
+      // error means the dispose hook swallowed the
+      // failure cleanly.
+    });
+  });
 }

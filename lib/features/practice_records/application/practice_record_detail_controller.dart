@@ -264,6 +264,56 @@
 //      state, and B's listener is provably distinct from
 //      A's listener (verified via the fake gateway's new
 //      `recordedListenerCount` counter).
+//
+// T037A — page-exit stop with awaitable semantics:
+// - Real-device reproduction: opening a recorded playback
+//   detail, tapping play, then tapping the AppBar back
+//   arrow left the underlying `just_audio` player still
+//   audible after the route transition completed. Root
+//   cause: the previous page-exit stop was a
+//   fire-and-forget call inside [_onDispose]; the route
+//   pop animation completed BEFORE the platform-channel
+//   stop future resolved, so the Navigator popped the
+//   page while the native audio decoder was still
+//   running.
+// - Fix: a NEW public method [requestStopForPageExit]
+//   returns an awaitable [PageExitStopResult] so the
+//   page can hold the route transition until the player
+//   is actually silent. The decision table:
+//    * `idle | error` → [PageExitStopResult.skipped] (no
+//      gateway round-trip needed).
+//    * service already `idle` despite a non-idle
+//      controller state (a stale `completed` event
+//      arrived between the natural-completion handler and
+//      this call) → also [PageExitStopResult.skipped].
+//    * `loading | ready | playing | paused` →
+//      `await service.stop()` and report success.
+//    * `service.stop()` throws →
+//      [PageExitStopResult.failure] (the page renders a
+//      SnackBar and keeps the page mounted).
+// - The page-level coordination (AppBar back, Android
+//   system back / back-gesture, route pop) is the SOLE
+//   caller of [requestStopForPageExit]. The disposal
+//   hook retains its fire-and-forget stop as a
+//   **last-resort safety net** for non-cooperative page
+//   removals (e.g. a parent route replaced, or an
+//   automated test that drops the widget tree without
+//   calling the page's exit handler).
+// - Regression coverage:
+//    * AppBar back while playing → stop called exactly
+//      once, awaited, then pop; returns to list.
+//    * Android system back → same path through
+//      [PopScope.onPopInvokedWithResult] (Flutter 3.44).
+//    * Paused back → stop called exactly once.
+//    * Idle back → no needless stop.
+//    * Pending stop + double back → exactly one pop, no
+//      duplicate stop calls.
+//    * `service.stop()` throws → page retained, friendly
+//      SnackBar shown, no unhandled async error.
+//    * T035B regression: a fresh session's natural
+//      completion still flips the state machine to
+//      `idle`; a stale event from a prior session does
+//      not pollute the new session.
 
 import 'dart:async';
 import 'dart:io';
@@ -1240,6 +1290,157 @@ class PracticeRecordDetailController
     );
   }
 
+  /// T037A — **page-exit stop with awaitable semantics**. Public
+  /// seam for the detail page's exit coordination
+  /// ([PracticeRecordDetailPage] wires AppBar back, Android
+  /// system back / back-gesture, and route-pop through this
+  /// single chokepoint).
+  ///
+  /// Contract (the page is the sole caller — no other call site
+  /// is allowed):
+  /// - **Skips** when no active session exists
+  ///   (`playbackStatus == idle | error`); the caller pops
+  ///   immediately. Returning [PageExitStopResult.skipped]
+  ///   lets the page distinguish "stop needed" from
+  ///   "nothing to do" so it can also skip the SnackBar /
+  ///   loading affordance in the skip branch.
+  /// - **Stops** when a session is active (`playing` |
+  ///   `paused` | `loading` | `ready`); the returned
+  ///   Future completes ONLY after [RealAudioPlaybackService.stop]
+  ///   has resolved. This is the fundamental fix for the
+  ///   real-device regression: the previous fire-and-forget
+  ///   stop inside [_onDispose] races with the route
+  ///   transition — the Navigator pops while the
+  ///   `just_audio` platform-channel stop is still in
+  ///   flight, leaving audible audio bleeding past the
+  ///   page boundary. By making the exit stop awaitable
+  ///   the page holds the route until the player is
+  ///   actually silent.
+  /// - **Bumps** the session id BEFORE the await so any
+  ///   `completed` event delivered as a side-effect of
+  ///   `stop()` is tagged as a prior-session event and
+  ///   discarded by [_onPlayerState] (T035A invariant).
+  /// - **Reports failure** when `service.stop()` throws —
+  ///   the returned [PageExitStopResult.failure] carries a
+  ///   short friendly message the page renders as a
+  ///   SnackBar and keeps the page mounted. The previous
+  ///   "silent leave + sound continues" behaviour is
+  ///   explicitly forbidden.
+  /// - **Never** disposes the shared playback service; the
+  ///   service is owned by `realAudioPlaybackServiceProvider`
+  ///   and outlives this controller.
+  /// - **Idempotent under concurrent calls**: a second
+  ///   concurrent invocation observes the controller's
+  ///   `_playbackSessionId` has already moved and short-
+  ///   circuits to [PageExitStopResult.skipped] (the first
+  ///   call owns the active session; the page-exit guard
+  ///   [_exitInFlight] prevents a second call from racing
+  ///   in the first place — see the page layer).
+  /// - **Throws nothing** — every failure mode returns a
+  ///   [PageExitStopResult]. The page layer treats any
+  ///   result as "do not crash".
+  Future<PageExitStopResult> requestStopForPageExit() async {
+    if (_disposed || !ref.mounted) {
+      return const PageExitStopResult.skipped(
+        reason: PageExitStopSkipReason.disposed,
+      );
+    }
+    final PracticeRecordDetailState? current = state.value;
+    if (current == null) {
+      return const PageExitStopResult.skipped(
+        reason: PageExitStopSkipReason.noState,
+      );
+    }
+    switch (current.playbackStatus) {
+      case PracticeRecordPlaybackStatus.idle:
+      case PracticeRecordPlaybackStatus.error:
+        // No active session — nothing to stop.
+        return const PageExitStopResult.skipped(
+          reason: PageExitStopSkipReason.idle,
+        );
+      case PracticeRecordPlaybackStatus.loading:
+      case PracticeRecordPlaybackStatus.ready:
+      case PracticeRecordPlaybackStatus.playing:
+      case PracticeRecordPlaybackStatus.paused:
+        // Active session — fall through to stop.
+        break;
+    }
+    final RealAudioPlaybackService playback = _playbackService;
+    if (playback.state == AudioPlaybackState.idle ||
+        playback.state == AudioPlaybackState.disposed) {
+      // The service is already idle (a stale completed event
+      // may have advanced the service's internal state before
+      // the controller flipped back to idle). Defensive
+      // short-circuit so we never call `service.stop()` in a
+      // state the service refuses (it throws
+      // `InvalidPlaybackStateException` on stop-from-idle).
+      // This branch also prevents the controller's state
+      // machine from double-flipping when the natural-
+      // completion handler races the page exit.
+      if (current.playbackStatus != PracticeRecordPlaybackStatus.idle) {
+        _publish(
+          current.copyWith(
+            playbackStatus: PracticeRecordPlaybackStatus.idle,
+            clearPlaybackErrorMessage: true,
+          ),
+        );
+      }
+      return const PageExitStopResult.skipped(
+        reason: PageExitStopSkipReason.serviceAlreadyIdle,
+      );
+    }
+    // T035A — bump the session id BEFORE the await so any
+    // `completed` event delivered as a side-effect of
+    // `stop()` is treated as a prior-session event by
+    // [_onPlayerState] and discarded.
+    _playbackSessionId += 1;
+    try {
+      await playback.stop();
+    } on Object catch (e, st) {
+      debugPrint(
+        'PracticeRecordDetailController requestStopForPageExit '
+        'failed: $e\n$st',
+      );
+      // T037A — failure on the page-exit path is the
+      // user's last-line signal that the player is
+      // still running. We deliberately do NOT swallow
+      // the failure silently: the page surfaces a
+      // friendly SnackBar AND keeps the page mounted so
+      // the user can retry. The full exception is
+      // debugPrint-ed (no absolute path / no PII) but
+      // never rendered. `_publish` is skipped because
+      // we want the page to retain its current visible
+      // playback affordance (the user can choose to
+      // retry the back gesture after seeing the
+      // SnackBar).
+      return const PageExitStopResult.failure(
+        message: '停止录音失败，请重试',
+      );
+    }
+    if (_disposed || !ref.mounted) {
+      return const PageExitStopResult.skipped(
+        reason: PageExitStopSkipReason.disposed,
+      );
+    }
+    // Flip the controller state to `idle` so the page's
+    // next rebuild (if any) reflects the post-stop
+    // truth. The page is about to pop, so this publish
+    // is mostly defensive against a race where the
+    // caller decides to keep the page on `failure`
+    // (this branch only runs on success).
+    final PracticeRecordDetailState? afterStop = state.value;
+    if (afterStop != null &&
+        afterStop.playbackStatus != PracticeRecordPlaybackStatus.idle) {
+      _publish(
+        afterStop.copyWith(
+          playbackStatus: PracticeRecordPlaybackStatus.idle,
+          clearPlaybackErrorMessage: true,
+        ),
+      );
+    }
+    return const PageExitStopResult.success();
+  }
+
   /// Stops the current session, releasing the player's
   /// on-disk handle. No-op in [PracticeRecordPlaybackStatus.idle]
   /// or `.error`. After a successful stop, the state returns
@@ -1699,6 +1900,103 @@ class PracticeRecordDetailController
 enum PreDeleteStopOutcome {
   proceed,
   refused,
+}
+
+/// T037A — outcome of
+/// [PracticeRecordDetailController.requestStopForPageExit].
+/// Three top-level states:
+/// - [success] — `service.stop()` resolved; the page may pop.
+/// - [skipped] — there was nothing to stop; the page may pop
+///   immediately without surfacing a SnackBar.
+/// - [failure] — `service.stop()` threw; the page MUST
+///   render the supplied friendly message AND keep itself
+///   mounted so the user can retry.
+///
+/// Why a dedicated sealed class instead of reusing
+/// `PreDeleteStopOutcome`: the page-exit path is user-driven
+/// (no Repository call, no DB row to preserve) and the
+/// failure mode is **non-recoverable-by-popping** — the page
+/// stays up. The pre-delete path is delete-driven and the
+/// failure mode surfaces as `DeleteResult.failure` (the
+/// delete itself refuses, NOT the page). Conflating the two
+/// would either block the pop on a delete failure or pop on
+/// a page-exit failure.
+sealed class PageExitStopResult {
+  const PageExitStopResult();
+
+  /// Named constructor for the success variant.
+  const factory PageExitStopResult.success() = PageExitStopSuccess;
+
+  /// Named constructor for the skip variant.
+  const factory PageExitStopResult.skipped({
+    required PageExitStopSkipReason reason,
+  }) = PageExitStopSkipped;
+
+  /// Named constructor for the failure variant.
+  const factory PageExitStopResult.failure({
+    required String message,
+  }) = PageExitStopFailure;
+
+  /// The page may navigate away.
+  bool get shouldPop => switch (this) {
+        PageExitStopSuccess() => true,
+        PageExitStopSkipped() => true,
+        PageExitStopFailure() => false,
+      };
+
+  /// Convenience: `true` iff the page must keep itself
+  /// mounted and surface [message] as a SnackBar.
+  bool get hasUserFacingError => switch (this) {
+        PageExitStopSuccess() => false,
+        PageExitStopSkipped() => false,
+        PageExitStopFailure() => true,
+      };
+
+  /// Short, safe, non-PII message for the page's SnackBar.
+  /// `null` when [hasUserFacingError] is `false`.
+  String? get message => switch (this) {
+        PageExitStopSuccess() => null,
+        PageExitStopSkipped() => null,
+        PageExitStopFailure(:final message) => message,
+      };
+}
+
+class PageExitStopSuccess extends PageExitStopResult {
+  const PageExitStopSuccess();
+}
+
+class PageExitStopSkipped extends PageExitStopResult {
+  const PageExitStopSkipped({required this.reason});
+  final PageExitStopSkipReason reason;
+}
+
+class PageExitStopFailure extends PageExitStopResult {
+  const PageExitStopFailure({required this.message});
+  @override
+  final String message;
+}
+
+/// T037A — sub-reason for [PageExitStopSkipped]. Used only
+/// for diagnostics / tests; the page treats every skip as
+/// "pop immediately".
+enum PageExitStopSkipReason {
+  /// Controller was disposed or Provider unmounted before
+  /// the stop attempt.
+  disposed,
+
+  /// Controller has no published state yet (rare race at
+  /// build time).
+  noState,
+
+  /// `playbackStatus` was already `idle` or `error` —
+  /// nothing to stop.
+  idle,
+
+  /// Controller's state machine reports an active session
+  /// but the underlying service is already `idle` /
+  /// `disposed`. Defensive skip so we don't ask the service
+  /// to stop in a state the service refuses.
+  serviceAlreadyIdle,
 }
 
 /// Provider for the practice record detail controller.

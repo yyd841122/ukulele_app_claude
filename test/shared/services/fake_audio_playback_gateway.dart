@@ -66,6 +66,15 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
   /// If set, [stop] throws this exception instead of completing.
   Object? nextStopException;
 
+  /// T037A — when non-null, [stop] awaits this Completer
+  /// instead of completing immediately. Tests use this to
+  /// race a pending stop against a concurrent exit
+  /// request, asserting that the controller's
+  /// `requestStopForPageExit` future does NOT resolve
+  /// until the gate is completed. Cleared by every
+  /// successful stop call.
+  Completer<void>? stopGate;
+
   /// T031I: if set, [stop] throws this exception EXACTLY ONCE
   /// — when [stopCallCount] reaches [nextStopExceptionAtCallCount]
   /// (default: next stop call). The flag is consumed after the
@@ -364,6 +373,14 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
     }
     if (nextStopException != null) {
       throw nextStopException!;
+    }
+    // T037A — if a gate is installed, await it before
+    // completing. This lets tests race a pending stop
+    // against concurrent callers.
+    final Completer<void>? gate = stopGate;
+    if (gate != null) {
+      await gate.future;
+      stopGate = null;
     }
     // T031I: every successful `playback.stop()` raises the loop
     // barrier — the fake stops re-emitting `completed` /

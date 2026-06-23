@@ -308,7 +308,7 @@ class _PracticeRecordDetailPageState
         '$e\n$st',
       );
       result = const PageExitStopResult.failure(
-        message: '停止录音失败，请重试',
+        message: '停止播放失败，请重试',
       );
     }
     // The widget may have been disposed while we awaited
@@ -325,7 +325,7 @@ class _PracticeRecordDetailPageState
           key: const ValueKey<String>(
             'practice-record-detail-exit-stop-failure-snackbar',
           ),
-          content: Text(result.message ?? '停止录音失败，请重试'),
+          content: Text(result.message ?? '停止播放失败，请重试'),
           duration: const Duration(seconds: 2),
         ),
       );

@@ -1414,7 +1414,7 @@ class PracticeRecordDetailController
       // retry the back gesture after seeing the
       // SnackBar).
       return const PageExitStopResult.failure(
-        message: '停止录音失败，请重试',
+        message: '停止播放失败，请重试',
       );
     }
     if (_disposed || !ref.mounted) {

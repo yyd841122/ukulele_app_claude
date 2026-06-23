@@ -2386,6 +2386,78 @@ void main() {
               'non-cooperative page removals');
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets(
+        'T037A1 — exit-stop failure SnackBar uses "停止播放失败，请重试" '
+        'and never the stale "停止录音失败，请重试" copy', (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) = setupT037A();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpT037A(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+
+      // Start playback.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await pumpAndSettleWithRealAsync(tester);
+
+      // Inject a stop failure so the awaited
+      // requestStopForPageExit returns failure.
+      gateway.nextStopException = Exception('synthetic stop failure');
+
+      // Tap AppBar back.
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await pumpAndSettleWithRealAsync(tester);
+      await tester.pump();
+
+      // The page MUST stay mounted.
+      expect(find.byType(PracticeRecordDetailPage), findsOneWidget,
+          reason: 'page must stay mounted when service.stop throws');
+      // The dedicated failure SnackBar MUST appear.
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-exit-stop-failure-snackbar')),
+        findsOneWidget,
+        reason: 'page must render the dedicated failure SnackBar',
+      );
+      // T037A1 — the corrected detail-playback copy MUST be rendered.
+      expect(find.text('停止播放失败，请重试'), findsOneWidget,
+          reason: 'T037A1: detail-page exit-stop failure copy must say '
+              '"停止播放失败，请重试" (the detail page plays back a '
+              'previously recorded take, it does not record)');
+      // T037A1 — the stale "录音" copy MUST NEVER appear (regression
+      // guard against the T037A1 bug recurring in the future).
+      expect(find.text('停止录音失败，请重试'), findsNothing,
+          reason: 'T037A1: the stale "停止录音失败，请重试" copy must '
+              'never be rendered on the detail page');
+      expect(find.textContaining('录音失败'), findsNothing,
+          reason: 'T037A1: no variant of the "录音失败" copy must leak '
+              'into the detail page exit-stop failure flow');
+      // T037A1 — copy must NOT leak the audio path or the
+      // underlying exception (PII / implementation safety).
+      expect(find.textContaining(audioPath), findsNothing,
+          reason: 'T037A1: detail-page exit-stop failure copy must NOT '
+              'contain the absolute audio path');
+      expect(find.textContaining('synthetic'), findsNothing,
+          reason: 'T037A1: detail-page exit-stop failure copy must NOT '
+              'contain the underlying exception text');
+      expect(find.textContaining('.m4a'), findsNothing,
+          reason: 'T037A1: detail-page exit-stop failure copy must NOT '
+              'contain the file extension');
+      expect(find.textContaining('Exception'), findsNothing,
+          reason: 'T037A1: detail-page exit-stop failure copy must NOT '
+              'contain the exception class name');
+      // T037A1 — no unhandled async error.
+      expect(tester.takeException(), isNull);
+    });
   });
 
   // ---------------------------------------------------------------------------

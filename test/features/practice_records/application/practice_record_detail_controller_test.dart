@@ -46,7 +46,25 @@ import 'package:ukulele_app/features/practice_records/domain/practice_record.dar
 import 'package:ukulele_app/features/practice_records/domain/practice_tag.dart';
 import 'package:ukulele_app/features/practice_records/domain/practice_type.dart';
 import 'package:ukulele_app/shared/providers/audio_file_storage_service_provider.dart';
+import 'package:ukulele_app/shared/providers/real_audio_playback_service_provider.dart';
+import 'package:ukulele_app/shared/services/audio_file_storage_paths.dart';
 import 'package:ukulele_app/shared/services/audio_file_storage_service.dart';
+import 'package:ukulele_app/shared/services/audio_playback_gateway.dart';
+import 'package:ukulele_app/shared/services/real_audio_playback_service.dart';
+
+import '../../../shared/services/fake_audio_playback_gateway.dart';
+
+/// Local alias for the playback test bundle. Defined as a
+/// typedef so the test bodies can write
+/// `final _PlaybackSetup setup = _isolatedPlayback();` and get
+/// named-field access (`setup.service`, `setup.gateway`,
+/// `setup.storage`) without needing inline record
+/// destructuring.
+typedef _PlaybackSetup = ({
+  RealAudioPlaybackService service,
+  FakeAudioPlaybackGateway gateway,
+  AudioFileStorageService storage,
+});
 
 /// Polls the [ProviderContainer] until the [provider]'s
 /// [AsyncValue] transitions out of [AsyncLoading]. Returns the
@@ -218,11 +236,14 @@ class _FakePracticeRecordRepository implements PracticeRecordRepository {
 ProviderContainer _container({
   required PracticeRecordRepository repository,
   required AudioFileStorageService storage,
+  RealAudioPlaybackService? playbackService,
 }) {
   return ProviderContainer(
     overrides: <Override>[
       practiceRecordRepositoryProvider.overrideWithValue(repository),
       audioFileStorageServiceProvider.overrideWithValue(storage),
+      if (playbackService != null)
+        realAudioPlaybackServiceProvider.overrideWithValue(playbackService),
     ],
   );
 }
@@ -951,6 +972,971 @@ void main() {
           reason: 'controller must use the entry-of-method path, not a '
               'later state read');
       expect(audio.existsSync(), isFalse);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // T035 — real-audio playback coordination
+  //
+  // Exercises the playback state machine added to
+  // [PracticeRecordDetailController]. The fake
+  // [AudioPlaybackGateway] drives the production
+  // [RealAudioPlaybackService] so the controller's
+  // service-level interactions are realistic without
+  // touching just_audio.
+  //
+  // Every test in this group creates a real `.m4a` file
+  // inside the playback service's isolated temp root via
+  // [plantIsolatedAudioFile] so the production service's
+  // path validation (absolute + inside root + .m4a +
+  // exists on disk) accepts the path. A `Directory` is
+  // registered with `addTearDown` so the temp root is
+  // removed at the end of the test.
+  // ---------------------------------------------------------------------------
+
+  /// Drains microtasks so the controller's await chains
+  /// can settle and the `playerStateStream` listeners
+  /// have a chance to process events.
+  Future<void> pumpEvents() async {
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+  }
+
+  /// Builds a [RealAudioPlaybackService] wired to a fresh
+  /// [AudioFileStorageService] rooted at an isolated temp
+  /// directory and a fresh [FakeAudioPlaybackGateway]. The
+  /// temp root is registered with `addTearDown`.
+  Future<_PlaybackSetup> isolatedPlayback() async {
+    final Directory root = Directory.systemTemp.createTempSync(
+      't035_playback_',
+    );
+    addTearDown(() {
+      if (root.existsSync()) {
+        try {
+          root.deleteSync(recursive: true);
+        } on FileSystemException {
+          // best-effort
+        }
+      }
+    });
+    final AudioFileStorageService storage = AudioFileStorageService(
+      rootDirectoryProvider: () async => root,
+    );
+    // Pre-warm the service's root directory layout so we can
+    // plant files synchronously after.
+    await storage.ensureDirectories();
+    final FakeAudioPlaybackGateway gateway = FakeAudioPlaybackGateway();
+    final RealAudioPlaybackService service = RealAudioPlaybackService(
+      gateway: gateway,
+      storage: storage,
+    );
+    return (service: service, gateway: gateway, storage: storage);
+  }
+
+  /// Plants a real `.m4a` file inside [storage]'s
+  /// `saved/` subdirectory and returns its absolute path.
+  /// The path satisfies the production service's path
+  /// validation (absolute + inside root + `.m4a` +
+  /// actually exists on disk).
+  Future<String> plantIsolatedAudioFile(
+    AudioFileStorageService storage,
+    String fileName,
+  ) async {
+    final AudioFileStoragePaths paths = await storage.ensureDirectories();
+    final File file = File(p.join(paths.savedDirectory.path, fileName))
+      ..createSync(recursive: true)
+      ..writeAsStringSync('bytes');
+    return file.path;
+  }
+
+  /// Polls the [ProviderContainer] until the [provider]'s
+  /// [AsyncValue] shows the controller has flipped the
+  /// playback field to [expected]. Times out after 2 s.
+  Future<PracticeRecordDetailState> awaitPlayback(
+    ProviderContainer container,
+    Refreshable<AsyncValue<PracticeRecordDetailState>> provider,
+    PracticeRecordPlaybackStatus expected, {
+    Duration timeout = const Duration(seconds: 2),
+  }) async {
+    final DateTime deadline = DateTime.now().add(timeout);
+    while (true) {
+      final AsyncValue<PracticeRecordDetailState> v = container.read(provider);
+      if (v is AsyncData<PracticeRecordDetailState>) {
+        final PracticeRecordDetailState s = v.requireValue;
+        if (s.playbackStatus == expected) {
+          return s;
+        }
+      }
+      if (DateTime.now().isAfter(deadline)) {
+        fail(
+          'Timed out waiting for playbackStatus=$expected '
+          '(last=${container.read(provider)})',
+        );
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+  }
+
+  group('PracticeRecordDetailController T035 playback coordination', () {
+    test(
+        'null audioFilePath leaves playbackStatus at idle and does NOT '
+        'call service.loadFile', () async {
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: null),
+      });
+      addTearDown(repo.close);
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await pumpEvents();
+      final AsyncValue<PracticeRecordDetailState> v = container.read(
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      expect(v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.idle);
+      expect(setup.gateway.loadFileCallCount, 0,
+          reason: 'null audio path must not call service.loadFile');
+    });
+
+    test('empty-string audioFilePath is a no-op (no service.loadFile)',
+        () async {
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: ''),
+      });
+      addTearDown(repo.close);
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await pumpEvents();
+      expect(setup.gateway.loadFileCallCount, 0,
+          reason: 'empty audio path must not call service.loadFile');
+      final AsyncValue<PracticeRecordDetailState> v = container.read(
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      expect(v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.idle);
+    });
+
+    test(
+        'playRecordedAudio passes the path verbatim to service.loadFile '
+        'and reaches playing', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await pumpEvents();
+      expect(setup.gateway.lastLoadPath, audioPath,
+          reason: 'path must be passed verbatim, not normalised');
+      expect(setup.gateway.playCallCount, greaterThanOrEqualTo(1));
+      final AsyncValue<PracticeRecordDetailState> v = container.read(
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      expect(
+          v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.playing);
+    });
+
+    test('playing → paused → playing via pausePlayback / resumePlayback',
+        () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.pausePlayback();
+      await pumpEvents();
+      final AsyncValue<PracticeRecordDetailState> paused = container.read(
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      expect(paused.requireValue.playbackStatus,
+          PracticeRecordPlaybackStatus.paused);
+      expect(setup.gateway.pauseCallCount, 1);
+      await controller.resumePlayback();
+      await pumpEvents();
+      final AsyncValue<PracticeRecordDetailState> resumed = container.read(
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      expect(resumed.requireValue.playbackStatus,
+          PracticeRecordPlaybackStatus.playing);
+    });
+
+    test('stopPlayback from playing returns the controller to idle', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.stopPlayback();
+      await pumpEvents();
+      final AsyncValue<PracticeRecordDetailState> v = container.read(
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      expect(v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.idle);
+      expect(setup.gateway.stopCallCount, 1);
+    });
+
+    test(
+        'a second concurrent playRecordedAudio is rejected while a '
+        'session is loading — loadFile is not called twice', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      // The fake's `loadFile` returns synchronously and the
+      // service transitions state immediately, so a simple
+      // back-to-back call sequence is enough to exercise the
+      // guard: by the time the second call lands, the first
+      // call has already published `playing`.
+      await controller.playRecordedAudio();
+      // ignore: unawaited_futures
+      controller.playRecordedAudio();
+      await pumpEvents();
+      expect(setup.gateway.loadFileCallCount, 1,
+          reason: 'a second concurrent playRecordedAudio must not '
+              're-enter loadFile (the first session is still '
+              'authoritative)');
+    });
+
+    test(
+        'natural completion flips playbackStatus back to idle and '
+        'preserves record.audioFilePath', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      setup.gateway.emitPlayerState(
+        const PlaybackPlayerState(
+          playing: false,
+          processingState: PlaybackProcessingState.completed,
+        ),
+      );
+      await pumpEvents();
+      final AsyncValue<PracticeRecordDetailState> v = container.read(
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      expect(v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.idle);
+      expect(v.requireValue.record?.audioFilePath, audioPath,
+          reason: 'natural completion must NOT clear audioFilePath');
+    });
+
+    test(
+        'after natural completion, a fresh playRecordedAudio succeeds '
+        'and re-loads the file', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      final int loadCountBefore = setup.gateway.loadFileCallCount;
+      setup.gateway.emitPlayerState(
+        const PlaybackPlayerState(
+          playing: false,
+          processingState: PlaybackProcessingState.completed,
+        ),
+      );
+      await pumpEvents();
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      expect(setup.gateway.loadFileCallCount, loadCountBefore + 1,
+          reason: 'replay must re-enter loadFile (no source reuse)');
+    });
+
+    test(
+        'duplicate completed events are idempotent — playbackStatus '
+        'stays at idle and service.stop is NOT called from the handler',
+        () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      final int stopCountBefore = setup.gateway.stopCallCount;
+      // Emit three completed events back-to-back. The
+      // controller's `_handlingNaturalCompletion` guard
+      // short-circuits the duplicate events so
+      // `service.stop` is never called from the handler
+      // (T035 contract: the service drives its own state
+      // internally on `completed`; the controller only
+      // flips back to `idle`).
+      for (int i = 0; i < 3; i++) {
+        setup.gateway.emitPlayerState(
+          const PlaybackPlayerState(
+            playing: false,
+            processingState: PlaybackProcessingState.completed,
+          ),
+        );
+      }
+      await pumpEvents();
+      expect(setup.gateway.stopCallCount, stopCountBefore,
+          reason: 'T035 does not call service.stop from the completion '
+              'handler; the service drives its own state internally');
+      final AsyncValue<PracticeRecordDetailState> v = container.read(
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      expect(v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.idle);
+    });
+
+    test(
+        'loadFile failure flips the controller to error with a '
+        'friendly message that does NOT contain the path', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'sensitive.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      // Inject a fault at the gateway layer. The service
+      // translates the rethrown exception into a
+      // `PlaybackLoadFailedException`, and the controller
+      // surfaces a friendly Chinese message that does NOT
+      // include the path.
+      setup.gateway.nextLoadException = Exception('synthetic');
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await pumpEvents();
+      final AsyncValue<PracticeRecordDetailState> v = container.read(
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      expect(v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.error);
+      final String? msg = v.requireValue.playbackErrorMessage;
+      expect(msg, isNotNull);
+      expect(msg, isNot(contains('sensitive')));
+      expect(msg, isNot(contains('m4a')));
+    });
+
+    test(
+        'play failure flips the controller to error and a retry '
+        'succeeds', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      setup.gateway.nextPlayException = Exception('synthetic play failure');
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      // The play future rejects asynchronously; pump several
+      // microtask cycles to let the onError callback fire.
+      for (int i = 0; i < 5; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+      final AsyncValue<PracticeRecordDetailState> v1 = container.read(
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      expect(
+          v1.requireValue.playbackStatus, PracticeRecordPlaybackStatus.error);
+      // Clear the fault and retry.
+      setup.gateway.nextPlayException = null;
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+    });
+
+    test('pausePlayback when not playing is a no-op', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.pausePlayback();
+      await pumpEvents();
+      expect(setup.gateway.pauseCallCount, 0,
+          reason: 'pause from idle must not reach the gateway');
+    });
+
+    test('resumePlayback when not paused is a no-op', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.resumePlayback();
+      await pumpEvents();
+      expect(setup.gateway.playCallCount, 0,
+          reason: 'resume from idle must not reach the gateway');
+    });
+
+    test('stopPlayback from idle is a no-op', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.stopPlayback();
+      await pumpEvents();
+      expect(setup.gateway.stopCallCount, 0);
+    });
+
+    test('deleteCurrentRecord during playback stops the player first',
+        () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      // Start playback so we exercise the pre-delete stop
+      // path.
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      // While playing, kick off the delete. The controller
+      // MUST stop the player before deleting the row.
+      final Future<DeleteResult> delete = controller.deleteCurrentRecord();
+      // Stop and delete happen on the same microtask chain;
+      // wait for both to resolve.
+      final DeleteResult result = await delete;
+      expect(result, DeleteResult.success);
+      expect(setup.gateway.stopCallCount, greaterThanOrEqualTo(1),
+          reason: 'pre-delete stop must run');
+      expect(repo.deleteCalls, <String>['r-1']);
+      expect(File(audioPath).existsSync(), isFalse,
+          reason: 'T034 cleanup must still run after T035 stop');
+    });
+
+    test(
+        'pre-delete stop refusal returns DeleteResult.failure and the '
+        'row is preserved', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      // Start playback so the controller reaches `playing`.
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      // Now inject a stop failure. The fake's
+      // `nextStopException` raises from the NEXT stop call;
+      // we set it AFTER the play state is locked in so the
+      // in-flight loadFile does not consume the fault.
+      setup.gateway.nextStopException = Exception('synthetic stop failure');
+      final DeleteResult result = await controller.deleteCurrentRecord();
+      expect(result, DeleteResult.failure,
+          reason: 'pre-delete stop refused must return failure');
+      expect(repo.deleteCalls, isEmpty,
+          reason: 'the row must not be deleted when stop refuses');
+      final AsyncValue<PracticeRecordDetailState> v = container.read(
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      expect(v.requireValue.record?.id, 'r-1',
+          reason: 'the record must still be loaded after a refused delete');
+      expect(v.requireValue.isDeleting, isFalse,
+          reason: 'isDeleting must be released after a refused delete');
+    });
+
+    test(
+        'pre-delete stop in idle playback state is a no-op and the '
+        'delete proceeds normally', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: null),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      final int stopCountBefore = setup.gateway.stopCallCount;
+      final DeleteResult result = await controller.deleteCurrentRecord();
+      expect(result, DeleteResult.success);
+      expect(setup.gateway.stopCallCount, stopCountBefore,
+          reason: 'no active playback → no service.stop call');
+      expect(repo.deleteCalls, <String>['r-1']);
+    });
+
+    test(
+        'T034 cleanup warning path is preserved when the pre-delete '
+        'stop succeeds', () async {
+      // Plant an audio file in a temp root that is OUTSIDE
+      // the playback service's storage root, so the
+      // playback service's `loadFile` path validation
+      // rejects it (matching what would happen if a user
+      // somehow had an orphan file). We then verify that
+      // the delete still runs through the cleanup-warning
+      // path because T034's cleanup helper separately
+      // refuses to delete an outside-root file.
+      //
+      // Since the playback service cannot load an
+      // outside-root file, we exercise the pre-delete
+      // stop path by ensuring playback is `idle` (so
+      // `_stopPlaybackIfActive` is a no-op) and
+      // `repository.delete` still runs to completion with
+      // the cleanup-warning outcome.
+      final Directory outside = Directory(
+        p.join(
+          Directory.systemTemp.path,
+          't035_outside_${DateTime.now().microsecondsSinceEpoch}',
+        ),
+      )..createSync(recursive: true);
+      addTearDown(() {
+        if (outside.existsSync()) {
+          try {
+            outside.deleteSync(recursive: true);
+          } on FileSystemException {
+            // best-effort
+          }
+        }
+      });
+      final File outsideFile = File(p.join(outside.path, 'r.m4a'))
+        ..writeAsStringSync('untouched');
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: outsideFile.path),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      final DeleteResult result = await controller.deleteCurrentRecord();
+      expect(result, DeleteResult.successWithCleanupWarning,
+          reason: 'T034 cleanup warning contract is preserved under T035');
+      expect(repo.hasAudioPathReferenceCalls, isNotEmpty,
+          reason: 'T034 shared-path probe must still run');
+      expect(outsideFile.existsSync(), isTrue,
+          reason: 'outside-root file must not be deleted by T034');
+    });
+
+    test('T034 shared-path protection still runs after T035 stop', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String sharedPath =
+          await plantIsolatedAudioFile(setup.storage, 'shared.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-a': _record(id: 'r-a', audioFilePath: sharedPath),
+        'r-b': _record(id: 'r-b', audioFilePath: sharedPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-a'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-a').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-a'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      final DeleteResult result = await controller.deleteCurrentRecord();
+      expect(result, DeleteResult.success,
+          reason: 'cleanup is skipped because the path is still referenced');
+      expect(setup.gateway.stopCallCount, greaterThanOrEqualTo(1));
+      expect(File(sharedPath).existsSync(), isTrue,
+          reason: 'shared file must NOT be deleted by T034');
+      expect(repo.hasAudioPathReferenceCalls, isNotEmpty);
+    });
+
+    test(
+        'disposing the container cancels the playerStateStream '
+        'subscription without surfacing exceptions', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      // Dispose while a session is in flight.
+      container.dispose();
+      // Late stream events must not throw.
+      setup.gateway.emitPlayerState(
+        const PlaybackPlayerState(
+          playing: false,
+          processingState: PlaybackProcessingState.completed,
+        ),
+      );
+      await pumpEvents();
+      // No exception → the test passes by virtue of reaching
+      // this point.
+    });
+
+    test('Playback does NOT use a different record\'s path', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String pathA = await plantIsolatedAudioFile(setup.storage, 'A.m4a');
+      final String pathB = await plantIsolatedAudioFile(setup.storage, 'B.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-a': _record(id: 'r-a', audioFilePath: pathA),
+        'r-b': _record(id: 'r-b', audioFilePath: pathB),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      // Load r-a, play, then stop and switch to r-b and play.
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-a'),
+      );
+      final PracticeRecordDetailController controllerA = container.read(
+        practiceRecordDetailControllerProvider('r-a').notifier,
+      );
+      await controllerA.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-a'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      expect(setup.gateway.lastLoadPath, pathA);
+      await controllerA.stopPlayback();
+      await pumpEvents();
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-b'),
+      );
+      final PracticeRecordDetailController controllerB = container.read(
+        practiceRecordDetailControllerProvider('r-b').notifier,
+      );
+      await controllerB.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-b'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      expect(setup.gateway.lastLoadPath, pathB,
+          reason: 'r-b must use its own path, not r-a\'s');
     });
   });
 }

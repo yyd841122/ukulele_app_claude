@@ -1,4 +1,4 @@
-// Riverpod controller for the practice record detail page (T013.4C).
+// Riverpod controller for the practice record detail page (T013.4C + T034 + T035).
 //
 // Scope:
 // - Hand-written [AsyncNotifier] (no `@riverpod` codegen) per the
@@ -19,6 +19,15 @@
 //   [PracticeRecordDetailState.isDeleting] so the page can
 //   observe it via `ref.watch` and rebuild without depending on
 //   a separate UI-side lock.
+// - T034: post-delete audio file cleanup coordination.
+// - T035: real-audio playback against [RealAudioPlaybackService]
+//   for records with a non-null / non-empty [PracticeRecord.audioFilePath].
+//   The controller coordinates playback state with the existing
+//   delete state machine: a delete-in-flight MUST stop the
+//   player first so the file is released before the row is
+//   removed; a stop failure on the playback side refuses the
+//   delete so we never silently race a player that still holds
+//   the on-disk handle.
 //
 // Reactive delete contract (T013.4C_FIX_DELETE_PROGRESS_CONTRACT):
 // - `PracticeRecordDetailState.isDeleting` is the SINGLE source
@@ -67,6 +76,80 @@
 //   OTHER row still references the same path verbatim, the file
 //   is left on disk for the surviving record.
 //
+// T035 — real-audio playback contract:
+// - This controller is the SINGLE coordinator for the detail
+//   page's playback lifecycle. The UI never calls the playback
+//   service directly; it only invokes [playRecordedAudio] /
+//   [pausePlayback] / [resumePlayback] / [stopPlayback].
+// - The path passed to [RealAudioPlaybackService.loadFile] is
+//   sourced **verbatim** from the loaded record's
+//   [PracticeRecord.audioFilePath]. The controller does NOT
+//   reformat, normalise, or recompute the string.
+// - `audioFilePath == null` / `''` → the playback methods are
+//   no-ops and `playbackStatus` stays at [PracticeRecordPlaybackStatus.idle].
+//   The page surfaces "此记录没有录音" rather than a button.
+// - The playback state machine ([PracticeRecordPlaybackStatus])
+//   is intentionally SEPARATE from [AudioPlaybackState]: the
+//   service's 8 states are a private implementation detail of
+//   `RealAudioPlaybackService`; the controller collapses them
+//   into 6 controller-facing states (idle / loading / ready /
+//   playing / paused / error) so the UI never has to know
+//   about `stopping` / `disposed` / `completed` as distinct
+//   states. `completed` from the gateway is mapped to
+//   `idle` so the user can immediately re-tap "播放".
+// - Playback errors are surfaced via
+//   [PracticeRecordPlaybackStatus.error] + a SHORT friendly
+//   message ([PracticeRecordDetailState.playbackErrorMessage]).
+//   The full exception is `debugPrint`-ed for engineering
+//   triage but NEVER rendered, so no absolute path / stack
+//   trace leaks to the UI.
+// - A natural playback completion is observed on
+//   [RealAudioPlaybackService.playerStateStream]
+//   (`processingState == completed`). The controller flips
+//   `playbackStatus` back to `idle` synchronously and clears
+//   any prior error. Re-entrancy is guarded via
+//   `_handlingNaturalCompletion` so a duplicate stream event
+//   (which the fake gateway simulates on real devices) cannot
+//   double-write the state.
+// - The controller deliberately does NOT call
+//   [RealAudioPlaybackService.stop] / `seek(0)` from the
+//   completion handler. The playback service's own
+//   `playerStateStream` callback already advances its internal
+//   state to `idle` on `completed` (see T030 + T031I), and the
+//   next `playRecordedAudio` re-loads the file so the
+//   "replay-from-zero" contract is satisfied without us racing
+//   the service's state machine.
+// - On Provider dispose the controller cancels its
+//   `playerStateStream` subscription but does NOT call
+//   [RealAudioPlaybackService.dispose]. The service is owned
+//   by `realAudioPlaybackServiceProvider` and is torn down by
+//   the Riverpod scope's `onDispose` hooks — calling
+//   `dispose` from here would invalidate the shared service
+//   for the recording page and break T031's contract.
+//
+// Playback ↔ delete coordination (T035):
+// - `deleteCurrentRecord` MUST stop the player before the row
+//   is removed, otherwise the on-disk file is still open via
+//   the gateway's native decoder while the controller then
+//   tries to delete it from disk.
+// - `_stopPlaybackIfActive` is the helper that runs **before**
+//   `repository.delete` in the delete state machine:
+//   * `playbackStatus == playing | paused | ready` →
+//     best-effort `service.stop()` + small
+//     `playbackStatus = idle` write. If `service.stop` throws
+//     the delete refuses to proceed (returns
+//     [DeleteResult.failure]) and the page surfaces a friendly
+//     SnackBar so the user can retry. The file is left on
+//     disk; the row is left in place.
+//   * `playbackStatus == idle | error | loading` → no-op
+//     (nothing is holding the file; the delete proceeds
+//     immediately).
+// - After a successful delete, the controller state is left
+//   in `notFound` / disposed (the page pops), so a stale
+//   `playerStateStream` event arriving AFTER the pop is
+//   discarded by both the `ref.mounted` check and the
+//   subscription's `cancel` in the autoDispose teardown.
+//
 // Disposal / race safety:
 // - The Provider is `autoDispose` so a popped detail page
 //   tears the controller down on its own. Riverpod guarantees the
@@ -80,11 +163,17 @@
 //   [PracticeRecordRepository.delete] is the one the controller
 //   loaded for — we never re-read `state` to fabricate a
 //   different id mid-flight.
+// - Playback requests are likewise serialised by the
+//   [PracticeRecordPlaybackStatus] state machine: a second
+//   `playRecordedAudio` while `playbackStatus == playing |
+//   loading` is a no-op (the gateway is single-instance; a
+//   parallel `loadFile` would clobber the active session).
 // - The controller deliberately does NOT navigate. Navigation
 //   (pop / SnackBar) is the page's responsibility — keeping the
 //   controller framework-free of `BuildContext` makes it
 //   trivially testable.
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -94,8 +183,12 @@ import 'package:ukulele_app/features/practice_records/data/practice_record_repos
 import 'package:ukulele_app/features/practice_records/data/practice_record_repository_provider.dart';
 import 'package:ukulele_app/features/practice_records/domain/practice_record.dart';
 import 'package:ukulele_app/shared/providers/audio_file_storage_service_provider.dart';
+import 'package:ukulele_app/shared/providers/real_audio_playback_service_provider.dart';
 import 'package:ukulele_app/shared/services/audio_file_storage_paths.dart';
 import 'package:ukulele_app/shared/services/audio_file_storage_service.dart';
+import 'package:ukulele_app/shared/services/audio_playback_exception.dart';
+import 'package:ukulele_app/shared/services/audio_playback_gateway.dart';
+import 'package:ukulele_app/shared/services/real_audio_playback_service.dart';
 
 /// Outcome of [PracticeRecordDetailController.deleteCurrentRecord].
 enum DeleteResult {
@@ -122,7 +215,9 @@ enum DeleteResult {
   /// - the loaded record is in [DetailLoadStatus.notFound] state,
   /// - a delete for this controller instance is already in
   ///   flight (the page must not fire a second click),
-  /// - the Provider was disposed mid-flight.
+  /// - the Provider was disposed mid-flight,
+  /// - the pre-delete stop-playback helper refused to
+  ///   guarantee the player has released the on-disk file.
   ///
   /// `ignored` is NOT a failure. The UI MUST NOT show a
   /// "删除失败" SnackBar in response to this outcome.
@@ -149,6 +244,52 @@ enum DetailLoadStatus {
   notFound,
 }
 
+/// T035 — controller-facing playback state.
+///
+/// The 6-value enum is intentionally **separate** from
+/// [AudioPlaybackState] (8 values) so the UI does not have to
+/// know about the service's internal `stopping` / `disposed` /
+/// `completed` distinctions. The mapping is:
+///
+/// | Controller state | Source / transition                                 |
+/// | ---------------- | --------------------------------------------------- |
+/// | `idle`           | initial; `stop` succeeded; natural completion        |
+/// | `loading`        | `playRecordedAudio` → `loadFile` in flight          |
+/// | `ready`          | `loadFile` succeeded, `play` not yet called          |
+/// | `playing`        | service is in `playing`                             |
+/// | `paused`         | `pausePlayback` succeeded                           |
+/// | `error`          | any [AudioPlaybackException]                         |
+enum PracticeRecordPlaybackStatus {
+  /// No active session. The user can tap "播放录音" to start one.
+  idle,
+
+  /// `loadFile` is in flight. UI must show a spinner and
+  /// disable duplicate taps.
+  loading,
+
+  /// `loadFile` succeeded but `play` has not yet been driven.
+  /// This is a transient state — `playRecordedAudio` calls
+  /// `play` immediately after `loadFile` resolves, so the
+  /// controller usually jumps `loading → playing`. `ready` is
+  /// retained for any future "load but don't auto-play" flow.
+  ready,
+
+  /// The service is currently driving the underlying player.
+  /// UI shows the pause / stop buttons.
+  playing,
+
+  /// The user has paused; the file remains loaded and can be
+  /// resumed. UI shows the resume / stop buttons.
+  paused,
+
+  /// The latest playback command raised an
+  /// [AudioPlaybackException]. UI shows the friendly
+  /// [PracticeRecordDetailState.playbackErrorMessage] and a
+  /// retry button. The record is still loaded; the path on
+  /// disk is still available.
+  error,
+}
+
 /// Immutable state for the detail page's loaded branch.
 ///
 /// `record == null` ⇔ `loadStatus == DetailLoadStatus.notFound`.
@@ -158,6 +299,8 @@ class PracticeRecordDetailState {
     required this.loadStatus,
     required this.record,
     required this.isDeleting,
+    required this.playbackStatus,
+    required this.playbackErrorMessage,
   });
 
   /// "Not found" — nothing to render. The page uses the
@@ -168,6 +311,8 @@ class PracticeRecordDetailState {
         loadStatus: DetailLoadStatus.notFound,
         record: null,
         isDeleting: false,
+        playbackStatus: PracticeRecordPlaybackStatus.idle,
+        playbackErrorMessage: null,
       );
 
   factory PracticeRecordDetailState.loaded(PracticeRecord record) =>
@@ -175,6 +320,8 @@ class PracticeRecordDetailState {
         loadStatus: DetailLoadStatus.loaded,
         record: record,
         isDeleting: false,
+        playbackStatus: PracticeRecordPlaybackStatus.idle,
+        playbackErrorMessage: null,
       );
 
   final DetailLoadStatus loadStatus;
@@ -188,6 +335,23 @@ class PracticeRecordDetailState {
   /// progress.
   final bool isDeleting;
 
+  /// T035 — current playback status of the detail page's audio
+  /// session. The page reads this from the watched [AsyncValue]
+  /// so a state change rebuilds the playback control row. The
+  /// default is [PracticeRecordPlaybackStatus.idle]; it is
+  /// independent of [isDeleting] / [loadStatus] so the two
+  /// state machines can be observed / reasoned about in
+  /// isolation.
+  final PracticeRecordPlaybackStatus playbackStatus;
+
+  /// T035 — short, UI-safe error message for the most recent
+  /// playback failure. `null` whenever [playbackStatus] is not
+  /// [PracticeRecordPlaybackStatus.error]. The full exception
+  /// string (which may include the on-disk path) is NEVER
+  /// surfaced here — see [PracticeRecordDetailController]
+  /// for the error-message mapping.
+  final String? playbackErrorMessage;
+
   /// Convenience: `true` iff a record is currently held.
   bool get isLoaded => loadStatus == DetailLoadStatus.loaded;
 
@@ -195,19 +359,53 @@ class PracticeRecordDetailState {
   /// `getById` returned `null`.
   bool get isNotFound => loadStatus == DetailLoadStatus.notFound;
 
+  /// T035 — `true` iff a `playRecordedAudio` call should be
+  /// accepted. We refuse concurrent play attempts while the
+  /// service is mid-load or already playing — see the
+  /// controller's `playRecordedAudio` for the rationale.
+  bool get canStartPlayback =>
+      playbackStatus == PracticeRecordPlaybackStatus.idle ||
+      playbackStatus == PracticeRecordPlaybackStatus.ready ||
+      playbackStatus == PracticeRecordPlaybackStatus.error;
+
+  /// T035 — `true` iff a `pausePlayback` call should be
+  /// accepted. Only valid in [PracticeRecordPlaybackStatus.playing].
+  bool get canPause => playbackStatus == PracticeRecordPlaybackStatus.playing;
+
+  /// T035 — `true` iff a `resumePlayback` call should be
+  /// accepted. Only valid in [PracticeRecordPlaybackStatus.paused].
+  bool get canResume => playbackStatus == PracticeRecordPlaybackStatus.paused;
+
+  /// T035 — `true` iff a `stopPlayback` call should be accepted.
+  /// Refused in [PracticeRecordPlaybackStatus.idle] and `.error`
+  /// because there is nothing to stop.
+  bool get canStop =>
+      playbackStatus == PracticeRecordPlaybackStatus.playing ||
+      playbackStatus == PracticeRecordPlaybackStatus.paused ||
+      playbackStatus == PracticeRecordPlaybackStatus.ready ||
+      playbackStatus == PracticeRecordPlaybackStatus.loading;
+
   /// Returns a copy of this state with the given fields replaced.
-  /// [isDeleting] is the field that varies during a delete; the
-  /// other fields stay constant across the lifecycle of a
+  /// [isDeleting] / [playbackStatus] / [playbackErrorMessage] are
+  /// the fields that vary during a delete or a playback session;
+  /// the other fields stay constant across the lifecycle of a
   /// single detail page.
   PracticeRecordDetailState copyWith({
     DetailLoadStatus? loadStatus,
     PracticeRecord? record,
     bool? isDeleting,
+    PracticeRecordPlaybackStatus? playbackStatus,
+    String? playbackErrorMessage,
+    bool clearPlaybackErrorMessage = false,
   }) {
     return PracticeRecordDetailState._(
       loadStatus: loadStatus ?? this.loadStatus,
       record: record ?? this.record,
       isDeleting: isDeleting ?? this.isDeleting,
+      playbackStatus: playbackStatus ?? this.playbackStatus,
+      playbackErrorMessage: clearPlaybackErrorMessage
+          ? null
+          : (playbackErrorMessage ?? this.playbackErrorMessage),
     );
   }
 }
@@ -238,14 +436,49 @@ class PracticeRecordDetailController
   /// unlock a still-in-flight delete.
   bool _isDeleting = false;
 
+  /// T035 — synchronous guard against concurrent play attempts.
+  /// Prevents a second `playRecordedAudio` call from racing
+  /// past the `playbackStatus == loading | playing` check before
+  /// the published state has propagated. Mirrors the `_isDeleting`
+  /// pattern.
+  bool _isStartingPlayback = false;
+
+  /// T035 — re-entrancy guard for the natural-completion handler.
+  /// `just_audio` may emit `processingState == completed` more
+  /// than once in a session; the second event must be a no-op
+  /// so the controller's state machine does not double-write.
+  bool _handlingNaturalCompletion = false;
+
+  /// T035 — `true` after the controller's `ref.onDispose` hook
+  /// has fired. Subsequent `state` writes are skipped so the
+  /// autoDispose teardown is race-free.
+  bool _disposed = false;
+
+  /// T035 — the `playerStateStream` subscription set up on the
+  /// first successful `loadFile`. Cancelled in `ref.onDispose`.
+  StreamSubscription<PlaybackPlayerState>? _playbackStateSubscription;
+
   @override
   Future<PracticeRecordDetailState> build() async {
-    // Reset the delete guard whenever the controller is rebuilt
-    // — this includes the initial build AND any retry-driven
-    // invalidation. A stale `_isDeleting` from a previous lifetime
-    // must not carry over, and a fresh state object starts with
-    // `isDeleting = false` by construction.
+    // Reset the per-instance guards whenever the controller is
+    // rebuilt — this includes the initial build AND any retry-
+    // driven invalidation. A stale `_isDeleting` /
+    // `_isStartingPlayback` from a previous lifetime must not
+    // carry over.
     _isDeleting = false;
+    _isStartingPlayback = false;
+    _handlingNaturalCompletion = false;
+    _disposed = false;
+    await _playbackStateSubscription?.cancel();
+    _playbackStateSubscription = null;
+
+    // T035 — cancel any in-flight playback subscriptions /
+    // timers when the controller is rebuilt (e.g. after
+    // `ref.invalidate` from the error-retry button). The
+    // Riverpod scope guarantees the previous `build` future
+    // resolves before `onDispose` runs, so this is the right
+    // place to drop the old subscription.
+    ref.onDispose(_onDispose);
 
     if (recordId.isEmpty) {
       // The router never produces an empty id, but defensively
@@ -264,18 +497,27 @@ class PracticeRecordDetailController
     return PracticeRecordDetailState.loaded(record);
   }
 
+  // ---------------------------------------------------------------------------
+  // Delete flow (T013.4C + T013.4C_FIX + T034 + T035 coordination)
+  // ---------------------------------------------------------------------------
+
   /// Deletes the record currently held by this controller.
   ///
   /// Contract:
   /// - Returns [DeleteResult.success] only when the Repository
-  ///   actually removed a row.
+  ///   actually removed a row AND the audio file lifecycle
+  ///   ended cleanly.
   /// - Returns [DeleteResult.ignored] if the controller is still
   ///   loading, the record is in [DetailLoadStatus.notFound], a
-  ///   delete is already in flight, or the Provider was disposed
-  ///   mid-flight. NEVER throws.
-  /// - Returns [DeleteResult.failure] when the Repository threw.
-  ///   The previously-loaded record is preserved — `state.value`
-  ///   remains valid so the user can retry.
+  ///   delete is already in flight, the Provider was disposed
+  ///   mid-flight, or the pre-delete stop-playback helper
+  ///   refused to guarantee the player has released the
+  ///   on-disk file. NEVER throws.
+  /// - Returns [DeleteResult.failure] when the Repository threw
+  ///   OR when the pre-delete stop-playback helper could not
+  ///   release the on-disk file. The previously-loaded record
+  ///   is preserved — `state.value` remains valid so the user
+  ///   can retry.
   ///
   /// Reactive state publication:
   /// - Before the await, the controller publishes a state with
@@ -285,6 +527,15 @@ class PracticeRecordDetailController
   /// - After the Repository call resolves, the controller
   ///   publishes another state with `isDeleting = false` so the
   ///   page restores the button (and pops on success).
+  ///
+  /// T035 — playback coordination:
+  /// - Between the `isDeleting` publish and the `repository.delete`
+  ///   call, the controller invokes [_stopPlaybackIfActive] so
+  ///   the on-disk file is released before the row is removed.
+  ///   If that helper throws, the delete refuses to proceed and
+  ///   the result is [DeleteResult.failure] (NOT
+  ///   [DeleteResult.ignored] — the user should be able to retry
+  ///   once the player is in a sane state).
   Future<DeleteResult> deleteCurrentRecord() async {
     if (_isDeleting) {
       // A delete is already in flight; refuse the duplicate so
@@ -324,6 +575,35 @@ class PracticeRecordDetailController
     // we are about to delete.
     final String idToDelete = current.record!.id;
     final String? capturedAudioPath = current.record!.audioFilePath;
+
+    // T035 — stop the player BEFORE the row is removed so the
+    // on-disk file is released while we still have a row that
+    // documents its existence. If the player refuses to stop
+    // (rare on real devices — typically a `PlaybackOperationFailedException`
+    // raised by the gateway), the delete refuses to proceed
+    // and we surface [DeleteResult.failure]. The page's failure
+    // SnackBar lets the user retry; the file stays on disk and
+    // the row stays in place.
+    final PreDeleteStopOutcome stopResult =
+        await _stopPlaybackIfActive(capturedAudioPath);
+    if (stopResult == PreDeleteStopOutcome.refused) {
+      _isDeleting = false;
+      if (!ref.mounted) {
+        return DeleteResult.ignored;
+      }
+      // Re-read the latest state (which still carries
+      // `isDeleting = true`) and restore the button. The
+      // loaded record is preserved — the brief forbids
+      // clearing it to signal progress.
+      final PracticeRecordDetailState? afterRefusal = state.value;
+      if (afterRefusal != null) {
+        state = AsyncData<PracticeRecordDetailState>(
+          afterRefusal.copyWith(isDeleting: false),
+        );
+      }
+      return DeleteResult.failure;
+    }
+
     final PracticeRecordRepository repository =
         ref.read(practiceRecordRepositoryProvider);
     try {
@@ -476,6 +756,560 @@ class PracticeRecordDetailController
       return false;
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // T035 — playback control surface
+  // ---------------------------------------------------------------------------
+
+  /// Starts (or restarts) playback of the loaded record's
+  /// audio. Reads the path verbatim from
+  /// [PracticeRecordDetailState.record] and hands it to
+  /// [RealAudioPlaybackService.loadFile] followed by `play`.
+  ///
+  /// State machine:
+  /// - `audioFilePath == null | ''` → no-op (the page surfaces
+  ///   "此记录没有录音" instead of a button).
+  /// - `playbackStatus == playing | loading` → no-op (a
+  ///   previous `playRecordedAudio` is still in flight; the
+  ///   concurrent guard `_isStartingPlayback` backs this up
+  ///   at the synchronous layer).
+  /// - Otherwise: publish `loading` → `service.loadFile` →
+  ///   publish `playing` → `service.play` (fire-and-forget —
+  ///   the service's `play` future hangs for the whole
+  ///   playback duration on real devices, mirroring T031G /
+  ///   T031I). The natural-completion event drives the
+  ///   post-playback state machine.
+  ///
+  /// Errors:
+  /// - `service.loadFile` throws
+  ///   [AudioFileNotFoundException] / [PlaybackLoadFailedException]
+  ///   / [PlaybackIOFailedException] → publish `error` with a
+  ///   short friendly message; the record and the
+  ///   `audioFilePath` are preserved.
+  /// - `service.play` throws [PlaybackOperationFailedException]
+  ///   → publish `error`. The `play` future is fired
+  ///   asynchronously so the catch here covers both sync
+  ///   and post-async failures (the unawaited `play` future
+  ///   reports its own error to the controller in the
+  ///   onError callback).
+  ///
+  /// **NEVER** throws to the caller. Errors are surfaced
+  /// through the published [PracticeRecordDetailState].
+  Future<void> playRecordedAudio() async {
+    if (_disposed || !ref.mounted) {
+      return;
+    }
+    if (_isStartingPlayback) {
+      // A previous tap is still in flight; refuse the
+      // duplicate so the service is never asked to start a
+      // parallel `loadFile` for the same controller.
+      return;
+    }
+    final PracticeRecordDetailState? current = state.value;
+    if (current == null) {
+      return;
+    }
+    final PracticeRecord? record = current.record;
+    if (record == null) {
+      return;
+    }
+    final String? path = record.audioFilePath;
+    if (path == null || path.isEmpty) {
+      // No audio to play. The page must not even surface a
+      // button in this case, but the controller is the source
+      // of truth and MUST refuse the call.
+      return;
+    }
+    if (current.playbackStatus == PracticeRecordPlaybackStatus.playing ||
+        current.playbackStatus == PracticeRecordPlaybackStatus.loading) {
+      return;
+    }
+
+    _isStartingPlayback = true;
+    final RealAudioPlaybackService playback =
+        ref.read(realAudioPlaybackServiceProvider);
+
+    // Publish `loading` so the page can show a spinner and
+    // disable duplicate taps. We do NOT clear
+    // `playbackErrorMessage` here — the `loading` status
+    // itself signals "the previous error is being retried";
+    // the `loading → playing` transition will clear it.
+    state = AsyncData<PracticeRecordDetailState>(current.copyWith(
+      playbackStatus: PracticeRecordPlaybackStatus.loading,
+    ));
+
+    // Snapshot the load-time state for error recovery: if the
+    // controller is disposed mid-load, we must NOT write a
+    // post-dispose state. The `ref.mounted` check before every
+    // `state =` write covers this.
+    try {
+      await playback.loadFile(path);
+    } on AudioPlaybackException catch (e, st) {
+      debugPrint(
+        'PracticeRecordDetailController playRecordedAudio loadFile '
+        'failed: $e\n$st',
+      );
+      _isStartingPlayback = false;
+      if (_disposed || !ref.mounted) {
+        return;
+      }
+      state = AsyncData<PracticeRecordDetailState>(
+        _currentOrLoaded().copyWith(
+          playbackStatus: PracticeRecordPlaybackStatus.error,
+          playbackErrorMessage: _friendlyLoadError(e),
+        ),
+      );
+      return;
+    } catch (e, st) {
+      debugPrint(
+        'PracticeRecordDetailController playRecordedAudio loadFile '
+        'unexpected error: $e\n$st',
+      );
+      _isStartingPlayback = false;
+      if (_disposed || !ref.mounted) {
+        return;
+      }
+      state = AsyncData<PracticeRecordDetailState>(
+        _currentOrLoaded().copyWith(
+          playbackStatus: PracticeRecordPlaybackStatus.error,
+          playbackErrorMessage: '录音加载失败，请重试',
+        ),
+      );
+      return;
+    }
+    if (_disposed || !ref.mounted) {
+      _isStartingPlayback = false;
+      return;
+    }
+
+    // Subscribe to the natural-completion stream. Idempotent:
+    // the service guards against double-subscription, and the
+    // controller also null-checks before assigning. The
+    // subscription is cancelled in `ref.onDispose`.
+    _ensurePlaybackSubscription();
+
+    // Synchronous transition to `playing` BEFORE the fire-
+    // and-forget `play()` call so the UI updates in the same
+    // microtask as the user's tap. This mirrors the T031G
+    // pattern for the recording page; without it, the page
+    // would render "playing" only after the service's `play`
+    // future settles (which can be seconds in on real
+    // devices).
+    state = AsyncData<PracticeRecordDetailState>(
+      _currentOrLoaded().copyWith(
+        playbackStatus: PracticeRecordPlaybackStatus.playing,
+        clearPlaybackErrorMessage: true,
+      ),
+    );
+    _isStartingPlayback = false;
+
+    // Fire-and-forget. The service's `play()` future hangs
+    // for the whole playback duration on real devices; the
+    // controller observes natural completion via
+    // `playerStateStream` instead. Errors from the
+    // unawaited future are surfaced via the `onError`
+    // callback so a real-device failure mode is also covered.
+    // We deliberately do NOT `await` here — see T031G for the
+    // rationale.
+    // ignore: unawaited_futures
+    playback.play().then(
+      (_) {},
+      onError: (Object e, StackTrace st) {
+        debugPrint(
+          'PracticeRecordDetailController playRecordedAudio play '
+          'failed: $e\n$st',
+        );
+        if (_disposed || !ref.mounted) {
+          return;
+        }
+        // Only surface the error if the controller is still
+        // trying to play. A natural-completion event between
+        // the play call and this callback would already have
+        // flipped us to `idle`; we must not clobber that.
+        final PracticeRecordDetailState? latest = state.value;
+        if (latest == null) {
+          return;
+        }
+        if (latest.playbackStatus != PracticeRecordPlaybackStatus.playing) {
+          return;
+        }
+        state = AsyncData<PracticeRecordDetailState>(
+          latest.copyWith(
+            playbackStatus: PracticeRecordPlaybackStatus.error,
+            playbackErrorMessage: '播放操作失败，请重试',
+          ),
+        );
+      },
+    );
+  }
+
+  /// Pauses a currently-playing session. No-op unless the
+  /// current state is [PracticeRecordPlaybackStatus.playing].
+  /// The `service.pause` call is awaited so the synchronous
+  /// state write only lands after the gateway confirms the
+  /// pause — pausing is a fast operation on real devices
+  /// (no future hangs) so the `await` is safe.
+  Future<void> pausePlayback() async {
+    if (_disposed || !ref.mounted) {
+      return;
+    }
+    final PracticeRecordDetailState? current = state.value;
+    if (current == null) {
+      return;
+    }
+    if (current.playbackStatus != PracticeRecordPlaybackStatus.playing) {
+      return;
+    }
+    final RealAudioPlaybackService playback =
+        ref.read(realAudioPlaybackServiceProvider);
+    try {
+      await playback.pause();
+    } on Object catch (e, st) {
+      debugPrint(
+        'PracticeRecordDetailController pausePlayback failed: $e\n$st',
+      );
+      if (_disposed || !ref.mounted) {
+        return;
+      }
+      state = AsyncData<PracticeRecordDetailState>(
+        _currentOrLoaded().copyWith(
+          playbackStatus: PracticeRecordPlaybackStatus.error,
+          playbackErrorMessage: '播放操作失败，请重试',
+        ),
+      );
+      return;
+    }
+    if (_disposed || !ref.mounted) {
+      return;
+    }
+    state = AsyncData<PracticeRecordDetailState>(
+      _currentOrLoaded().copyWith(
+        playbackStatus: PracticeRecordPlaybackStatus.paused,
+      ),
+    );
+  }
+
+  /// Resumes a paused session. No-op unless the current state
+  /// is [PracticeRecordPlaybackStatus.paused]. Internally
+  /// delegates to [RealAudioPlaybackService.resume] which is
+  /// semantically equivalent to `play` from the `paused` state.
+  Future<void> resumePlayback() async {
+    if (_disposed || !ref.mounted) {
+      return;
+    }
+    final PracticeRecordDetailState? current = state.value;
+    if (current == null) {
+      return;
+    }
+    if (current.playbackStatus != PracticeRecordPlaybackStatus.paused) {
+      return;
+    }
+    final RealAudioPlaybackService playback =
+        ref.read(realAudioPlaybackServiceProvider);
+    try {
+      await playback.resume();
+    } on Object catch (e, st) {
+      debugPrint(
+        'PracticeRecordDetailController resumePlayback failed: $e\n$st',
+      );
+      if (_disposed || !ref.mounted) {
+        return;
+      }
+      state = AsyncData<PracticeRecordDetailState>(
+        _currentOrLoaded().copyWith(
+          playbackStatus: PracticeRecordPlaybackStatus.error,
+          playbackErrorMessage: '播放操作失败，请重试',
+        ),
+      );
+      return;
+    }
+    if (_disposed || !ref.mounted) {
+      return;
+    }
+    state = AsyncData<PracticeRecordDetailState>(
+      _currentOrLoaded().copyWith(
+        playbackStatus: PracticeRecordPlaybackStatus.playing,
+        clearPlaybackErrorMessage: true,
+      ),
+    );
+  }
+
+  /// Stops the current session, releasing the player's
+  /// on-disk handle. No-op in [PracticeRecordPlaybackStatus.idle]
+  /// or `.error`. After a successful stop, the state returns
+  /// to `idle` and a subsequent `playRecordedAudio` will
+  /// re-load the file from scratch (the service's `stop`
+  /// clears the active source).
+  Future<void> stopPlayback() async {
+    if (_disposed || !ref.mounted) {
+      return;
+    }
+    final PracticeRecordDetailState? current = state.value;
+    if (current == null) {
+      return;
+    }
+    if (current.playbackStatus == PracticeRecordPlaybackStatus.idle ||
+        current.playbackStatus == PracticeRecordPlaybackStatus.error) {
+      return;
+    }
+    final RealAudioPlaybackService playback =
+        ref.read(realAudioPlaybackServiceProvider);
+    try {
+      await playback.stop();
+    } on Object catch (e, st) {
+      debugPrint(
+        'PracticeRecordDetailController stopPlayback failed: $e\n$st',
+      );
+      if (_disposed || !ref.mounted) {
+        return;
+      }
+      state = AsyncData<PracticeRecordDetailState>(
+        _currentOrLoaded().copyWith(
+          playbackStatus: PracticeRecordPlaybackStatus.error,
+          playbackErrorMessage: '播放操作失败，请重试',
+        ),
+      );
+      return;
+    }
+    if (_disposed || !ref.mounted) {
+      return;
+    }
+    state = AsyncData<PracticeRecordDetailState>(
+      _currentOrLoaded().copyWith(
+        playbackStatus: PracticeRecordPlaybackStatus.idle,
+        clearPlaybackErrorMessage: true,
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // T035 — delete ↔ playback coordination
+  // ---------------------------------------------------------------------------
+
+  /// Best-effort pre-delete stop. Called from
+  /// [deleteCurrentRecord] BEFORE the row is removed so the
+  /// on-disk file is no longer held by the player.
+  ///
+  /// The audio path argument is the path captured at the
+  /// entry of the delete call (T034's contract). The helper
+  /// uses it only to decide whether a "stop" is required —
+  /// the service's `stop()` does NOT require a path argument.
+  ///
+  /// Decision table:
+  /// - `playbackStatus == idle | error` → returns
+  ///   [PreDeleteStopOutcome.proceed] (nothing to stop; the
+  ///   delete proceeds).
+  /// - `playbackStatus == ready | playing | paused | loading`
+  ///   → best-effort `service.stop()`. On success,
+  ///   [PreDeleteStopOutcome.proceed]. On any thrown
+  ///   [AudioPlaybackException] or other error,
+  ///   [PreDeleteStopOutcome.refused] so the delete returns
+  ///   [DeleteResult.failure].
+  /// - Provider disposed mid-stop → [PreDeleteStopOutcome.proceed]
+  ///   (delete will then also be `ignored` via the existing
+  ///   `ref.mounted` guard at the top of `deleteCurrentRecord`).
+  Future<PreDeleteStopOutcome> _stopPlaybackIfActive(
+    String? capturedPath,
+  ) async {
+    if (_disposed || !ref.mounted) {
+      return PreDeleteStopOutcome.proceed;
+    }
+    if (capturedPath == null || capturedPath.isEmpty) {
+      // No audio path → no player is holding the file. Skip
+      // the stop attempt entirely; the delete proceeds.
+      return PreDeleteStopOutcome.proceed;
+    }
+    final PracticeRecordDetailState? current = state.value;
+    if (current == null) {
+      return PreDeleteStopOutcome.proceed;
+    }
+    switch (current.playbackStatus) {
+      case PracticeRecordPlaybackStatus.idle:
+      case PracticeRecordPlaybackStatus.error:
+        return PreDeleteStopOutcome.proceed;
+      case PracticeRecordPlaybackStatus.loading:
+      case PracticeRecordPlaybackStatus.ready:
+      case PracticeRecordPlaybackStatus.playing:
+      case PracticeRecordPlaybackStatus.paused:
+        // Active session — try to stop.
+        break;
+    }
+    final RealAudioPlaybackService playback =
+        ref.read(realAudioPlaybackServiceProvider);
+    try {
+      await playback.stop();
+    } on Object catch (e, st) {
+      debugPrint(
+        'PracticeRecordDetailController pre-delete stop failed: '
+        '$e\n$st',
+      );
+      return PreDeleteStopOutcome.refused;
+    }
+    if (_disposed || !ref.mounted) {
+      return PreDeleteStopOutcome.proceed;
+    }
+    // Best-effort: flip the state to `idle` so the UI is
+    // not left with a stale "playing" badge while the
+    // delete is in flight. The page does not observe this
+    // transition for long because the success branch pops
+    // the route immediately after.
+    final PracticeRecordDetailState? afterStop = state.value;
+    if (afterStop != null &&
+        afterStop.playbackStatus != PracticeRecordPlaybackStatus.idle) {
+      state = AsyncData<PracticeRecordDetailState>(
+        afterStop.copyWith(
+          playbackStatus: PracticeRecordPlaybackStatus.idle,
+          clearPlaybackErrorMessage: true,
+        ),
+      );
+    }
+    return PreDeleteStopOutcome.proceed;
+  }
+
+  // ---------------------------------------------------------------------------
+  // T035 — natural-completion subscription
+  // ---------------------------------------------------------------------------
+
+  /// Idempotently attaches the natural-completion listener to
+  /// the playback service's `playerStateStream`. Called from
+  /// [playRecordedAudio] after a successful `loadFile`; the
+  /// subscription is cancelled in `_onDispose`. Mirrors the
+  /// T031I pattern in [RecordingPracticeController].
+  void _ensurePlaybackSubscription() {
+    if (_playbackStateSubscription != null) {
+      return;
+    }
+    final RealAudioPlaybackService playback =
+        ref.read(realAudioPlaybackServiceProvider);
+    _playbackStateSubscription =
+        playback.playerStateStream.listen(_onPlayerState);
+  }
+
+  /// `playerStateStream` callback. Translates the gateway's
+  /// `completed` event into a controller-side transition back
+  /// to [PracticeRecordPlaybackStatus.idle].
+  ///
+  /// Design notes (T035):
+  /// - We deliberately do NOT call
+  ///   [RealAudioPlaybackService.stop] / `seek(0)` from the
+  ///   completion handler. The playback service's own
+  ///   internal `_onPlayerState` callback (T030) already
+  ///   drives the service to `completed`; the next
+  ///   `playRecordedAudio` re-loads the file from scratch
+  ///   so the "replay-from-zero" contract is satisfied
+  ///   without us racing the service's state machine.
+  /// - `_handlingNaturalCompletion` guards against duplicate
+  ///   `completed` events (which the fake gateway simulates
+  ///   on real devices via `simulateRealDeviceLoopAfterCompleted`).
+  /// - `_disposed` and `!ref.mounted` checks run BEFORE any
+  ///   state write so a post-dispose event cannot push
+  ///   into a torn-down Provider.
+  void _onPlayerState(PlaybackPlayerState ps) {
+    if (_disposed || !ref.mounted) {
+      return;
+    }
+    if (ps.processingState != PlaybackProcessingState.completed) {
+      return;
+    }
+    if (_handlingNaturalCompletion) {
+      // Duplicate `completed` event from the gateway. The
+      // first event has already driven the state back to
+      // `idle`; the second one is a no-op.
+      return;
+    }
+    final PracticeRecordDetailState? current = state.value;
+    if (current == null) {
+      return;
+    }
+    // If the controller has already moved on (e.g. the user
+    // tapped stop before the gateway's `completed` event
+    // arrived, or a previous `playRecordedAudio` has
+    // already started a new session), do not clobber the
+    // new state.
+    if (current.playbackStatus != PracticeRecordPlaybackStatus.playing &&
+        current.playbackStatus != PracticeRecordPlaybackStatus.paused &&
+        current.playbackStatus != PracticeRecordPlaybackStatus.ready &&
+        current.playbackStatus != PracticeRecordPlaybackStatus.loading) {
+      return;
+    }
+    _handlingNaturalCompletion = true;
+    try {
+      state = AsyncData<PracticeRecordDetailState>(
+        current.copyWith(
+          playbackStatus: PracticeRecordPlaybackStatus.idle,
+          clearPlaybackErrorMessage: true,
+        ),
+      );
+    } finally {
+      _handlingNaturalCompletion = false;
+    }
+  }
+
+  /// T035 — Riverpod teardown hook. Cancels the playback
+  /// stream subscription and flips the disposed flag so any
+  /// post-dispose stream event is a no-op. **Does NOT** call
+  /// [RealAudioPlaybackService.dispose] — the service is
+  /// shared via `realAudioPlaybackServiceProvider` and is
+  /// torn down by the Riverpod scope's own lifecycle.
+  void _onDispose() {
+    _disposed = true;
+    final Future<void> cancel =
+        _playbackStateSubscription?.cancel() ?? Future<void>.value();
+    _playbackStateSubscription = null;
+    // ignore: unawaited_futures
+    cancel;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal helpers
+  // ---------------------------------------------------------------------------
+
+  /// Returns the most recent published state, or a fresh
+  /// "notFound" placeholder if the controller has no
+  /// published state yet. The placeholder is only reachable
+  /// in race conditions where a state write happens before
+  /// `build` has published; in normal operation
+  /// [state.value] is always non-null after the first
+  /// microtask. We return a defensive placeholder rather
+  /// than throwing because the helpers in this file are
+  /// called from a defensive `if (current == null) return;`
+  /// upstream — the helpers should never receive a `null`
+  /// snapshot.
+  PracticeRecordDetailState _currentOrLoaded() {
+    final PracticeRecordDetailState? latest = state.value;
+    if (latest != null) {
+      return latest;
+    }
+    return PracticeRecordDetailState.notFound();
+  }
+
+  /// T035 — maps a load-time [AudioPlaybackException] to a
+  /// short, user-visible message. The full exception
+  /// (including the on-disk path) is `debugPrint`-ed by the
+  /// caller and NEVER rendered.
+  static String _friendlyLoadError(AudioPlaybackException e) {
+    if (e is AudioFileNotFoundException) {
+      return '录音文件不存在或已被移动';
+    }
+    if (e is PlaybackIOFailedException) {
+      return '录音加载失败，请重试';
+    }
+    // PlaybackLoadFailedException + PlaybackConfigException +
+    // InvalidPlaybackStateException → generic "load failed" copy.
+    return '录音加载失败，请重试';
+  }
+}
+
+/// T035 — outcome of the pre-delete `_stopPlaybackIfActive`
+/// helper. Two values:
+/// - [proceed] — the delete can run (player was inactive OR
+///   `service.stop()` succeeded).
+/// - [refused] — the player was active and `service.stop()`
+///   threw. The delete refuses to proceed so we never
+///   silently race a player that still holds the file handle.
+enum PreDeleteStopOutcome {
+  proceed,
+  refused,
 }
 
 /// Provider for the practice record detail controller.

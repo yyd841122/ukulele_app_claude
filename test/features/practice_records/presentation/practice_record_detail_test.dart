@@ -1,4 +1,5 @@
-// Tests for the practice record detail page + controller (T013.4C).
+// Tests for the practice record detail page + controller
+// (T013.4C + T034 + T035).
 //
 // Strategy:
 // - The controller is exercised through a real
@@ -13,6 +14,13 @@
 //   integration-style test: a watchAll stream is wired through
 //   the fake repository, and we verify that `delete` removes
 //   the row from the next emission.
+// - T035 widget tests: the playback service is overridden with
+//   a real `RealAudioPlaybackService` wired to a
+//   `FakeAudioPlaybackGateway` so the page's
+//   `_PlaybackSection` interactions are realistic without
+//   touching just_audio. Audio paths are planted as real
+//   `.m4a` files inside the playback service's isolated temp
+//   root.
 // - Every StreamController, Completer, ProviderContainer and
 //   database resource is closed through `addTearDown`.
 
@@ -35,7 +43,13 @@ import 'package:ukulele_app/features/practice_records/domain/practice_type.dart'
 import 'package:ukulele_app/features/practice_records/domain/self_assessment.dart';
 import 'package:ukulele_app/features/practice_records/presentation/practice_record_detail_page.dart';
 import 'package:ukulele_app/shared/providers/audio_file_storage_service_provider.dart';
+import 'package:ukulele_app/shared/providers/real_audio_playback_service_provider.dart';
 import 'package:ukulele_app/shared/services/audio_file_storage_service.dart';
+import 'package:ukulele_app/shared/services/audio_playback_gateway.dart';
+import 'package:ukulele_app/shared/services/real_audio_playback_service.dart';
+
+// ignore: unused_import
+import '../../../shared/services/fake_audio_playback_gateway.dart';
 
 void main() {
   group('PracticeRecordDetailController', () {
@@ -375,6 +389,7 @@ void main() {
       String? locationOverride,
       GoRouter? router,
       AudioFileStorageService? storage,
+      RealAudioPlaybackService? playbackService,
     }) async {
       final GoRouter effectiveRouter =
           router ?? detailOnlyRouter(locationOverride ?? '/records/r-1');
@@ -384,6 +399,11 @@ void main() {
       if (storage != null) {
         overrides.add(
           audioFileStorageServiceProvider.overrideWithValue(storage),
+        );
+      }
+      if (playbackService != null) {
+        overrides.add(
+          realAudioPlaybackServiceProvider.overrideWithValue(playbackService),
         );
       }
       await tester.pumpWidget(
@@ -1544,7 +1564,356 @@ void main() {
       );
       expect(find.byType(_RecordsSentinelPage), findsOneWidget);
     });
+
+    // -------------------------------------------------------------------------
+    // T035 — real-audio playback section (page-level)
+    //
+    // The T035 group exercises the [_PlaybackSection]
+    // widget: the rendered buttons, the error states, the
+    // playback state transitions, and the page-level
+    // coordination between playback and the existing
+    // delete state machine. A real
+    // `RealAudioPlaybackService` is wired to a
+    // `FakeAudioPlaybackGateway` so the controller's state
+    // machine is exercised end-to-end without touching
+    // just_audio.
+    // -------------------------------------------------------------------------
+
+    /// Bundles an isolated playback service + a real audio
+    /// file path inside the service's storage root. The temp
+    /// directory is registered with `addTearDown` so it is
+    /// removed at the end of the test.
+    ({
+      RealAudioPlaybackService service,
+      FakeAudioPlaybackGateway gateway,
+      AudioFileStorageService storage,
+      String audioPath,
+    }) buildIsolatedPlayback() {
+      final Directory root = Directory.systemTemp.createTempSync(
+        't035_widget_playback_',
+      );
+      addTearDown(() {
+        if (root.existsSync()) {
+          try {
+            root.deleteSync(recursive: true);
+          } on FileSystemException {
+            // best-effort
+          }
+        }
+      });
+      final AudioFileStorageService storage = AudioFileStorageService(
+        rootDirectoryProvider: () async => root,
+      );
+      final FakeAudioPlaybackGateway gateway = FakeAudioPlaybackGateway();
+      final RealAudioPlaybackService service = RealAudioPlaybackService(
+        gateway: gateway,
+        storage: storage,
+      );
+      // Plant a real `.m4a` file inside the saved
+      // subdirectory synchronously. Widget tests need a
+      // sync path because `pumpWidget` is not
+      // async-context-aware.
+      final Directory saved = Directory(p.join(root.path, 'saved'))
+        ..createSync(recursive: true);
+      final File audio = File(p.join(saved.path, 'r.m4a'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('bytes');
+      final String audioPath = audio.path;
+      return (
+        service: service,
+        gateway: gateway,
+        storage: storage,
+        audioPath: audioPath,
+      );
+    }
+
+    testWidgets(
+        'audioFilePath == null renders the "no audio" hint '
+        'and NO playback buttons', (WidgetTester tester) async {
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: null),
+      });
+      addTearDown(repo.close);
+
+      await pumpDetailPage(tester, repository: repo);
+      await settleGetById(tester);
+
+      // The hint is rendered.
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-no-audio-hint')),
+        findsOneWidget,
+      );
+      expect(find.text('此记录没有录音'), findsOneWidget);
+      // No playback buttons.
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-play-button')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-pause-button')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-resume-button')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-stop-button')),
+        findsNothing,
+      );
+    });
+
+    testWidgets(
+        'a record with audio renders the playback section '
+        'with an enabled play button at idle', (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) =
+          buildIsolatedPlayback();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpDetailPage(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+      await settleGetById(tester);
+
+      // The playback section is rendered.
+      expect(
+        find.byKey(
+            const ValueKey<String>('practice-record-detail-playback-section')),
+        findsOneWidget,
+      );
+      // The play button is present and enabled.
+      final Finder playFinder = find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button'));
+      expect(playFinder, findsOneWidget);
+      final StatelessWidget playButton =
+          tester.widget<StatelessWidget>(playFinder);
+      expect(playButton, isNotNull);
+      // The status label shows the idle copy.
+      expect(find.text('准备播放'), findsOneWidget);
+    });
+
+    testWidgets(
+        'tapping play drives the page through playing → '
+        'pause + stop buttons visible', (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) =
+          buildIsolatedPlayback();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpDetailPage(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+      await settleGetById(tester);
+
+      // Tap play and pump until the controller reaches
+      // playing.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      // Real disk I/O (loadFile / play) must run inside
+      // runAsync.
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pump();
+
+      expect(gateway.loadFileCallCount, 1,
+          reason: 'play must drive the service.loadFile once');
+      expect(gateway.playCallCount, greaterThanOrEqualTo(1));
+      // The pause and stop buttons are now visible.
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-pause-button')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-stop-button')),
+        findsOneWidget,
+      );
+      // The status label shows the playing copy.
+      expect(find.text('正在播放'), findsOneWidget);
+    });
+
+    testWidgets(
+        'natural completion flips the page back to the play '
+        'button (replay available)', (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) =
+          buildIsolatedPlayback();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpDetailPage(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+      await settleGetById(tester);
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pump();
+
+      // Drive the natural-completion event from the fake.
+      gateway.emitPlayerState(
+        const PlaybackPlayerState(
+          playing: false,
+          processingState: PlaybackProcessingState.completed,
+        ),
+      );
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      });
+      await tester.pump();
+
+      // After natural completion the page shows the play
+      // button again (status = idle) so the user can
+      // replay.
+      final Finder playFinder = find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button'));
+      expect(playFinder, findsOneWidget);
+      final StatelessWidget playButton =
+          tester.widget<StatelessWidget>(playFinder);
+      expect(playButton, isNotNull,
+          reason: 'play must be enabled after natural completion');
+      expect(find.text('准备播放'), findsOneWidget);
+    });
+
+    testWidgets(
+        'a loadFile failure surfaces a friendly error message '
+        'that does NOT contain the audio path', (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) =
+          buildIsolatedPlayback();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      gateway.nextLoadException = Exception('synthetic');
+      await pumpDetailPage(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+      await settleGetById(tester);
+
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pump();
+
+      // The error label is visible. The label is intentionally
+      // generic so the path cannot leak.
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-error-message')),
+        findsOneWidget,
+      );
+      expect(find.textContaining(audioPath), findsNothing,
+          reason: 'the rendered error text must NOT contain the path');
+      // The play button (re-labeled 重试 in the error state)
+      // remains visible.
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-play-button')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+        'a delete while playback is active still completes and '
+        'the page pops back to the list (T035 ↔ T034 coordination)',
+        (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) =
+          buildIsolatedPlayback();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpDetailPage(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+      await settleGetById(tester);
+
+      // Start playback.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pump();
+
+      // Tap delete → confirm.
+      await tester.tap(find.byKey(
+          const ValueKey<String>('practice-record-detail-delete-button')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-delete-confirm-button')));
+      // Real disk I/O (pre-delete stop + repository.delete +
+      // T034 cleanup) must run inside runAsync. We then
+      // pump a few frames to flush the route transition.
+      // The post-delete SnackBar lives on the root
+      // ScaffoldMessenger and the pop animation settles
+      // via a series of pumps.
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump();
+
+      expect(gateway.stopCallCount, greaterThanOrEqualTo(1),
+          reason: 'pre-delete stop must run even with an active session');
+      expect(repo.deleteCalls, <String>['r-1']);
+    });
   });
+
+  // ---------------------------------------------------------------------------
+  // T035 — real-audio playback section (page-level)
+  //
+  // The T035 group exercises the [_PlaybackSection] widget:
+  // the rendered buttons, the error states, the playback
+  // state transitions, and the page-level coordination
+  // between playback and the existing delete state
+  // machine. A real `RealAudioPlaybackService` is wired to
+  // a `FakeAudioPlaybackGateway` so the controller's
+  // state machine is exercised end-to-end without touching
+  // just_audio.
+  // ---------------------------------------------------------------------------
 
   group('practiceRecordDetailControllerProvider family', () {
     test('different ids create different controller instances', () async {

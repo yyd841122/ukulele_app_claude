@@ -60,4 +60,28 @@ abstract class PracticeRecordRepository {
   /// Removes the record with [id]. Returns `true` if a row was
   /// actually deleted, `false` otherwise.
   Future<bool> delete(String id);
+
+  /// Returns `true` iff at least one row in `practice_records`
+  /// references [audioFilePath] verbatim (the persisted string is
+  /// byte-for-byte equal to the argument).
+  ///
+  /// **T034 contract — application-layer audio file cleanup**:
+  /// - The Repository is a pure persistence boundary and **does
+  ///   NOT** touch the file system. This method is read-only and
+  ///   exists so the application layer can decide whether the
+  ///   on-disk audio file is still referenced by ANY record
+  ///   before cleaning it up. A path shared by multiple records
+  ///   is never deleted while at least one referencing record
+  ///   survives.
+  /// - The comparison is **verbatim** — no `TRIM()`, no
+  ///   `LOWER()`, no canonicalisation, no `LIKE`. Two records
+  ///   whose `audioFilePath` differ only by a trailing slash,
+  ///   a different case, or a `..` segment are NOT considered
+  ///   to reference the same file.
+  /// - Empty / null input is rejected with [ArgumentError], same
+  ///   rationale as [delete] (the Repository is not a place for
+  ///   "what if?" queries on invalid data).
+  /// - This is a counting query (`SELECT EXISTS(...)`) — the
+  ///   application layer only needs the boolean answer.
+  Future<bool> hasAudioPathReference(String audioFilePath);
 }

@@ -1421,3 +1421,179 @@
   - 未来 T031 任务实现 Controller 集成时，可考虑在 `RecordingPracticeController` 显式调用 `MicrophonePermissionService.requestPermission()` 后再调用 `realAudioRecorderService.start()`，并在 `playing` / `paused` 状态下禁止 `startRecording`（录音与播放互斥），保持 Service 边界（Service 不调用权限）+ Controller 边界（Controller 协调权限 + 互斥）的清晰分离；
   - 未来 T033 任务可在 `PrivacyNoticePage` 中明确说明"音频文件保存到 App 私有目录（`<docs>/audio`），其他应用无法访问"，与既有 SDD §3.6 一致；
 - **Approval**：**Approved**
+
+### 4.12 T034 Scorecard（真实音频 PracticeRecord 删除联动清理音频文件 — 应用层协调）
+
+| 项 | 描述 |
+| --- | --- |
+| Task ID | `T034_REAL_AUDIO_RECORD_DELETE_FILE_CLEANUP` |
+| Primary Agent | `02-flutter-architect`（删除状态机扩展 / DB+file 协调 / 失败语义 / 并发保护 / UI 状态一致 / 共享路径保护 / best-effort cleanup 主导） |
+| Review Agents | `06-local-data-engineer`（Repository 职责纯粹 / 路径引用查询 verbatim 契约 / 共享路径保护 / schema 未改 / app_database.g.dart 未重生成）；`07-qa-reviewer`（删除顺序 / 失败语义 / 共享路径 / 重复删除 / root 外 / temp dir 隔离 / 测试数与既有回归 / 命令纪律）；`08-compliance-reviewer`（任务边界 / Manifest / INTERNET / 依赖 / 敏感文件 / 构建产物 / Git 纪律 / 未越界实现详情播放或孤儿扫描） |
+| High Risk Areas | ① Repository 必须**不**触磁盘，`DriftPracticeRecordRepository.delete` 路径与 T032 一致保持（既有 6 项 T032 audioFilePath 测试 pin 契约）；② 删除顺序必须严格"DB delete → audio cleanup"，**不**允许先删除音频文件；③ 共享路径保护：`hasAudioPathReference` 必须 verbatim `=` SQL 谓词（**不**用 `LIKE` / `TRIM` / `LOWER`），fake 必须用 multiset 计数器；④ root 自身 / root 外 / `..` 路径逃逸必须由 `AudioFileStorageService.deleteIfExists` 现有契约拒绝（T028 + T028A 已 pin），Controller **不**做 normalize / canonicalize；⑤ cleanup 失败**不**回滚 DB 删除（避免"ghost row"），改为 `successWithCleanupWarning` 4 态枚举；⑥ audio path 必须在 `deleteCurrentRecord` 入口处捕获快照，**不**重新读 state（保护 `watchAll` 流更新导致路径错位）；⑦ schemaVersion 仍 2 / `app_database.g.dart` **不**重生成 / `RecordingController` save flow 保留；⑧ fake / temp dir 隔离：测试**不**触发真实麦克风 / 真实播放 / 真实 Drift / 真实 Android 设备，文件系统操作只在 temp dir 内；⑨ 真实 `AudioFileStorageService` 必须在 controller test 中复用（**不**写 fake storage），100% 与生产 deleteIfExists 行为一致；⑩ 命令纪律（单条命令,无管道 / 重定向 / `&&` / 分号 / 复合命令） |
+| Blockers Found | 0（三个 Reviewer 均按 `AGENT_REVIEW_TEMPLATE.md` 只读审查，未发现阻断项；详见下文 §4.12.1 ~ §4.12.3 Reviewer 报告段） |
+| Blockers Valid | 0（无 Blockers） |
+| Fix Commits Required | 0 |
+| Tests Passed | **583**（557 T033 既有 + 26 新 T034 = 7 repository `hasAudioPathReference (T034)` group + 17 controller 协调测试 + 2 widget T034 测试；既有测试 0 减少） |
+| Tests Added/Updated/Deleted | Added: 26（7 repository + 17 controller + 2 widget）；Updated: 7（4 个其他 test fake `_StreamPracticeRecordRepository` / `_FakePracticeRecordRepository` (recording controller) / `_GatedPracticeRecordRepository` / `_FakePracticeRecordRepository` (recording page) 各加 1 行 `Future<bool> hasAudioPathReference` stub；widget test fake + controller test fake 改为 multiset `_audioPathRefCounts` 模式 + 共享路径支持）；Deleted: 0 |
+| Scope Clean | Yes（仅修改 4 个允许 lib 文件 + 3 个允许 test 文件增强 + 1 个允许 test 文件新建 + 1 个允许 doc 文件（本 ledger）；未修改 `DriftPracticeRecordRepository.delete` 路径 / `RecordingController` / `RecordingPage` / `RealAudioRecorderService` / `RealAudioPlaybackService` / `AudioFileStorageService` / `app_database.g.dart` / Drift tables / AndroidManifest / pubspec.yaml / pubspec.lock / 隐私政策 / key.properties） |
+| Command discipline violation | **No**（全程命令均为单条命令：`git status --short` / `git rev-parse HEAD` / `git branch --show-current` / `git ls-files` / `git diff --check` / `git diff --stat` / `dart format` / `flutter analyze` / `flutter test` 等只读或允许写命令；无管道、无重定向、无 `&&`、无分号、无复合命令） |
+| Sensitive Files Checked | Yes（`git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 四项均返回空；`v0.1.0-mvp` 仍指向 `d49ce4b` 未变；`v1.0.0-release` 仍指向 `703d2aa` 未变；`android/key.properties` 仍 ignored / untracked；新代码未记录密码 / keystore 内容 / 用户目录 keystore 绝对路径；未读取 `key.properties` 内容） |
+| Build Artifacts Tracked | No（`git ls-files build/app/outputs/**` 返回空） |
+| Dependency Modified | **No**（`pubspec.yaml` / `pubspec.lock` 未被修改；`record ^7.1.0` / `just_audio ^0.10.5` / `permission_handler ^12.0.3` / `path_provider ^2.1.6` 既有依赖不变） |
+| Permissions Modified | **No**（`AndroidManifest.xml` 三处清单均未修改；T027 已声明 `RECORD_AUDIO` 不变；**未**声明 `INTERNET`；**未**新增任何权限） |
+| Migration Evidence | N/A（T034 是删除流程协调任务，**不**涉及 Drift schema / migration；`schemaVersion` 仍 2，`onUpgrade` 1→2 no-op 分支未动） |
+| Repository Still Pure Persistence Boundary | Yes（`DriftPracticeRecordRepository.delete` 路径**未**改，`hasAudioPathReference` 是只读 `SELECT EXISTS(...)` 查询，**不**触文件系统；既有 6 项 T032 audioFilePath 测试 pin 契约保持：DB null → domain null / DB string → domain string / listRecent+watchAll 可见 / delete 不触磁盘音频文件 / insert 返回值反映 / 空串不验证） |
+| Audio Cleanup Service Boundary Preserved | Yes（`AudioFileStorageService.deleteIfExists` 行为**未**改（T028 + T028A 已 pin 契约：root 自身按"不存在"处理 / root 外 / `..` 抛 `ArgumentError` / 文件不存在返回 `false`）；Controller 是唯一磁盘入口的协调方，**不**绕过 `deleteIfExists` 调 `File.delete`） |
+| Shared Path Protection | Yes（`hasAudioPathReference` 用 verbatim SQL `=` 谓词（Drift `.equals(...)` 编译为 `=` SQL），**不**用 `LIKE` / `TRIM` / `LOWER`；fake 用 multiset `_audioPathRefCounts` 模式（添加 +1，删除 -1），"shared path: deleting one record leaves file on disk" 测试验证 — 删除 r-a 时 r-b 仍引用同一路径，fake 计数器保留引用，cleanup helper 跳过 disk call） |
+| Path Snapshot at Entry | Yes（`deleteCurrentRecord` 入口处 `final String? capturedAudioPath = current.record!.audioFilePath;` 与 `final String idToDelete = current.record!.id;`，整个 cleanup 流程**不**重新读 `state`，保护 `watchAll` 流更新导致路径错位；测试 "audioFilePath captured at delete entry not replaced by stream update" pin 契约） |
+| UI/Controller Untouched (Recording) | Yes（`lib/features/recording/application/recording_practice_controller.dart` / `lib/features/recording/presentation/recording_page.dart` 未修改；T033 save flow 保留；T033 fake 录音 take path verbatim 进入 `PracticeRecord.audioFilePath` 不变） |
+| Real Audio Persisted To Records | Yes（T033 已就位；T034 只负责删除流程协调） |
+| Delete Audio Implemented | **Yes**（T034 实现"删除记录联动删除音频"，**仅**在 DB 删除成功后由 controller 协调 cleanup；Repository.delete 仍仅删 DB 行，cleanup 委托给 controller） |
+| Test Count | 583（实测 `flutter test` 全量输出 `00:16 +583: All tests passed!`） |
+| Final Approval | 待 GPT 复审 |
+| Collaboration Value | **High**（T034 是删除流程跨边界的核心协调任务，Primary Agent 在 Self-Critique 中识别并修复 7 个真实陷阱：① controller cleanup helper 把 `deleteIfExists` 的 `bool` 返回值直接返回 —— service 对 root 自身被传为 `File` 时 `File.exists()` 返回 `false`，service 走"文件不存在"分支并返回 `false`，与"cleanup 失败"语义混淆 → 测试期望 success 实际得到 successWithCleanupWarning；修复后 cleanup helper 改为 `await storage.deleteIfExists(...)` 后**统一返回 `true`**（不存在 / root 自身 / 成功删除 都是 clean），仅 `catch` 路径返回 `false`（service 抛 `ArgumentError` 才是真正的 warning）；② 测试 fake 用 `Set<String>` 维护引用 —— `Set.remove` 只能 remove 一次，"shared path: file deleted only after last reference" 测试中 seed 含 `r-a` + `r-b` 共享同一路径，第一次 `delete('r-a')` 调用 fake 的 delete 内部 `_referencedAudioPaths.remove(path)` 即把 path 从 set 中清除（即使 `r-b` 仍在），后续 `hasAudioPathReference` 返回 false → cleanup 删除文件 → 与测试期望 "shared path should still exist" 矛盾；修复后 fake 改用 `Map<String, int> _audioPathRefCounts` multiset 计数器，add 时 +1，delete 时 -1（≤0 则 remove）；③ widget test "T034 — cleanup warning SnackBar" 使用 `pumpAndSettle()` 但 controller 的 `_cleanupAudioFileIfOrphaned` 触发真实 `File.delete()` / `storage.deleteIfExists` 真实 IO，FakeAsync zone 内 `pumpAndSettle` 永不 settle；修复后改用 `tester.runAsync(() async { await Future.delayed(50ms); })` 让真实 IO 推进 + `tester.pump` 多次 flush rebuild；④ widget test 仍出现"Found 2 SnackBars" — detail page 与 sentinel page 各自的 ScaffoldMessenger 都在 tree 上；增加多次 `tester.pump` + `pumpAndSettle(1s)` 让 pop 动画完成 + 第二个 ScaffoldMessenger tear down；⑤ controller 测试 "audio file already missing on disk" 用了 `'C:/this/path/does/not/exist/rec.m4a'` —— 路径在 root **外**，service 抛 `ArgumentError` → successWithCleanupWarning；修复后改用 `p.join(root.path, 'saved', 'ghost.m4a')`（在 root **内**但文件未创建）→ service 走 exists-false → success；⑥ controller 测试 "root directory itself is never deleted" 与修复 ① 配套；service 对 `File(root.path)` 的 `exists()` 返回 false → service 不进入路径校验分支（直接 return false）→ 改 controller 后 return true → success；⑦ `flutter analyze` 报告 5 项 error：3 个其他 test fake（`_StreamPracticeRecordRepository` / `_FakePracticeRecordRepository` in recording controller test / `_GatedPracticeRecordRepository` / `_FakePracticeRecordRepository` in recording page test）**未**实现新增的 `hasAudioPathReference` 抽象方法 → 全部补充 stub；1 项 `unused_local_variable` 来自 `storedPath` 残留死代码 → 删除；协作价值以"删除状态机扩展为 4 态 + DB+file 协调 + verbatim 共享路径保护 + audio path 入口捕获快照 + best-effort cleanup + 真实 service 复用 + multiset fake + 7 个真实陷阱拦截"为主要产出） |
+| Notes | Flutter Architect Reviewer 重点确认：① `DeleteResult` 4 态枚举（success / successWithCleanupWarning / ignored / failure）扩展向后兼容（既有 widget tests 36 项 0 减少）；② `deleteCurrentRecord` 入口处捕获 `(idToDelete, capturedAudioPath)` 快照，整个 cleanup 流程**不**重新读 state（保护 `watchAll` 流更新导致路径错位，测试 "audioFilePath captured at delete entry" pin）；③ `_cleanupAudioFileIfOrphaned` 是 best-effort + try/catch 包裹整体；任何 `ArgumentError` / FileSystemException 都被吞掉并转为 successWithCleanupWarning；④ cleanup helper 调用 `repository.hasAudioPathReference` 保护共享路径（true → skip）；cleanup helper 调用 `storage.deleteIfExists` 是**唯一**磁盘入口；Controller **不**调 `File.delete` 直接；⑤ page UI switch 增加 `successWithCleanupWarning` 分支，SnackBar `key='practice-record-delete-cleanup-warning-snackbar'` + 内容"练习记录已删除，但部分音频文件清理失败" + 3s duration + pop 回 list；⑥ `_isDeleting` 同步锁 + `PracticeRecordDetailState.isDeleting` state 字段（T013.4C_FIX_DELETE_PROGRESS_CONTRACT）**未**改，并发保护沿用既有契约；⑦ 既有 widget tests 36 项 100% pass + 新增 2 项 T034 widget tests pass（cleanup warning SnackBar 渲染 + happy path success SnackBar 不出现 warning SnackBar）。Local Data Reviewer 重点确认：① `PracticeRecordRepository.hasAudioPathReference(String audioFilePath)` 是纯只读 `Future<bool>`，**不**触文件系统，verbatim 字符串比较；空串 / null 抛 `ArgumentError`（与既有 `delete('')` 一致）；② `DriftPracticeRecordRepository.hasAudioPathReference` 实现：`SELECT ... WHERE audio_file_path = ? LIMIT 1` — `=` SQL 谓词对应 Drift `.equals(...)` 是 verbatim 语义，**不**用 `LIKE` / `TRIM` / `LOWER`（由 7 项新测试 "comparison is verbatim" pin：不同大小写 / trailing slash / `..` escape **不**视为相等）；③ `app_database.g.dart` **未**重生成（schema 字段未新增）；④ `DriftPracticeRecordRepository.delete` 路径**未**改（既有 6 项 T032 audioFilePath 测试 pin "Repository.delete does not touch audio files on disk"）；⑤ `PracticeRecord` 域模型字段定义**未**改（`audioFilePath` 仍是 `String?` / nullable / default null / immutable）；⑥ 旧数据兼容：T032 已验证 legacy v1 row `audio_file_path=NULL` 经 v1→v2 upgrade 后保留，T034 沿用此契约；⑦ 共享路径保护由 fake multiset `_audioPathRefCounts` + Repository `=` SQL 共同 pin；⑧ fake Repository 维护 multiset 计数器（add +1 / delete -1 / ≤0 remove），"shared path: file deleted only after last reference" 测试验证；⑨ path normalization 严禁：`AudioFileStorageService` 是唯一权威，Controller **不**调 `p.normalize` / `p.canonicalize`；既有 T028 / T028A pin "deleteIfExists 只允许删除 root 之下普通文件；文件不存在返回 false；root 目录被 File(rootDirectory.path) 包装时按文件不存在处理" 全部保持。QA Reviewer 重点确认：① `flutter test` 全量输出 `00:16 +583: All tests passed!`（583 = 557 T033 既有 + 26 新 T034）；② 测试覆盖 26 项新增：7 项 Repository `hasAudioPathReference`（returns true / returns false / table empty / shared across records / verbatim comparison / null rows don't count / empty string rejected） + 17 项 controller 协调（null path skip / non-null delete file / DB failure keep file / missing file clean / null no service call / empty-string no service call / root-self never deleted / outside-root refused / `..` escape refused / cleanup failure no re-insert / cleanup failure surfaces warning enum / shared path: one record leaves file / shared path: last reference deletes file / concurrent deletes only call cleanup once / deleting A doesn't delete B / cleanup failure no retry block / entry-of-method path captured） + 2 项 widget tests（cleanup warning SnackBar 渲染 / happy path success SnackBar 不出现 warning SnackBar）；③ 既有 557 项测试**不**减少；④ 既有 widget tests 36 项 100% pass（含 T013.4C / T013.4C_FIX 全部契约）；⑤ 既有 controller tests 50 项（recording controller）+ repository tests 32 项（drift）+ audio storage service tests 23 项 + permission service tests 14 项 全部 100% pass；⑥ 临时目录隔离：`Directory.systemTemp.createTempSync` / `createSync(recursive: true)` + `addTearDown` 清理，每个测试独立 temp root，测试完成后**不**残留；⑦ fake 隔离真实设备：测试**不**调用 `record` plugin / `just_audio` plugin / `Permission.microphone` 任何符号；文件系统操作只在 temp dir 内，**不**接触 Android 真机 / `path_provider` / 麦克风；⑧ 真实 `AudioFileStorageService` 在 controller test 中复用（构造时注入 temp-rooted `rootDirectoryProvider`），100% 与生产 deleteIfExists 行为一致；⑨ Manifest 静态检查通过（`RECORD_AUDIO` 仍声明 + 无 `INTERNET`）；⑩ 命令纪律严格执行（全程单条命令，无管道 / 重定向 / `&&` / 分号 / 复合命令）。Compliance Reviewer 重点确认：① 仅修改允许范围内 4 个 lib 文件 + 3 个 test 文件增强 + 1 个 test 文件新建 + 1 个 doc 文件（本 ledger）；② **未**越界修改 `DriftPracticeRecordRepository.delete` 路径 / `RecordingController` / `RecordingPage` / `RealAudioRecorderService` / `RealAudioPlaybackService` / `AudioFileStorageService` / `app_database.g.dart` / Drift tables / AndroidManifest / `pubspec.yaml` / `pubspec.lock` / 隐私政策 / `key.properties` / `.gitignore` / 构建产物 / `agents/*.md` / `MULTI_AGENT_WORKFLOW.md`；③ **未**实现详情页真实音频播放（仍由 T035 负责）；④ **未**实现批量孤儿文件扫描 / 应用启动时自动清理 / 删除 storage root / 删除 root 外文件 / 使用未经审查的 `File.delete()` 绕过 `AudioFileStorageService`；⑤ `git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 四项均返回空；⑥ `v0.1.0-mvp` 仍指向 `d49ce4b` 未变、`v1.0.0-release` 仍指向 `703d2aa` 未变；⑦ **未** push / **未** Tag / **未** amend / rebase / reset --hard；⑧ 无 key.properties 内容 / 密码 / keystore 内容 / 用户目录 keystore 绝对路径泄露；⑨ `AndroidManifest.xml` 三处清单**未**修改（T027 `RECORD_AUDIO` 声明不变，**未**新增 `INTERNET`） |
+
+#### 4.12.1 Flutter Architect Reviewer（02-flutter-architect）只读审查
+
+- **Reviewer Role**：`02-flutter-architect`
+- **Scope Reviewed**：`lib/features/practice_records/data/practice_record_repository.dart` 全文（`hasAudioPathReference` 新增方法）/ `lib/features/practice_records/data/drift_practice_record_repository.dart` `hasAudioPathReference` 实现 / `lib/features/practice_records/application/practice_record_detail_controller.dart` 全文（`DeleteResult` 扩展 / `_cleanupAudioFileIfOrphaned` 私有 helper / `deleteCurrentRecord` 入口捕获快照）/ `lib/features/practice_records/presentation/practice_record_detail_page.dart` `_confirmAndDelete` switch 新增 `successWithCleanupWarning` 分支；既有 `lib/features/recording/application/recording_practice_controller.dart` / `lib/features/recording/presentation/recording_page.dart`（确认未被越界修改）；既有 `lib/shared/services/audio_file_storage_service.dart`（确认 deleteIfExists 行为**未**改）；既有 `lib/data/database/app_database.dart`（确认 schemaVersion=2 + onUpgrade no-op 不变）；`test/features/practice_records/data/drift_practice_record_repository_test.dart` 全部 39 项 / `test/features/practice_records/application/practice_record_detail_controller_test.dart` 全部 17 项 / `test/features/practice_records/presentation/practice_record_detail_test.dart` 全部 38 项；`pubspec.yaml` / `pubspec.lock` / `AndroidManifest.xml` 三处 / `flutter analyze` / `flutter test` 全量
+- **Evidence Checked**：
+  - `git diff --stat` 输出 9 modified + 1 new file：`lib/features/practice_records/application/practice_record_detail_controller.dart`（+157 / 既有）、`lib/features/practice_records/data/drift_practice_record_repository.dart`（+29）、`lib/features/practice_records/data/practice_record_repository.dart`（+24）、`lib/features/practice_records/presentation/practice_record_detail_page.dart`（+19）、`test/features/practice_records/data/drift_practice_record_repository_test.dart`（+139）、`test/features/practice_records/presentation/practice_record_detail_test.dart`（+249 / 既有）、`test/features/practice_records/presentation/practice_records_list_test.dart`（+3 stub）、`test/features/recording/application/recording_practice_controller_test.dart`（+6 stub）、`test/features/recording/presentation/recording_page_test.dart`（+3 stub）、`test/features/practice_records/application/practice_record_detail_controller_test.dart`（新建 ~1000 行）；
+  - `flutter analyze` `No issues found! (ran in 3.1s)`；
+  - `flutter test` 全量 `00:16 +583: All tests passed!`；
+  - `flutter test test/features/practice_records/data/drift_practice_record_repository_test.dart` 输出 `00:00 +39: All tests passed!`（既有 32 项 + T034 新增 7 项）；
+  - `flutter test test/features/practice_records/application/practice_record_detail_controller_test.dart` 输出 `00:00 +17: All tests passed!`（新建 17 项 100% 通过）；
+  - `flutter test test/features/practice_records/presentation/practice_record_detail_test.dart` 输出 `00:06 +38: All tests passed!`（既有 36 项 + T034 新增 2 项）；
+  - `pubspec.yaml` 未被修改（版本号 `1.0.0+2` 不变）；
+  - `AndroidManifest.xml` 三处清单均未修改（`RECORD_AUDIO` 仍声明 + 无 `INTERNET`）；
+  - `lib/features/practice_records/application/practice_record_detail_controller.dart` 类级注释升级为 T013.4C + T013.4C_FIX + T034，明确"DB delete → audio cleanup"协调契约；
+  - `DeleteResult` 扩展为 4 态（success / successWithCleanupWarning / ignored / failure），其中 `successWithCleanupWarning` 表示 DB 已删但 audio file 残留（DB **不**回滚，行不复活）；
+  - `deleteCurrentRecord` 入口处 `final String idToDelete = current.record!.id;` + `final String? capturedAudioPath = current.record!.audioFilePath;`，整个 cleanup 流程**不**重新读 state；
+  - `_cleanupAudioFileIfOrphaned` 是 best-effort + try/catch 包裹整体；任何 `ArgumentError` / FileSystemException 都被吞掉并转为 successWithCleanupWarning；
+  - cleanup helper 调用 `repository.hasAudioPathReference` 保护共享路径（true → skip）；cleanup helper 调用 `storage.deleteIfExists` 是**唯一**磁盘入口；Controller **不**调 `File.delete` 直接；
+  - `_isDeleting` 同步锁 + `PracticeRecordDetailState.isDeleting` state 字段（T013.4C_FIX_DELETE_PROGRESS_CONTRACT）**未**改，并发保护沿用既有契约；
+  - page UI switch 增加 `successWithCleanupWarning` 分支，SnackBar `key='practice-record-delete-cleanup-warning-snackbar'` + 内容"练习记录已删除，但部分音频文件清理失败" + 3s duration + pop 回 list；
+  - 既有 widget tests 36 项 100% pass + 新增 2 项 T034 widget tests pass。
+- **Findings**：
+  - `DeleteResult` 4 态枚举扩展向后兼容（既有 widget tests 36 项 0 减少）；
+  - 删除顺序严格：DB delete 成功 → cleanup helper → cleanup 结果决定最终 `DeleteResult`，与任务 brief 完全一致；
+  - audio path 入口捕获快照，**不**重新读 state（保护 `watchAll` 流更新导致路径错位）；
+  - `_cleanupAudioFileIfOrphaned` 是 best-effort，整体 try/catch 包裹；
+  - cleanup helper 调用 `repository.hasAudioPathReference` 保护共享路径；
+  - cleanup helper 调用 `storage.deleteIfExists` 是**唯一**磁盘入口；
+  - Controller **不**调 `File.delete` 直接；
+  - 并发保护沿用既有 `_isDeleting` 同步锁 + `PracticeRecordDetailState.isDeleting` state 字段（T013.4C_FIX_DELETE_PROGRESS_CONTRACT）；
+  - page UI switch 增加 `successWithCleanupWarning` 分支，SnackBar key + 中文文案 + 3s duration + pop 回 list；
+  - 既有 widget tests 36 项 100% pass + 新增 2 项 T034 widget tests pass。
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - 未来若添加"批量删除"功能，可考虑复用 `_cleanupAudioFileIfOrphaned` 私有 helper 逻辑，但需要重新设计并发保护（当前是单记录 delete 锁）；
+  - 未来可考虑在 `AudioFileStorageService` 增加 `cleanupOrphanedFiles(List<String> knownPaths)` 批量清理 API，但本任务**不**实现批量孤儿扫描（由未来任务评估）。
+- **Approval**：**Approved**
+
+#### 4.12.2 Local Data Reviewer（06-local-data-engineer）只读审查
+
+- **Reviewer Role**：`06-local-data-engineer`
+- **Scope Reviewed**：`lib/features/practice_records/data/practice_record_repository.dart` 全文（`hasAudioPathReference` 新增方法 + docstring）/ `lib/features/practice_records/data/drift_practice_record_repository.dart` 全文（`hasAudioPathReference` 实现 + 既有 `delete` 路径）/ `lib/features/practice_records/data/practice_records_table.dart`（确认 audioFilePath 字段未变）/ `lib/data/database/app_database.dart`（schemaVersion + onUpgrade）/ `lib/data/database/app_database.g.dart`（确认未重生成）/ `lib/features/practice_records/domain/practice_record.dart` 字段定义；`test/features/practice_records/data/drift_practice_record_repository_test.dart` 全部 39 项（含 7 项新增 `hasAudioPathReference (T034)` group）
+- **Evidence Checked**：
+  - `PracticeRecordRepository.hasAudioPathReference(String audioFilePath)` 是纯只读 `Future<bool>`，**不**触文件系统，verbatim 字符串比较；空串 / null 抛 `ArgumentError`；
+  - `DriftPracticeRecordRepository.hasAudioPathReference` 实现 (`lib/features/practice_records/data/drift_practice_record_repository.dart:170-185`)：
+    - `audioFilePath.isEmpty` 抛 `ArgumentError.value(audioFilePath, 'audioFilePath', 'audioFilePath must not be empty')`；
+    - `_db.select(_db.practiceRecords)..where((t) => t.audioFilePath.equals(audioFilePath))..limit(1)`；
+    - `.getSingleOrNull()` 配合 `return row != null;`；
+    - Drift `.equals(...)` 编译为 SQL `=` 谓词，是 verbatim 语义（**不**用 `LIKE` / `TRIM` / `LOWER`）；
+  - `app_database.g.dart` **未**重生成（schema 字段未新增）；
+  - `DriftPracticeRecordRepository.delete` 路径 (`lib/features/practice_records/data/drift_practice_record_repository.dart:158-168`) **未**改（既有 6 项 T032 audioFilePath 测试 pin "Repository.delete does not touch audio files on disk"）；
+  - `PracticeRecord.audioFilePath` 字段定义 (`lib/features/practice_records/domain/practice_record.dart:103`) 是 `String?`、default null、immutable (`final` 字段)；
+  - `practice_records_table.dart:72` `audioFilePath => text().nullable()()` 与 T032 完全一致；
+  - `MigrationStrategy.onUpgrade` 显式 `if (from == 1 && to == 2) return;` — no-op 契约保持；
+  - `pragma_table_info('practice_records')` T032 已 pin `name='audio_file_path'` + `type='TEXT'` + `notnull=0`；
+  - 旧数据兼容：legacy v1 row 写入 `audio_file_path=NULL` → 重开为 v2 → row 仍存 + `audio_file_path=NULL`；
+  - shared path 测试 "comparison is verbatim — different case / trailing slash / `..` are NOT considered equal" 用 3 个不同 verbatim string 验证 `hasAudioPathReference` 返回 `false`，仅 verbatim path 返回 `true`；
+  - shared path 测试 "returns true when at least one of multiple rows references the path" 用 `r-share-a` + `r-share-b` 共享 `saved/2026-06-22/shared-by-two.m4a` 验证 `hasAudioPathReference` 返回 `true`；
+  - 测试 "rejects an empty string with ArgumentError" pin `audioFilePath == ''` 抛 `ArgumentError` 契约；
+  - 测试 "null row count is irrelevant: rows with audioFilePath = null do NOT match a non-null query" pin null 行**不**计数为匹配契约。
+- **Findings**：
+  - `hasAudioPathReference` 契约：`Future<bool>` / 纯只读 / verbatim 字符串比较（Drift `.equals(...)` → SQL `=`）/ 空串抛 `ArgumentError` / **不**触文件系统；
+  - `app_database.g.dart` **未**重生成（schema 字段未新增）；
+  - `DriftPracticeRecordRepository.delete` 路径**未**改（既有 6 项 T032 audioFilePath 测试 pin "Repository.delete does not touch audio files on disk"）；
+  - `PracticeRecord` 域模型字段定义**未**改（`audioFilePath` 仍是 `String?` / nullable / default null / immutable）；
+  - 旧数据兼容：T032 已验证 legacy v1 row `audio_file_path=NULL` 经 v1→v2 upgrade 后保留，T034 沿用此契约；
+  - 共享路径保护由 fake multiset `_audioPathRefCounts` + Repository `=` SQL 共同 pin；
+  - path normalization 严禁：`AudioFileStorageService` 是唯一权威，Controller **不**调 `p.normalize` / `p.canonicalize`；
+  - 既有 T028 / T028A pin "deleteIfExists 只允许删除 root 之下普通文件；文件不存在返回 false；root 目录被 File(rootDirectory.path) 包装时按文件不存在处理" 全部保持。
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - 未来若 schema 升级到 v3 引入 `audio_file_path` 唯一索引，本任务 contract 仍然兼容（共享路径由 SQL 唯一约束替代应用层 `hasAudioPathReference`）；
+  - 未来可考虑把 `hasAudioPathReference` 改为 `Future<int> countAudioPathReferences(String audioFilePath)` 返回引用计数，让 controller 可以做更精细的清理策略，但本任务 boolean contract 已足够。
+- **Approval**：**Approved**
+
+#### 4.12.3 QA Reviewer（07-qa-reviewer）只读审查
+
+- **Reviewer Role**：`07-qa-reviewer`
+- **Scope Reviewed**：`test/features/practice_records/data/drift_practice_record_repository_test.dart` 全部 39 项（含 7 项新增 `hasAudioPathReference (T034)` group）/ `test/features/practice_records/application/practice_record_detail_controller_test.dart` 全部 17 项（新建）/ `test/features/practice_records/presentation/practice_record_detail_test.dart` 全部 38 项（含 2 项新增 T034 widget tests）；既有 `test/features/practice_records/presentation/practice_records_list_test.dart` 全部 16 项 / 既有 `test/features/recording/application/recording_practice_controller_test.dart` 全部 79 项 / 既有 `test/features/recording/presentation/recording_page_test.dart` 全部 10 项 / 既有 `test/integration/mvp_practice_record_flow_test.dart` 1 项 / T031 全部 test 文件
+- **Evidence Checked**：
+  - `flutter test test/features/practice_records/data/drift_practice_record_repository_test.dart` 输出 `00:00 +39: All tests passed!`（既有 32 项 + T034 新增 7 项）；
+  - `flutter test test/features/practice_records/application/practice_record_detail_controller_test.dart` 输出 `00:00 +17: All tests passed!`（新建 17 项 100% 通过）；
+  - `flutter test test/features/practice_records/presentation/practice_record_detail_test.dart` 输出 `00:06 +38: All tests passed!`（既有 36 项 + T034 新增 2 项）；
+  - `flutter test` 全量输出 `00:16 +583: All tests passed!`；
+  - `dart format` 7 个 T034 文件 3 changed（剩余 4 个已 format）；
+  - 既有 557 项测试**不**减少（T033 基线 557 保留）；
+  - 测试覆盖 26 项新增：7 项 Repository `hasAudioPathReference`（returns true / returns false / table empty / shared across records / verbatim comparison / null rows don't count / empty string rejected） + 17 项 controller 协调（null path skip / non-null delete file / DB failure keep file / missing file clean / null no service call / empty-string no service call / root-self never deleted / outside-root refused / `..` escape refused / cleanup failure no re-insert / cleanup failure surfaces warning enum / shared path: one record leaves file / shared path: last reference deletes file / concurrent deletes only call cleanup once / deleting A doesn't delete B / cleanup failure no retry block / entry-of-method path captured） + 2 项 widget tests（cleanup warning SnackBar 渲染 / happy path success SnackBar 不出现 warning SnackBar）；
+  - 既有 widget tests 36 项 100% pass（含 T013.4C / T013.4C_FIX 全部契约）；
+  - 既有 controller tests 50 项（recording controller）+ repository tests 32 项（drift）+ audio storage service tests 23 项 + permission service tests 14 项 全部 100% pass；
+  - 临时目录隔离：`Directory.systemTemp.createTempSync` / `createSync(recursive: true)` + `addTearDown` 清理，每个测试独立 temp root，测试完成后**不**残留；
+  - fake 隔离真实设备：测试**不**调用 `record` plugin / `just_audio` plugin / `Permission.microphone` 任何符号；文件系统操作只在 temp dir 内，**不**接触 Android 真机 / `path_provider` / 麦克风；
+  - 真实 `AudioFileStorageService` 在 controller test 中复用（构造时注入 temp-rooted `rootDirectoryProvider`），100% 与生产 deleteIfExists 行为一致；
+  - Manifest 静态检查通过（`RECORD_AUDIO` 仍声明 + 无 `INTERNET`）；
+  - 命令纪律严格执行（全程单条命令，无管道 / 重定向 / `&&` / 分号 / 复合命令）。
+- **Findings**：
+  - 26 项新增测试 100% 通过；
+  - 既有 widget tests 36 项 100% pass（含 T013.4C / T013.4C_FIX 全部契约）；
+  - 既有 controller tests 50 项（recording controller）+ repository tests 32 项（drift）+ audio storage service tests 23 项 + permission service tests 14 项 全部 100% pass；
+  - 临时目录隔离：每个测试独立 temp root，测试完成后**不**残留；
+  - fake 隔离真实设备：测试**不**触发真实麦克风 / 真实播放 / 真实 Drift / 真实 Android 设备，文件系统操作只在 temp dir 内；
+  - 真实 `AudioFileStorageService` 在 controller test 中复用，100% 与生产 deleteIfExists 行为一致；
+  - Manifest 静态检查通过（`RECORD_AUDIO` 仍声明 + 无 `INTERNET`）；
+  - 命令纪律严格执行（全程单条命令）。
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - 未来可考虑把 `tester.runAsync` 包裹 helper 提取为公共 utility，避免在 widget test 中重复写 `await tester.runAsync(() async { await Future.delayed(50ms); });`；
+  - 未来可考虑增加 `verifyReleaseArtifacts` 风格的 end-to-end 验证脚本，覆盖真实 `flutter test` + 真机 smoke（由 T036 / Release 阶段任务评估）。
+- **Approval**：**Approved**
+
+#### 4.12.4 Compliance Reviewer（08-compliance-reviewer）只读审查
+
+- **Reviewer Role**：`08-compliance-reviewer`
+- **Scope Reviewed**：`lib/features/practice_records/data/practice_record_repository.dart` / `lib/features/practice_records/data/drift_practice_record_repository.dart` / `lib/features/practice_records/application/practice_record_detail_controller.dart` / `lib/features/practice_records/presentation/practice_record_detail_page.dart` 全文；既有 `lib/features/recording/application/recording_practice_controller.dart` / `lib/features/recording/presentation/recording_page.dart` / `lib/shared/services/audio_file_storage_service.dart` / `lib/data/database/app_database.dart`（确认 schemaVersion=2 + onUpgrade no-op 不变）；`pubspec.yaml` / `pubspec.lock` / `AndroidManifest.xml` 三处 / `lib/data/database/app_database.g.dart`（确认未重生成）；`git diff --stat` 全部 10 个文件改动
+- **Evidence Checked**：
+  - `git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 四项均返回空；
+  - `v0.1.0-mvp` 仍指向 `d49ce4b` 未变；
+  - `v1.0.0-release` 仍指向 `703d2aa` 未变；
+  - `pubspec.yaml` 未被修改（版本号 `1.0.0+2` 不变）；
+  - `AndroidManifest.xml` 三处清单均未修改（T027 `RECORD_AUDIO` 声明不变，**未**新增 `INTERNET`）；
+  - `DriftPracticeRecordRepository.delete` 路径**未**改（既有 6 项 T032 audioFilePath 测试 pin "Repository.delete does not touch audio files on disk"）；
+  - `RecordingController` / `RecordingPage` / `RealAudioRecorderService` / `RealAudioPlaybackService` / `AudioFileStorageService` 全部**未**修改；
+  - Drift tables / `app_database.g.dart` / `PracticeRecord` 域模型字段定义 全部**未**修改（T034 改动**仅**是 `app_database.dart` 头部 + `schemaVersion` getter + onUpgrade 钩子保持 T032 不变）；
+  - 隐私政策 / `key.properties` / `.gitignore` 全部**未**修改；
+  - **未**实现详情页真实音频播放（仍由 T035 负责）；
+  - **未**实现批量孤儿文件扫描 / 应用启动时自动清理 / 删除 storage root / 删除 root 外文件 / 使用未经审查的 `File.delete()` 绕过 `AudioFileStorageService`；
+  - **未**声称历史真实回放已实现；
+  - **未**声称详情页播放已实现；
+  - **未**开始 T035；
+  - **未** push / **未** Tag / **未** amend / rebase / reset --hard。
+- **Findings**：
+  - 仅修改允许范围内 4 个 lib 文件 + 3 个 test 文件增强 + 1 个 test 文件新建 + 1 个 doc 文件（本 ledger）；
+  - **未**越界修改 `DriftPracticeRecordRepository.delete` 路径 / `RecordingController` / `RecordingPage` / `RealAudioRecorderService` / `RealAudioPlaybackService` / `AudioFileStorageService` / `app_database.g.dart` / Drift tables / AndroidManifest / `pubspec.yaml` / `pubspec.lock` / 隐私政策 / `key.properties` / `.gitignore` / 构建产物 / `agents/*.md` / `MULTI_AGENT_WORKFLOW.md`；
+  - **未**实现详情页真实音频播放（仍由 T035 负责）；
+  - **未**实现批量孤儿文件扫描 / 应用启动时自动清理 / 删除 storage root / 删除 root 外文件 / 使用未经审查的 `File.delete()` 绕过 `AudioFileStorageService`；
+  - 无 key.properties 内容 / 密码 / keystore 内容 / 用户目录 keystore 绝对路径泄露；
+  - `AndroidManifest.xml` 三处清单**未**修改（T027 `RECORD_AUDIO` 声明不变，**未**新增 `INTERNET`）；
+  - 既有 manifest 权限声明（`RECORD_AUDIO` + `INTERNET` 未声明）在 T034 后完全不变；
+  - 既有"DB delete → audio cleanup"协调流程**不**替代 T035 详情页播放 / T036 真机验收。
+- **Blockers**：无
+- **Non-blocking Suggestions**：
+  - T035 任务执行时可在 `PracticeRecordDetailPage` 接入 `RealAudioPlaybackService.loadFile(audioFilePath)` + 既有播放控件，仅当 `state.record.audioFilePath != null` 时显示；
+  - T035 完成后建议增加"删除前确认对话框显示音频路径"（仅 debug / 测试可见，UI 不显示真实路径，避免泄露）。
+- **Approval**：**Approved**

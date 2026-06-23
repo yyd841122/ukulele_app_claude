@@ -4052,6 +4052,9 @@ class _FakePracticeRecordRepository implements PracticeRecordRepository {
 
   @override
   Future<bool> delete(String id) async => false;
+
+  @override
+  Future<bool> hasAudioPathReference(String audioFilePath) async => false;
 }
 
 /// Repository whose `insert` blocks on a static `gate` future.
@@ -4088,6 +4091,9 @@ class _GatedPracticeRecordRepository implements PracticeRecordRepository {
 
   @override
   Future<bool> delete(String id) async => false;
+
+  @override
+  Future<bool> hasAudioPathReference(String audioFilePath) async => false;
 }
 
 class _FakePracticeDayResolver implements PracticeDayResolver {

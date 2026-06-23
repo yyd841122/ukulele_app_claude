@@ -17,12 +17,14 @@
 //   database resource is closed through `addTearDown`.
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path/path.dart' as p;
 
 import 'package:ukulele_app/features/practice_records/application/practice_record_detail_controller.dart';
 import 'package:ukulele_app/features/practice_records/data/practice_record_repository.dart';
@@ -32,6 +34,8 @@ import 'package:ukulele_app/features/practice_records/domain/practice_tag.dart';
 import 'package:ukulele_app/features/practice_records/domain/practice_type.dart';
 import 'package:ukulele_app/features/practice_records/domain/self_assessment.dart';
 import 'package:ukulele_app/features/practice_records/presentation/practice_record_detail_page.dart';
+import 'package:ukulele_app/shared/providers/audio_file_storage_service_provider.dart';
+import 'package:ukulele_app/shared/services/audio_file_storage_service.dart';
 
 void main() {
   group('PracticeRecordDetailController', () {
@@ -370,14 +374,21 @@ void main() {
       required _FakePracticeRecordRepository repository,
       String? locationOverride,
       GoRouter? router,
+      AudioFileStorageService? storage,
     }) async {
       final GoRouter effectiveRouter =
           router ?? detailOnlyRouter(locationOverride ?? '/records/r-1');
+      final List<Override> overrides = <Override>[
+        practiceRecordRepositoryProvider.overrideWithValue(repository),
+      ];
+      if (storage != null) {
+        overrides.add(
+          audioFileStorageServiceProvider.overrideWithValue(storage),
+        );
+      }
       await tester.pumpWidget(
         ProviderScope(
-          overrides: <Override>[
-            practiceRecordRepositoryProvider.overrideWithValue(repository),
-          ],
+          overrides: overrides,
           child: MaterialApp.router(routerConfig: effectiveRouter),
         ),
       );
@@ -1364,6 +1375,175 @@ void main() {
       expect(tester.takeException(), isNull,
           reason: 'dispose during delete must not surface an exception');
     });
+
+    // -----------------------------------------------------------------
+    // T034_REAL_AUDIO_RECORD_DELETE_FILE_CLEANUP — non-fatal
+    // cleanup warning SnackBar.
+    //
+    // These tests pin the page-level contract: when the
+    // controller returns `DeleteResult.successWithCleanupWarning`
+    // (the DB row is gone but the audio file cleanup did NOT
+    // complete cleanly) the page MUST surface a dedicated
+    // SnackBar and still pop back to the list. The success
+    // SnackBar MUST NOT appear in this branch.
+    // -----------------------------------------------------------------
+
+    testWidgets(
+        'T034 — when the controller reports successWithCleanupWarning the '
+        'page surfaces the dedicated warning SnackBar and pops back',
+        (WidgetTester tester) async {
+      // Build a temp-rooted storage service and a record whose
+      // audio path is OUTSIDE the temp root — the service
+      // refuses to delete it, the controller returns
+      // `successWithCleanupWarning`.
+      final Directory tempRoot = Directory(
+        p.join(
+          Directory.systemTemp.path,
+          't034_widget_${DateTime.now().microsecondsSinceEpoch}',
+        ),
+      )..createSync(recursive: true);
+      addTearDown(() {
+        if (tempRoot.existsSync()) {
+          try {
+            tempRoot.deleteSync(recursive: true);
+          } on FileSystemException {
+            // best-effort
+          }
+        }
+      });
+      final AudioFileStorageService storage = AudioFileStorageService(
+        rootDirectoryProvider: () async => tempRoot,
+      );
+      // An outside-root path the service MUST reject.
+      final Directory outsideRoot = Directory(
+        p.join(Directory.systemTemp.path,
+            't034_widget_outside_${DateTime.now().microsecondsSinceEpoch}'),
+      )..createSync(recursive: true);
+      addTearDown(() {
+        if (outsideRoot.existsSync()) {
+          try {
+            outsideRoot.deleteSync(recursive: true);
+          } on FileSystemException {
+            // best-effort
+          }
+        }
+      });
+      final File outsideFile = File(p.join(outsideRoot.path, 'leftover.m4a'))
+        ..writeAsStringSync('untouched');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: outsideFile.path),
+      });
+      addTearDown(repo.close);
+
+      await pumpDetailPage(
+        tester,
+        repository: repo,
+        storage: storage,
+      );
+      await settleGetById(tester);
+
+      await tester.tap(find.byKey(
+          const ValueKey<String>('practice-record-detail-delete-button')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-delete-confirm-button')));
+      // The controller's cleanup helper does real disk I/O
+      // through `AudioFileStorageService.deleteIfExists`. The
+      // fake-async clock drives the controller's own awaiters
+      // but the underlying `File.delete()` is real I/O and
+      // must run inside `tester.runAsync` to actually complete.
+      // We then pump a few frames to flush the rebuild and the
+      // route transition.
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump();
+      // Wait for the route pop animation to settle. The
+      // SnackBar lives on the root ScaffoldMessenger and
+      // persists across the pop; the duplicate-key issue we
+      // saw earlier came from the second scaffold's messenger
+      // also receiving the showSnackBar call. Pumping a few
+      // more frames lets the pop animation complete and the
+      // second ScaffoldMessenger tear down before we assert.
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle(const Duration(seconds: 1));
+
+      // The cleanup-warning SnackBar is the ONLY SnackBar on
+      // screen — the success SnackBar MUST NOT appear in this
+      // branch.
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-delete-cleanup-warning-snackbar')),
+        findsOneWidget,
+        reason: 'cleanup failure must surface the dedicated warning '
+            'SnackBar',
+      );
+      expect(
+        find.byKey(
+            const ValueKey<String>('practice-record-delete-success-snackbar')),
+        findsNothing,
+        reason: 'success SnackBar must NOT appear when cleanup warned',
+      );
+      expect(
+        find.byKey(
+            const ValueKey<String>('practice-record-delete-failure-snackbar')),
+        findsNothing,
+        reason: 'failure SnackBar must NOT appear for a successful delete',
+      );
+      // The row is gone from the repository.
+      expect(repo.deleteCalls, <String>['r-1']);
+      expect(await repo.getById('r-1'), isNull);
+      // The outside-root file is still on disk — the service
+      // refused to delete it.
+      expect(outsideFile.existsSync(), isTrue,
+          reason: 'outside-root file must NOT be deleted by T034');
+      // The page popped back to the sentinel list.
+      expect(find.byType(_RecordsSentinelPage), findsOneWidget);
+    });
+
+    testWidgets(
+        'T034 — happy path (no audio path) still surfaces the success '
+        'SnackBar; the cleanup-warning SnackBar MUST NOT appear',
+        (WidgetTester tester) async {
+      // No audio path → cleanup is a no-op → `DeleteResult.success`
+      // → success SnackBar, NO warning SnackBar. We do NOT need a
+      // storage override in this branch because the cleanup
+      // helper short-circuits on null. The widget test still
+      // works because the storage provider falls back to the
+      // real production AudioFileStorageService (which is never
+      // called for the null path).
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1'),
+      });
+      addTearDown(repo.close);
+
+      await pumpDetailPage(tester, repository: repo);
+      await settleGetById(tester);
+
+      await tester.tap(find.byKey(
+          const ValueKey<String>('practice-record-detail-delete-button')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-delete-confirm-button')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(
+            const ValueKey<String>('practice-record-delete-success-snackbar')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-delete-cleanup-warning-snackbar')),
+        findsNothing,
+        reason: 'cleanup warning MUST NOT appear on a clean success',
+      );
+      expect(find.byType(_RecordsSentinelPage), findsOneWidget);
+    });
   });
 
   group('practiceRecordDetailControllerProvider family', () {
@@ -1449,6 +1629,12 @@ Future<AsyncValue<PracticeRecordDetailState>> _awaitData(
 class _FakePracticeRecordRepository implements PracticeRecordRepository {
   _FakePracticeRecordRepository({required Map<String, PracticeRecord> seed}) {
     _store.addAll(seed);
+    for (final PracticeRecord r in seed.values) {
+      if (r.audioFilePath != null) {
+        _audioPathRefCounts[r.audioFilePath!] =
+            (_audioPathRefCounts[r.audioFilePath!] ?? 0) + 1;
+      }
+    }
     _controller = StreamController<List<PracticeRecord>>.broadcast(
       onListen: () {
         _activeListeners += 1;
@@ -1461,6 +1647,11 @@ class _FakePracticeRecordRepository implements PracticeRecordRepository {
   }
 
   final Map<String, PracticeRecord> _store = <String, PracticeRecord>{};
+  // T034 — multiset counter so two records with the same path
+  // are correctly treated as two references; a `Set` would
+  // collapse them and the second row's delete would drop the
+  // path prematurely.
+  final Map<String, int> _audioPathRefCounts = <String, int>{};
   late final StreamController<List<PracticeRecord>> _controller;
   int _activeListeners = 0;
 
@@ -1497,6 +1688,28 @@ class _FakePracticeRecordRepository implements PracticeRecordRepository {
 
   /// Captured delete calls in order.
   final List<String> deleteCalls = <String>[];
+
+  /// T034 — `hasAudioPathReference` is a read-only existence
+  /// check the application layer uses to decide whether an
+  /// audio file is still referenced by ANY row before deleting
+  /// it from disk. The fake mirrors the production contract:
+  /// the comparison is verbatim (no case folding, no
+  /// trimming, no canonicalisation).
+  ///
+  /// Tests that exercise the shared-path branch flip
+  /// [nextHasAudioPathReference] to `true` so the controller's
+  /// cleanup helper skips the delete and observes the file is
+  /// still on disk afterwards.
+  ///
+  /// `referencedAudioPaths` is kept as a derived `Set<String>`
+  /// for tests that need a quick presence check; the underlying
+  /// truth is the multiset [_audioPathRefCounts].
+  Set<String> get referencedAudioPaths => _audioPathRefCounts.keys.toSet();
+
+  /// If non-null, the next call to [hasAudioPathReference] is
+  /// forced to return this value (then cleared). This is the
+  /// test-side handle for "simulate a still-referenced path".
+  bool? nextHasAudioPathReference;
 
   List<PracticeRecord> _snapshot() => _store.values.toList(growable: false);
 
@@ -1553,6 +1766,20 @@ class _FakePracticeRecordRepository implements PracticeRecordRepository {
       ok = true;
     }
     if (ok) {
+      // T034 — keep [_audioPathRefCounts] in sync so the
+      // shared-path protection check observes the post-delete
+      // world. We capture the path BEFORE removing the row
+      // because we need to know what it WAS.
+      final PracticeRecord? removed = _store[id];
+      if (removed?.audioFilePath != null) {
+        final String p = removed!.audioFilePath!;
+        final int updated = (_audioPathRefCounts[p] ?? 1) - 1;
+        if (updated <= 0) {
+          _audioPathRefCounts.remove(p);
+        } else {
+          _audioPathRefCounts[p] = updated;
+        }
+      }
       _store.remove(id);
       _controller.add(_snapshot());
     }
@@ -1560,10 +1787,26 @@ class _FakePracticeRecordRepository implements PracticeRecordRepository {
   }
 
   @override
+  Future<bool> hasAudioPathReference(String audioFilePath) async {
+    // Mirror the production verbatim contract — no
+    // normalisation, no case folding.
+    if (nextHasAudioPathReference != null) {
+      final bool forced = nextHasAudioPathReference!;
+      nextHasAudioPathReference = null;
+      return forced;
+    }
+    return (_audioPathRefCounts[audioFilePath] ?? 0) > 0;
+  }
+
+  @override
   Stream<List<PracticeRecord>> watchAll() => _controller.stream;
 
   @override
   Future<PracticeRecord> insert(PracticeRecord record) async {
+    if (record.audioFilePath != null) {
+      _audioPathRefCounts[record.audioFilePath!] =
+          (_audioPathRefCounts[record.audioFilePath!] ?? 0) + 1;
+    }
     _store[record.id] = record;
     _controller.add(_snapshot());
     return record;

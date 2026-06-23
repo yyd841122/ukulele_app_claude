@@ -43,6 +43,30 @@
 // - On a disposed Provider the publish is skipped — `state = ...`
 //   after `ref.mounted == false` would throw.
 //
+// Audio file cleanup (T034):
+// - After the Repository successfully removes the row, the
+//   controller coordinates an opportunistic cleanup of the
+//   associated on-disk audio file through [AudioFileStorageService].
+//   The Repository stays a pure persistence boundary — it never
+//   touches the file system. The controller is the only place
+//   that bridges "DB delete" and "audio file lifecycle".
+// - The cleanup is **best-effort**: any failure (delete returned
+//   `false`, `deleteIfExists` threw `ArgumentError`, filesystem
+//   exception, …) is reported as
+//   [DeleteResult.successWithCleanupWarning] so the DB deletion
+//   is **not** silently rolled back. The page surfaces a
+//   dedicated non-fatal SnackBar but the row stays gone.
+// - The captured [PracticeRecord.audioFilePath] is read from the
+//   state snapshot **at the entry of `deleteCurrentRecord`**,
+//   never re-read mid-flight. This pins the contract that a
+//   concurrent `watchAll()` stream emission cannot poison the
+//   cleanup with a stale or different path.
+// - Shared paths are protected: before deleting, the controller
+//   re-queries the Repository with
+//   [PracticeRecordRepository.hasAudioPathReference]; if any
+//   OTHER row still references the same path verbatim, the file
+//   is left on disk for the surviving record.
+//
 // Disposal / race safety:
 // - The Provider is `autoDispose` so a popped detail page
 //   tears the controller down on its own. Riverpod guarantees the
@@ -61,18 +85,37 @@
 //   controller framework-free of `BuildContext` makes it
 //   trivially testable.
 
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:ukulele_app/features/practice_records/data/practice_record_repository.dart';
 import 'package:ukulele_app/features/practice_records/data/practice_record_repository_provider.dart';
 import 'package:ukulele_app/features/practice_records/domain/practice_record.dart';
+import 'package:ukulele_app/shared/providers/audio_file_storage_service_provider.dart';
+import 'package:ukulele_app/shared/services/audio_file_storage_paths.dart';
+import 'package:ukulele_app/shared/services/audio_file_storage_service.dart';
 
 /// Outcome of [PracticeRecordDetailController.deleteCurrentRecord].
 enum DeleteResult {
-  /// The Repository removed the row. The page pops back to the
-  /// list.
+  /// The Repository removed the row AND the audio file
+  /// lifecycle ended cleanly (file existed and was deleted,
+  /// OR the record had no audio, OR the audio file was still
+  /// referenced by another row and was therefore preserved).
+  /// The page pops back to the list.
   success,
+
+  /// The Repository removed the row BUT the post-delete audio
+  /// cleanup did NOT complete successfully. The row stays gone
+  /// — we do NOT roll back the DB deletion — but the on-disk
+  /// audio file may still be present. The page shows a non-fatal
+  /// warning SnackBar and then pops back to the list. This is a
+  /// deliberate design choice: reverting the row would create a
+  /// "ghost row that no longer reflects what the user asked for"
+  /// (worse than a leftover file). Cleanup failure is observable
+  /// but non-blocking.
+  successWithCleanupWarning,
 
   /// The call was deliberately dropped. Reasons include:
   /// - the controller is still loading,
@@ -273,7 +316,14 @@ class PracticeRecordDetailController
       isDeleting: true,
     ));
 
+    // T034 — capture the id and the audio-path snapshot at the
+    // entry of this method. We intentionally do NOT re-read
+    // `state` after the Repository call: a concurrent
+    // `watchAll()` emission could have flipped the loaded record
+    // and we must not let that change either the id or the file
+    // we are about to delete.
     final String idToDelete = current.record!.id;
+    final String? capturedAudioPath = current.record!.audioFilePath;
     final PracticeRecordRepository repository =
         ref.read(practiceRecordRepositoryProvider);
     try {
@@ -310,6 +360,18 @@ class PracticeRecordDetailController
       _isDeleting = false;
       return DeleteResult.ignored;
     }
+
+    // T034 — opportunistic, best-effort audio file cleanup.
+    // The DB row is already gone at this point; cleanup is
+    // fire-and-forget and its result is mapped to
+    // `successWithCleanupWarning` on any failure so the page
+    // can show a non-fatal warning. The DB deletion is NOT
+    // rolled back — that would create a "ghost row that no
+    // longer reflects the user's intent" which is worse than
+    // a leftover file.
+    final bool cleanupSucceeded =
+        await _cleanupAudioFileIfOrphaned(capturedAudioPath);
+
     _isDeleting = false;
     // Publish the recovered state so a watcher that is still
     // mounted (e.g. a future-proof listener) sees a clean
@@ -323,7 +385,96 @@ class PracticeRecordDetailController
         isDeleting: false,
       ));
     }
-    return DeleteResult.success;
+    return cleanupSucceeded
+        ? DeleteResult.success
+        : DeleteResult.successWithCleanupWarning;
+  }
+
+  /// T034 — best-effort post-delete audio file cleanup.
+  ///
+  /// Returns `true` when the audio file lifecycle ended cleanly
+  /// (no file to clean, file already missing, or `deleteIfExists`
+  /// returned `true`). Returns `false` when the file is still
+  /// on disk after this call — either because the cleanup path
+  /// refused the path (root self / outside root / traversal),
+  /// because `deleteIfExists` itself threw, or because another
+  /// row still references the same path verbatim and was left
+  /// on disk for the survivor (treated as `true` since we
+  /// deliberately skipped the call).
+  ///
+  /// Contract:
+  /// - **Never throws.** Any failure inside the storage service
+  ///   or filesystem is swallowed and surfaced as `false` so
+  ///   the caller can map it to [DeleteResult.successWithCleanupWarning].
+  /// - **Never touches the DB.** The Repository stays a pure
+  ///   persistence boundary; the only DB call here is the
+  ///   read-only [PracticeRecordRepository.hasAudioPathReference].
+  /// - **Never rewrites the path.** The verbatim string from
+  ///   the entry-of-method snapshot is wrapped in `File(...)`
+  ///   and handed to `deleteIfExists`, which is the single
+  ///   source of truth for path safety (`AudioFileStorageService`
+  ///   rejects `..`, root, outside-root, etc.).
+  /// - `null` and empty-string paths skip the call entirely —
+  ///   no `File('')` is ever constructed.
+  Future<bool> _cleanupAudioFileIfOrphaned(String? audioFilePath) async {
+    if (audioFilePath == null || audioFilePath.isEmpty) {
+      // No audio to clean — short-circuit, no File, no service
+      // call. Equivalent to "cleanup succeeded because there
+      // was nothing to do".
+      return true;
+    }
+
+    try {
+      final PracticeRecordRepository repository =
+          ref.read(practiceRecordRepositoryProvider);
+      // Shared-path protection: another row may still point at
+      // this file. We compare verbatim (the Repository's
+      // `hasAudioPathReference` is `=` SQL) so two records
+      // whose paths differ only by trailing slash / case are
+      // NOT treated as the same file.
+      final bool stillReferenced =
+          await repository.hasAudioPathReference(audioFilePath);
+      if (stillReferenced) {
+        return true;
+      }
+
+      final AudioFileStorageService storage =
+          ref.read(audioFileStorageServiceProvider);
+      // `ensureDirectories()` is the documented way to obtain
+      // the root Directory. The service idempotently creates
+      // root / temp / saved on each call.
+      final AudioFileStoragePaths paths = await storage.ensureDirectories();
+      // The path is wrapped verbatim. The service is the ONLY
+      // authority on root containment, traversal, and root-self
+      // deletion — the controller intentionally does NOT
+      // re-validate or rewrite the path.
+      //
+      // `deleteIfExists` returns `false` for two clean cases:
+      //  1. The file does not exist (T028 contract — short-
+      //     circuit on `!await file.exists()`).
+      //  2. The path is the audio root itself, which the
+      //     service refuses to delete by treating the directory
+      //     as "does not exist" (T028 / T028A contract — same
+      //     `File.exists()` short-circuit).
+      // Both are treated as clean outcomes. The only "warning"
+      // cases are exceptions (root-outside, traversal), which
+      // are caught below.
+      await storage.deleteIfExists(
+        File(audioFilePath),
+        rootDirectory: paths.rootDirectory,
+      );
+      return true;
+    } catch (e, st) {
+      // Best-effort: log for engineering triage but never
+      // throw to the caller. The DB deletion has already
+      // succeeded; surfacing a warning rather than crashing is
+      // the documented T034 contract.
+      debugPrint(
+        'PracticeRecordDetailController cleanup warning: '
+        '$e\n$st',
+      );
+      return false;
+    }
   }
 }
 

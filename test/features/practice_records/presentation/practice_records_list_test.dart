@@ -882,6 +882,9 @@ class _StreamPracticeRecordRepository implements PracticeRecordRepository {
 
   @override
   Future<bool> delete(String id) async => false;
+
+  @override
+  Future<bool> hasAudioPathReference(String audioFilePath) async => false;
 }
 
 /// Routes pushed by the test land here so the navigation test

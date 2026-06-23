@@ -226,6 +226,25 @@ class _PracticeRecordDetailPageState
         // successful delete.
         if (!context.mounted) return;
         _popOrGoRecords(context);
+      case DeleteResult.successWithCleanupWarning:
+        // T034 — DB row is gone, but the audio file cleanup
+        // did not finish cleanly. Surface a non-fatal warning
+        // SnackBar; the row deletion is NOT rolled back, so the
+        // user-visible record is gone and we still pop back to
+        // the list. Keeping the row would create a "ghost row
+        // that no longer reflects the user's intent" which is
+        // worse than a leftover file.
+        messenger.showSnackBar(
+          const SnackBar(
+            key: ValueKey<String>(
+              'practice-record-delete-cleanup-warning-snackbar',
+            ),
+            content: Text('练习记录已删除，但部分音频文件清理失败'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+        if (!context.mounted) return;
+        _popOrGoRecords(context);
       case DeleteResult.failure:
         messenger.showSnackBar(
           const SnackBar(

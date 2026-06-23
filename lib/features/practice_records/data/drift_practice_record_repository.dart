@@ -157,6 +157,35 @@ class DriftPracticeRecordRepository implements PracticeRecordRepository {
     return affected > 0;
   }
 
+  @override
+  Future<bool> hasAudioPathReference(String audioFilePath) async {
+    // T034 — application-layer audio file cleanup.
+    //
+    // The Repository remains a PURE persistence boundary: this
+    // method is read-only and **never** touches the file system.
+    // The application layer uses the answer to decide whether an
+    // audio file is still referenced by ANY row before deleting
+    // it from disk. Shared paths are therefore protected.
+    //
+    // We compare the persisted string byte-for-byte against the
+    // argument. Drift's `.equals(...)` compiles to a `=` SQL
+    // predicate, which is exactly the verbatim semantics the
+    // contract requires — no `LIKE`, no `TRIM`, no case folding.
+    if (audioFilePath.isEmpty) {
+      throw ArgumentError.value(
+        audioFilePath,
+        'audioFilePath',
+        'audioFilePath must not be empty',
+      );
+    }
+    final PracticeRecordData? row = await (_db.select(_db.practiceRecords)
+          ..where(($PracticeRecordsTable t) =>
+              t.audioFilePath.equals(audioFilePath))
+          ..limit(1))
+        .getSingleOrNull();
+    return row != null;
+  }
+
   // --- Internal helpers ---
 
   /// Throws [ArgumentError] when the record violates a documented

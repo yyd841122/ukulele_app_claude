@@ -765,6 +765,145 @@ void main() {
       expect(stored!.audioFilePath, '');
     });
   });
+
+  // -----------------------------------------------------------------
+  // T034_REAL_AUDIO_RECORD_DELETE_FILE_CLEANUP — application
+  // layer audio cleanup support.
+  //
+  // `hasAudioPathReference` is a pure read-only existence check.
+  // The Repository stays a persistence boundary: it does NOT
+  // touch the file system. The application layer uses the answer
+  // to decide whether an on-disk audio file is still referenced
+  // by ANY row before cleaning it up.
+  //
+  // The contract is **verbatim** comparison: two paths that
+  // differ only by case, trailing slash, or a `..` segment are
+  // NOT considered the same. SQL `=` (the predicate Drift
+  // compiles `.equals(...)` to) matches that contract exactly.
+  // -----------------------------------------------------------------
+
+  group('DriftPracticeRecordRepository.hasAudioPathReference (T034)', () {
+    test('returns true when at least one row references the path verbatim',
+        () async {
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      await ctx.repo.insert(
+        _record(
+          id: 'rec-ref-1',
+          audioFilePath: 'saved/2026-06-22/shared.m4a',
+        ),
+      );
+      expect(
+        await ctx.repo.hasAudioPathReference('saved/2026-06-22/shared.m4a'),
+        isTrue,
+      );
+    });
+
+    test('returns false when no row references the path', () async {
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      await ctx.repo.insert(
+        _record(
+          id: 'rec-ref-2',
+          audioFilePath: 'saved/2026-06-22/exists.m4a',
+        ),
+      );
+      expect(
+        await ctx.repo.hasAudioPathReference('saved/2026-06-22/ghost.m4a'),
+        isFalse,
+      );
+    });
+
+    test('returns false when the table is empty', () async {
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      expect(
+        await ctx.repo.hasAudioPathReference('saved/2026-06-22/anything.m4a'),
+        isFalse,
+      );
+    });
+
+    test(
+        'returns true when at least one of multiple rows references the path '
+        '(shared path across records)', () async {
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      const String sharedPath = 'saved/2026-06-22/shared-by-two.m4a';
+      await ctx.repo.insert(
+        _record(
+          id: 'rec-share-a',
+          audioFilePath: sharedPath,
+          practiceContent: 'a',
+        ),
+      );
+      await ctx.repo.insert(
+        _record(
+          id: 'rec-share-b',
+          audioFilePath: sharedPath,
+          practiceContent: 'b',
+        ),
+      );
+      expect(await ctx.repo.hasAudioPathReference(sharedPath), isTrue);
+    });
+
+    test(
+        'comparison is verbatim — different case / trailing slash / `..` are '
+        'NOT considered equal', () async {
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      const String exact = 'saved/2026-06-22/Sample.m4a';
+      await ctx.repo.insert(
+        _record(id: 'rec-verbatim', audioFilePath: exact),
+      );
+
+      // Different case — NOT a match.
+      expect(
+        await ctx.repo.hasAudioPathReference('saved/2026-06-22/sample.m4a'),
+        isFalse,
+        reason: 'comparison is verbatim — case must match',
+      );
+      // Trailing slash — NOT a match.
+      expect(
+        await ctx.repo.hasAudioPathReference('saved/2026-06-22/Sample.m4a/'),
+        isFalse,
+        reason: 'comparison is verbatim — trailing slash is not a match',
+      );
+      // `..` escape — NOT a match.
+      expect(
+        await ctx.repo.hasAudioPathReference(
+          'saved/2026-06-22/../2026-06-22/Sample.m4a',
+        ),
+        isFalse,
+        reason: 'comparison is verbatim — path traversal segments do not '
+            'collide with the canonical stored path',
+      );
+      // The verbatim path matches.
+      expect(await ctx.repo.hasAudioPathReference(exact), isTrue);
+    });
+
+    test(
+        'null row count is irrelevant: rows with audioFilePath = null do '
+        'NOT match a non-null query', () async {
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      await ctx.repo.insert(_record(id: 'rec-null-1', audioFilePath: null));
+      await ctx.repo.insert(_record(id: 'rec-null-2', audioFilePath: null));
+      expect(
+        await ctx.repo.hasAudioPathReference('saved/2026-06-22/anything.m4a'),
+        isFalse,
+        reason: 'rows with audioFilePath = null must not count as a match',
+      );
+    });
+
+    test('rejects an empty string with ArgumentError', () async {
+      final ({AppDatabase db, DriftPracticeRecordRepository repo}) ctx =
+          setup();
+      expect(
+        () => ctx.repo.hasAudioPathReference(''),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+  });
 }
 
 // ----- helpers -----

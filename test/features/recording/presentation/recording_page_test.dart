@@ -1118,6 +1118,9 @@ class _FakePracticeRecordRepository implements PracticeRecordRepository {
 
   @override
   Future<bool> delete(String id) async => false;
+
+  @override
+  Future<bool> hasAudioPathReference(String audioFilePath) async => false;
 }
 
 /// Practice-day resolver that returns the pinned test context.

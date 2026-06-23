@@ -41,3 +41,11 @@
 - **删除记录仍未联动删除音频**（T034 任务）。
 - **历史真实回放仍未实现**（必须等 T032 schema 迁移 + `audioFilePath` 写入 + 真实文件存在性校验）。
 - **T032+ 待 GPT 首席架构师下发独立 Prompt**（Drift schema 迁移 / UI 文案 / 真机验收 / 隐私政策更新 / Release 文档收口 等）。
+
+## T035A 状态备注（详情页播放生命周期与旧事件隔离修复闭环）
+
+- **T035A 已完成**（基于 T035 既有 610 tests 基线 + 7 新增 controller 测试 = 617 tests passed；既有测试 0 减少）。核心修复：① `_onDispose` 新增 best-effort fire-and-forget `service.stop()`（mirror-guarded：`playing | paused | loading | ready` 才 stop；`idle | error` 跳过；`.catchError` 吞错 + sentinel `AudioPlaybackStopResult` return type）；② 跨会话 completed 隔离通过 `_playbackSessionId` 单调计数器 + listener 闭包在订阅时一次性捕获 `subscriptionSessionId` 实现 —— 在 `playRecordedAudio` / `stopPlayback` / `_stopPlaybackIfActive` 三个 session 边界 bump；③ `_lastPublishedPlaybackStatus` mirror + `_cachedPlaybackService` 引用绕过 Riverpod 3.x `onDispose` 的 `_throwIfInvalidUsage` 约束（"Cannot use Ref or modify other providers inside life-cycles/selectors"）；④ 18 处 `state = AsyncData<...>(...)` 统一走 `_publish(...)` chokepoint 保证 mirror 同步；⑤ T035 既有契约（pre-delete stop / cleanup warning / shared-path 保护 / 不调 `service.dispose`）100% 保留（21+17=38 项既有 controller 测试全部 pass）。
+- **共享 service 所有权保持**：`realAudioPlaybackServiceProvider` 是非 autoDispose 单 Provider，T035A **不**在 `_onDispose` 调 `service.dispose()`（与 T031 录音 controller 同契约）。
+- **T035A 关闭的潜在 bug**：T035 既有实现下，stop → replay 序列中 A session 的延迟 `completed` 事件会通过 `_onPlayerState` 回调错误地把 B session 的状态从 `playing` 翻为 `idle`（即使加上 `_handlingNaturalCompletion` 守卫也无效，因为该守卫只对**同步重复**事件起作用，对**跨会话异步延迟**事件失效）；T035A 通过 `_playbackSessionId` 闭包捕获解决。
+- **未**修改生产代码（除允许范围内 1 个 lib 文件）/ 测试代码（除允许范围内 1 个 test 文件增强）/ 文档（本 TECH_DEBT 条目 + TASK_LEDGER + AGENT_QUALITY_METRICS）/ 依赖 / Android 配置 / Drift schema / `PracticeRecord` 域模型 / Repository / DAO / `audioFilePath` 字段 / `RealAudioRecorderService` / `RealAudioPlaybackService` 公共契约（既有契约已足够）/ `AudioFileStorageService` / `RecordingController` / `RecordingPage` / Manifest / 隐私政策 / `tool/verify_release_artifacts.dart` / `key.properties` / `.gitignore` / 构建产物。
+- **T036 仍待启动**：由 GPT 首席架构师独立 Prompt 启动。

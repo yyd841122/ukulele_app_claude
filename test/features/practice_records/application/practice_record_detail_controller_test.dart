@@ -1938,5 +1938,388 @@ void main() {
       expect(setup.gateway.lastLoadPath, pathB,
           reason: 'r-b must use its own path, not r-a\'s');
     });
+
+    // ---------------------------------------------------------------------------
+    // T035A — page-exit stop + late-event isolation
+    //
+    // The tests in this group pin the contract added by
+    // T035A. They are deliberately exercised against the
+    // REAL [RealAudioPlaybackService] (not just a mock
+    // controller) so the production
+    // `_publish / state = ...` write path is in scope.
+    // No real audio device is touched — the
+    // [FakeAudioPlaybackGateway] replaces just_audio.
+    //
+    // Every test in this group creates a fresh temp root,
+    // plants an audio file inside it via
+    // [plantIsolatedAudioFile], and tears the resources
+    // down with `addTearDown`. The `[Playback]` async
+    // helpers ([awaitPlayback], [pumpEvents]) are reused
+    // from the T035 group above.
+    // ---------------------------------------------------------------------------
+
+    test(
+        'disposing the container while in `playing` state fires exactly '
+        'one service.stop call (T035A page-exit stop)', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      final int stopCountBefore = setup.gateway.stopCallCount;
+      expect(stopCountBefore, 0,
+          reason: 'playRecordedAudio does not call service.stop; the '
+              'dispose hook must be the sole trigger of the +1 delta');
+      // Page exits — controller is autoDispose.
+      container.dispose();
+      // Yield enough microtasks for the fire-and-forget
+      // stop future to actually drive the gateway.
+      await pumpEvents();
+      expect(setup.gateway.stopCallCount, stopCountBefore + 1,
+          reason: 'T035A page-exit stop must run exactly once when '
+              'the page exits during `playing`');
+    });
+
+    test(
+        'disposing the container while in `paused` state fires '
+        'service.stop (T035A page-exit stop covers paused too)', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.pausePlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.paused,
+      );
+      final int stopCountBefore = setup.gateway.stopCallCount;
+      container.dispose();
+      await pumpEvents();
+      expect(setup.gateway.stopCallCount, stopCountBefore + 1,
+          reason: 'T035A page-exit stop must run when the page exits '
+              'during `paused` (the player still holds the file)');
+    });
+
+    test(
+        'disposing the container from `idle` does NOT call service.stop '
+        '(no active session → no needless gateway round-trip)', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      // Do NOT call playRecordedAudio — playbackStatus
+      // stays at `idle`. The page-exit stop must be a
+      // no-op in this case. Pin the precondition so a
+      // regression that flips initial state to `playing`
+      // is caught by the assertion below.
+      final AsyncValue<PracticeRecordDetailState> beforeDispose =
+          container.read(practiceRecordDetailControllerProvider('r-1'));
+      expect(beforeDispose.requireValue.playbackStatus,
+          PracticeRecordPlaybackStatus.idle,
+          reason: 'precondition: no playRecordedAudio call → `idle`');
+      final int stopCountBefore = setup.gateway.stopCallCount;
+      container.dispose();
+      await pumpEvents();
+      expect(setup.gateway.stopCallCount, stopCountBefore,
+          reason: 'no active session → no page-exit stop call');
+    });
+
+    test(
+        'dispose-time stop that throws does NOT produce an unhandled '
+        'async error and does NOT re-throw out of the dispose hook', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      // Inject a fault on the next stop call. The page-exit
+      // stop is fire-and-forget and MUST swallow this
+      // failure — the dispose hook stays exception-free
+      // and the framework does not see an unhandled
+      // async error.
+      setup.gateway.nextStopException = Exception('synthetic stop failure');
+      // If the controller failed to swallow, the test
+      // framework would fail with an unhandled async
+      // error before reaching the assertion below.
+      container.dispose();
+      await pumpEvents();
+      // Reaching this point means the dispose hook
+      // consumed the throw. The exact count is `== 1`
+      // because the dispose hook fires the stop exactly
+      // once (the `_lastPublishedPlaybackStatus` mirror
+      // was `playing` at entry).
+      expect(setup.gateway.stopCallCount, 1,
+          reason: 'dispose hook must attempt the stop exactly once even '
+              'when the call throws — the throw is consumed by '
+              '.catchError');
+    });
+
+    test(
+        'a playerStateStream event that arrives after dispose does NOT '
+        'update state and does NOT throw (T035A late-event isolation)',
+        () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      // Disposing tears down the controller. A late
+      // `playerStateStream` event landing after the
+      // dispose must NOT throw, must NOT update state,
+      // and must NOT trigger a second stop call (the
+      // natural-completion handler does not call stop,
+      // but a regression that added such a call would
+      // be visible here).
+      container.dispose();
+      setup.gateway.emitPlayerState(
+        const PlaybackPlayerState(
+          playing: false,
+          processingState: PlaybackProcessingState.completed,
+        ),
+      );
+      await pumpEvents();
+      // The dispose-time stop fires once (from the
+      // mirror-guarded `if`); the late `completed`
+      // event is a no-op.
+      expect(setup.gateway.stopCallCount, 1,
+          reason: 'late `completed` event must not trigger a second '
+              'stop call from the controller');
+      // If the controller failed to short-circuit on
+      // `_disposed = true`, the framework would report
+      // an unhandled error before reaching this line.
+      // The test passes by virtue of reaching it.
+    });
+
+    test(
+        'a delayed `completed` event from session A does NOT pollute a '
+        'fresh session B (T035A cross-session isolation)', () async {
+      // The T035A contract: a real-device just_audio
+      // replay bug can emit a stale `completed` AFTER
+      // the user has explicitly stopped and restarted
+      // playback. Without the session-id seam, the
+      // controller's natural-completion handler would
+      // erroneously flip the new session's state from
+      // `playing` to `idle`. We exercise the contract
+      // with a SINGLE controller: play (A) → explicit
+      // stop → play (B) → emit a delayed `completed`.
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+
+      // --- Session A: play, then explicit stop ---
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.stopPlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.idle,
+      );
+
+      // --- Session B: replay ---
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+
+      // Simulate a delayed `completed` event from A's
+      // session landing AFTER B has started. The
+      // controller's `_onPlayerState` callback
+      // captures the current session id at entry; the
+      // bumped id (B) differs from the captured id
+      // (A), so the callback MUST short-circuit and
+      // leave B's state alone.
+      setup.gateway.emitPlayerState(
+        const PlaybackPlayerState(
+          playing: false,
+          processingState: PlaybackProcessingState.completed,
+        ),
+      );
+      await pumpEvents();
+
+      final AsyncValue<PracticeRecordDetailState> v = container.read(
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      expect(
+          v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.playing,
+          reason: 'A\'s late completed event must not flip B into idle');
+    });
+
+    test(
+        'duplicate completed events from the gateway are idempotent '
+        '(T035A late-event isolation: replay safety)', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      // Fire FIVE completed events back-to-back. The
+      // controller's `_handlingNaturalCompletion`
+      // re-entrancy guard must swallow the duplicates
+      // and the state must stay at `idle` (it flipped
+      // to idle on the first event). The
+      // `_lastPublishedPlaybackStatus` mirror must
+      // also stay at idle so a subsequent dispose
+      // does not call `service.stop()` on a session
+      // that has already ended.
+      for (int i = 0; i < 5; i++) {
+        setup.gateway.emitPlayerState(
+          const PlaybackPlayerState(
+            playing: false,
+            processingState: PlaybackProcessingState.completed,
+          ),
+        );
+      }
+      await pumpEvents();
+      final AsyncValue<PracticeRecordDetailState> v = container.read(
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      expect(v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.idle);
+    });
   });
 }

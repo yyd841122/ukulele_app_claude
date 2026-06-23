@@ -1,4 +1,4 @@
-// Riverpod controller for the practice record detail page (T013.4C + T034 + T035).
+// Riverpod controller for the practice record detail page (T013.4C + T034 + T035 + T035A).
 //
 // Scope:
 // - Hand-written [AsyncNotifier] (no `@riverpod` codegen) per the
@@ -172,6 +172,55 @@
 //   (pop / SnackBar) is the page's responsibility — keeping the
 //   controller framework-free of `BuildContext` makes it
 //   trivially testable.
+//
+// T035A — page-exit stop + late-event isolation:
+// - On dispose, the controller best-effort stops an active
+//   playback session (`playing` | `paused` | `loading` |
+//   `ready` | `completed`) via a fire-and-forget call to
+//   [RealAudioPlaybackService.stop]. Riverpod's `onDispose`
+//   hook is synchronous so we cannot await the service's
+//   async stop; the dropped future is wrapped in
+//   `.catchError` so the dispose hook is exception-free and
+//   never produces an unhandled async error. The service is
+//   NOT disposed here (the service is shared via
+//   `realAudioPlaybackServiceProvider`; its lifetime is the
+//   Riverpod scope's).
+// - Cross-session isolation rests on three invariants:
+//   1. `_disposed = true` is set synchronously at the top of
+//      `_onDispose` BEFORE the stream subscription is
+//      cancelled. Any callback that lands after the flag
+//      flips is short-circuited on the first line of
+//      [_onPlayerState]. This is the actual safety net;
+//      `StreamSubscription.cancel()` does NOT
+//      synchronously guarantee that already-scheduled
+//      events are dropped (the cancel future is unawaited
+//      by design), so the `_disposed` guard is what
+//      actually prevents post-dispose state writes.
+//   2. The stream subscription's cancel is initiated
+//      while `_disposed = true` is already set, so any
+//      in-flight event that lands BEFORE cancel
+//      completes is short-circuited by the `_disposed`
+//      guard in [_onPlayerState]. The
+//      `FakeAudioPlaybackGateway` exposes a broadcast
+//      stream so cancelled listeners stop receiving
+//      events for future emissions even before the cancel
+//      future resolves.
+//   3. Late events from session A (A's `completed` / error
+//      arriving after A is disposed) cannot pollute a fresh
+//      session B because B's controller is a NEW family
+//      instance with a fresh `_disposed` flag, a fresh
+//      state, and a fresh stream subscription. The two
+//      sessions share the underlying service instance but
+//      not the controller state machine.
+// - The controller does NOT depend on
+//   [RealAudioPlaybackService.dispose] for isolation. The
+//   service is a long-lived shared instance managed by
+//   `realAudioPlaybackServiceProvider`; the per-session
+//   state lives in the controller's
+//   [PracticeRecordPlaybackStatus] enum, NOT in the
+//   service's [AudioPlaybackState] enum. The page-exit
+//   stop is the seam that lets a new page start from a
+//   clean `idle` even though the service survives.
 
 import 'dart:async';
 import 'dart:io';
@@ -188,6 +237,7 @@ import 'package:ukulele_app/shared/services/audio_file_storage_paths.dart';
 import 'package:ukulele_app/shared/services/audio_file_storage_service.dart';
 import 'package:ukulele_app/shared/services/audio_playback_exception.dart';
 import 'package:ukulele_app/shared/services/audio_playback_gateway.dart';
+import 'package:ukulele_app/shared/services/audio_playback_state.dart';
 import 'package:ukulele_app/shared/services/real_audio_playback_service.dart';
 
 /// Outcome of [PracticeRecordDetailController.deleteCurrentRecord].
@@ -449,10 +499,85 @@ class PracticeRecordDetailController
   /// so the controller's state machine does not double-write.
   bool _handlingNaturalCompletion = false;
 
+  /// T035A — monotonically increasing session id. Bumped at
+  /// the start of every `playRecordedAudio` and at every
+  /// explicit `stopPlayback`. The current value is captured
+  /// by `_onPlayerState` so a delayed `completed` event from
+  /// a prior session (A) cannot flip the state of the next
+  /// session (B). This is the cross-session isolation seam:
+  /// without it, a real-device just_audio replay bug could
+  /// emit a stale `completed` AFTER the user explicitly
+  /// stopped and restarted the playback, and our natural-
+  /// completion handler would erroneously mark B as `idle`.
+  /// The id is also bumped on `_stopPlaybackIfActive` so a
+  /// delete-then-replay race is also covered.
+  int _playbackSessionId = 0;
+
   /// T035 — `true` after the controller's `ref.onDispose` hook
   /// has fired. Subsequent `state` writes are skipped so the
   /// autoDispose teardown is race-free.
   bool _disposed = false;
+
+  /// T035A — last-published playback status, kept as a
+  /// private field so [_onDispose] can decide whether to
+  /// best-effort stop without reaching for `state.value`.
+  /// Riverpod 3.x forbids reading the AsyncNotifier's
+  /// `state` inside a lifecycle hook (it asserts that the
+  /// `Ref` is not used inside `onDispose`), so the
+  /// controller maintains its own mirror of the latest
+  /// status. The field is updated on every `state = ...`
+  /// write path; the only status it might miss is the
+  /// "no state ever published" race at the very start of
+  /// `build`, in which case [_onDispose] defaults to
+  /// `idle` and skips the stop call — the correct
+  /// behaviour because no playback was ever started.
+  PracticeRecordPlaybackStatus _lastPublishedPlaybackStatus =
+      PracticeRecordPlaybackStatus.idle;
+
+  /// T035A — cached reference to the shared
+  /// [RealAudioPlaybackService] so [_onDispose] can call
+  /// `service.stop()` without `ref.read`. Riverpod 3.x
+  /// forbids `ref.read` inside lifecycle hooks
+  /// (`onDispose`), so we capture the service reference
+  /// the first time the controller needs it (during
+  /// [playRecordedAudio]) and reuse the cached pointer
+  /// during teardown. The cache is cleared in
+  /// [_onDispose] so a stale reference cannot leak into
+  /// a re-instantiated controller.
+  RealAudioPlaybackService? _cachedPlaybackService;
+
+  /// T035A — single chokepoint for `state = ...` writes so
+  /// the [_lastPublishedPlaybackStatus] mirror stays in
+  /// sync. All methods that publish an [AsyncData] funnel
+  /// through here; the mirror is updated BEFORE `state =`
+  /// so the dispose-time snapshot reflects the freshest
+  /// published value. Riverpod 3.x's
+  /// "Ref cannot be used in life-cycle" assertion blocks
+  /// `state.value` reads inside `onDispose`, so this
+  /// pre-publish mirror is the only safe path.
+  void _publish(PracticeRecordDetailState newState) {
+    _lastPublishedPlaybackStatus = newState.playbackStatus;
+    state = AsyncData<PracticeRecordDetailState>(newState);
+  }
+
+  /// T035A — lazy accessor for the shared
+  /// [RealAudioPlaybackService]. Caches the result on
+  /// first access so [_onDispose] can call `service.stop()`
+  /// without touching `ref` (Riverpod 3.x forbids `ref`
+  /// inside lifecycle hooks). The cache is invalidated at
+  /// the top of [build] so a re-instantiated controller
+  /// re-reads against its fresh `ref`.
+  RealAudioPlaybackService get _playbackService {
+    final RealAudioPlaybackService? cached = _cachedPlaybackService;
+    if (cached != null) {
+      return cached;
+    }
+    final RealAudioPlaybackService fresh = ref.read(
+      realAudioPlaybackServiceProvider,
+    );
+    _cachedPlaybackService = fresh;
+    return fresh;
+  }
 
   /// T035 — the `playerStateStream` subscription set up on the
   /// first successful `loadFile`. Cancelled in `ref.onDispose`.
@@ -469,8 +594,18 @@ class PracticeRecordDetailController
     _isStartingPlayback = false;
     _handlingNaturalCompletion = false;
     _disposed = false;
+    // T035A — reset the playback-status mirror so the
+    // dispose hook reads the correct value for this
+    // lifetime (a previous lifetime's mirror must not
+    // leak across invalidations).
+    _lastPublishedPlaybackStatus = PracticeRecordPlaybackStatus.idle;
     await _playbackStateSubscription?.cancel();
     _playbackStateSubscription = null;
+    // T035A — invalidate the cached playback service
+    // reference so a fresh `ref.read` happens against
+    // the new lifetime (Riverpod's `ref` is rebound on
+    // every `build`).
+    _cachedPlaybackService = null;
 
     // T035 — cancel any in-flight playback subscriptions /
     // timers when the controller is rebuilt (e.g. after
@@ -485,16 +620,39 @@ class PracticeRecordDetailController
       // map it to "not found" rather than throwing — the page
       // shows the same user-visible view either way and the
       // controller never leaks an exception to the widget tree.
-      return PracticeRecordDetailState.notFound();
+      // T035A — sync the playback-status mirror to the
+      // freshly-published state so a sub-millisecond
+      // dispose that races `build` reads a coherent
+      // value (currently `idle`, which is the correct
+      // answer for a page that never reached playback).
+      final PracticeRecordDetailState notFound =
+          PracticeRecordDetailState.notFound();
+      _lastPublishedPlaybackStatus = notFound.playbackStatus;
+      return notFound;
     }
 
     final PracticeRecordRepository repository =
         ref.read(practiceRecordRepositoryProvider);
     final PracticeRecord? record = await repository.getById(recordId);
     if (record == null) {
-      return PracticeRecordDetailState.notFound();
+      // T035A — see the comment above for the mirror sync.
+      final PracticeRecordDetailState notFound =
+          PracticeRecordDetailState.notFound();
+      _lastPublishedPlaybackStatus = notFound.playbackStatus;
+      return notFound;
     }
-    return PracticeRecordDetailState.loaded(record);
+    // T035A — sync the playback-status mirror to the
+    // freshly-published state so the dispose hook reads
+    // `idle` for a page that just loaded but never reached
+    // playback. The mirror MUST be updated before the
+    // build future resolves because Riverpod may call
+    // `onDispose` immediately after `build` returns (for
+    // example when the user navigates away before the
+    // first frame is rendered).
+    final PracticeRecordDetailState loaded =
+        PracticeRecordDetailState.loaded(record);
+    _lastPublishedPlaybackStatus = loaded.playbackStatus;
+    return loaded;
   }
 
   // ---------------------------------------------------------------------------
@@ -563,7 +721,7 @@ class PracticeRecordDetailController
     // which is exactly what the page needs in order to disable
     // the button and surface a "正在删除…" affordance without
     // keeping its own UI lock.
-    state = AsyncData<PracticeRecordDetailState>(current.copyWith(
+    _publish(current.copyWith(
       isDeleting: true,
     ));
 
@@ -597,7 +755,7 @@ class PracticeRecordDetailController
       // clearing it to signal progress.
       final PracticeRecordDetailState? afterRefusal = state.value;
       if (afterRefusal != null) {
-        state = AsyncData<PracticeRecordDetailState>(
+        _publish(
           afterRefusal.copyWith(isDeleting: false),
         );
       }
@@ -624,7 +782,7 @@ class PracticeRecordDetailController
       // progress.
       final PracticeRecordDetailState? afterFailure = state.value;
       if (afterFailure != null) {
-        state = AsyncData<PracticeRecordDetailState>(afterFailure.copyWith(
+        _publish(afterFailure.copyWith(
           isDeleting: false,
         ));
       }
@@ -661,7 +819,7 @@ class PracticeRecordDetailController
     // "after a delete resolves, state.isDeleting == false".
     final PracticeRecordDetailState? afterSuccess = state.value;
     if (afterSuccess != null) {
-      state = AsyncData<PracticeRecordDetailState>(afterSuccess.copyWith(
+      _publish(afterSuccess.copyWith(
         isDeleting: false,
       ));
     }
@@ -826,15 +984,22 @@ class PracticeRecordDetailController
     }
 
     _isStartingPlayback = true;
-    final RealAudioPlaybackService playback =
-        ref.read(realAudioPlaybackServiceProvider);
+    final RealAudioPlaybackService playback = _playbackService;
+
+    // T035A — cross-session isolation seam. Bump the
+    // session id at the START of every new playback
+    // session so a delayed `completed` event from a
+    // previous session (caught by [_onPlayerState]
+    // via the captured `capturedSessionId`) is
+    // correctly identified as stale and discarded.
+    _playbackSessionId += 1;
 
     // Publish `loading` so the page can show a spinner and
     // disable duplicate taps. We do NOT clear
     // `playbackErrorMessage` here — the `loading` status
     // itself signals "the previous error is being retried";
     // the `loading → playing` transition will clear it.
-    state = AsyncData<PracticeRecordDetailState>(current.copyWith(
+    _publish(current.copyWith(
       playbackStatus: PracticeRecordPlaybackStatus.loading,
     ));
 
@@ -853,7 +1018,7 @@ class PracticeRecordDetailController
       if (_disposed || !ref.mounted) {
         return;
       }
-      state = AsyncData<PracticeRecordDetailState>(
+      _publish(
         _currentOrLoaded().copyWith(
           playbackStatus: PracticeRecordPlaybackStatus.error,
           playbackErrorMessage: _friendlyLoadError(e),
@@ -869,7 +1034,7 @@ class PracticeRecordDetailController
       if (_disposed || !ref.mounted) {
         return;
       }
-      state = AsyncData<PracticeRecordDetailState>(
+      _publish(
         _currentOrLoaded().copyWith(
           playbackStatus: PracticeRecordPlaybackStatus.error,
           playbackErrorMessage: '录音加载失败，请重试',
@@ -895,7 +1060,7 @@ class PracticeRecordDetailController
     // would render "playing" only after the service's `play`
     // future settles (which can be seconds in on real
     // devices).
-    state = AsyncData<PracticeRecordDetailState>(
+    _publish(
       _currentOrLoaded().copyWith(
         playbackStatus: PracticeRecordPlaybackStatus.playing,
         clearPlaybackErrorMessage: true,
@@ -933,7 +1098,7 @@ class PracticeRecordDetailController
         if (latest.playbackStatus != PracticeRecordPlaybackStatus.playing) {
           return;
         }
-        state = AsyncData<PracticeRecordDetailState>(
+        _publish(
           latest.copyWith(
             playbackStatus: PracticeRecordPlaybackStatus.error,
             playbackErrorMessage: '播放操作失败，请重试',
@@ -960,8 +1125,7 @@ class PracticeRecordDetailController
     if (current.playbackStatus != PracticeRecordPlaybackStatus.playing) {
       return;
     }
-    final RealAudioPlaybackService playback =
-        ref.read(realAudioPlaybackServiceProvider);
+    final RealAudioPlaybackService playback = _playbackService;
     try {
       await playback.pause();
     } on Object catch (e, st) {
@@ -971,7 +1135,7 @@ class PracticeRecordDetailController
       if (_disposed || !ref.mounted) {
         return;
       }
-      state = AsyncData<PracticeRecordDetailState>(
+      _publish(
         _currentOrLoaded().copyWith(
           playbackStatus: PracticeRecordPlaybackStatus.error,
           playbackErrorMessage: '播放操作失败，请重试',
@@ -982,7 +1146,7 @@ class PracticeRecordDetailController
     if (_disposed || !ref.mounted) {
       return;
     }
-    state = AsyncData<PracticeRecordDetailState>(
+    _publish(
       _currentOrLoaded().copyWith(
         playbackStatus: PracticeRecordPlaybackStatus.paused,
       ),
@@ -1004,8 +1168,7 @@ class PracticeRecordDetailController
     if (current.playbackStatus != PracticeRecordPlaybackStatus.paused) {
       return;
     }
-    final RealAudioPlaybackService playback =
-        ref.read(realAudioPlaybackServiceProvider);
+    final RealAudioPlaybackService playback = _playbackService;
     try {
       await playback.resume();
     } on Object catch (e, st) {
@@ -1015,7 +1178,7 @@ class PracticeRecordDetailController
       if (_disposed || !ref.mounted) {
         return;
       }
-      state = AsyncData<PracticeRecordDetailState>(
+      _publish(
         _currentOrLoaded().copyWith(
           playbackStatus: PracticeRecordPlaybackStatus.error,
           playbackErrorMessage: '播放操作失败，请重试',
@@ -1026,7 +1189,7 @@ class PracticeRecordDetailController
     if (_disposed || !ref.mounted) {
       return;
     }
-    state = AsyncData<PracticeRecordDetailState>(
+    _publish(
       _currentOrLoaded().copyWith(
         playbackStatus: PracticeRecordPlaybackStatus.playing,
         clearPlaybackErrorMessage: true,
@@ -1052,8 +1215,14 @@ class PracticeRecordDetailController
         current.playbackStatus == PracticeRecordPlaybackStatus.error) {
       return;
     }
-    final RealAudioPlaybackService playback =
-        ref.read(realAudioPlaybackServiceProvider);
+    final RealAudioPlaybackService playback = _playbackService;
+    // T035A — bump the session id BEFORE the await
+    // so any `completed` event from the service's
+    // own `playerStateStream` (which can fire as a
+    // side-effect of `stop()` on real devices) is
+    // correctly tagged as a stale-prior-session
+    // event by [_onPlayerState] and discarded.
+    _playbackSessionId += 1;
     try {
       await playback.stop();
     } on Object catch (e, st) {
@@ -1063,7 +1232,7 @@ class PracticeRecordDetailController
       if (_disposed || !ref.mounted) {
         return;
       }
-      state = AsyncData<PracticeRecordDetailState>(
+      _publish(
         _currentOrLoaded().copyWith(
           playbackStatus: PracticeRecordPlaybackStatus.error,
           playbackErrorMessage: '播放操作失败，请重试',
@@ -1074,7 +1243,7 @@ class PracticeRecordDetailController
     if (_disposed || !ref.mounted) {
       return;
     }
-    state = AsyncData<PracticeRecordDetailState>(
+    _publish(
       _currentOrLoaded().copyWith(
         playbackStatus: PracticeRecordPlaybackStatus.idle,
         clearPlaybackErrorMessage: true,
@@ -1134,8 +1303,14 @@ class PracticeRecordDetailController
         // Active session — try to stop.
         break;
     }
-    final RealAudioPlaybackService playback =
-        ref.read(realAudioPlaybackServiceProvider);
+    final RealAudioPlaybackService playback = _playbackService;
+    // T035A — cross-session isolation. Bump the
+    // session id before the await so any post-stop
+    // `completed` event is treated as a stale
+    // prior-session event by [_onPlayerState] and
+    // discarded. This is the same pattern used by
+    // [stopPlayback].
+    _playbackSessionId += 1;
     try {
       await playback.stop();
     } on Object catch (e, st) {
@@ -1156,7 +1331,7 @@ class PracticeRecordDetailController
     final PracticeRecordDetailState? afterStop = state.value;
     if (afterStop != null &&
         afterStop.playbackStatus != PracticeRecordPlaybackStatus.idle) {
-      state = AsyncData<PracticeRecordDetailState>(
+      _publish(
         afterStop.copyWith(
           playbackStatus: PracticeRecordPlaybackStatus.idle,
           clearPlaybackErrorMessage: true,
@@ -1175,14 +1350,34 @@ class PracticeRecordDetailController
   /// [playRecordedAudio] after a successful `loadFile`; the
   /// subscription is cancelled in `_onDispose`. Mirrors the
   /// T031I pattern in [RecordingPracticeController].
+  ///
+  /// T035A — the listener is bound to a captured session id
+  /// at subscription time so a delayed `completed` event
+  /// from a prior session (A) cannot flip the state of the
+  /// next session (B). The session id is bumped on every
+  /// `playRecordedAudio` / `stopPlayback` /
+  /// `_stopPlaybackIfActive`, and the listener closure
+  /// carries the value as of the moment the subscription
+  /// was created. If the controller's current
+  /// [_playbackSessionId] is different from the captured
+  /// one when the callback fires, the event is from a
+  /// prior session and is discarded.
   void _ensurePlaybackSubscription() {
     if (_playbackStateSubscription != null) {
       return;
     }
-    final RealAudioPlaybackService playback =
-        ref.read(realAudioPlaybackServiceProvider);
-    _playbackStateSubscription =
-        playback.playerStateStream.listen(_onPlayerState);
+    final RealAudioPlaybackService playback = _playbackService;
+    final int subscriptionSessionId = _playbackSessionId;
+    _playbackStateSubscription = playback.playerStateStream.listen(
+      (PlaybackPlayerState ps) {
+        // Re-route to the central callback but
+        // pin the subscription's session id so
+        // the staleness check fires even if the
+        // controller's `_playbackSessionId` is
+        // bumped in a later session.
+        _onPlayerState(ps, subscriptionSessionId);
+      },
+    );
   }
 
   /// `playerStateStream` callback. Translates the gateway's
@@ -1204,11 +1399,29 @@ class PracticeRecordDetailController
   /// - `_disposed` and `!ref.mounted` checks run BEFORE any
   ///   state write so a post-dispose event cannot push
   ///   into a torn-down Provider.
-  void _onPlayerState(PlaybackPlayerState ps) {
+  void _onPlayerState(PlaybackPlayerState ps, int subscriptionSessionId) {
     if (_disposed || !ref.mounted) {
       return;
     }
     if (ps.processingState != PlaybackProcessingState.completed) {
+      return;
+    }
+    // T035A — cross-session isolation. The session id
+    // is captured at subscription time (see
+    // [_ensurePlaybackSubscription]) and bound to
+    // this listener closure. The session id is bumped
+    // on every `playRecordedAudio`, `stopPlayback`,
+    // and `_stopPlaybackIfActive`. If the controller's
+    // current [_playbackSessionId] no longer matches
+    // the captured one, this `completed` event
+    // belongs to a prior session and MUST NOT flip
+    // the state. Without this check, a real-device
+    // just_audio replay bug that emits a stale
+    // `completed` AFTER the user has explicitly
+    // stopped and restarted playback would
+    // erroneously flip the new session's state from
+    // `playing` to `idle`.
+    if (subscriptionSessionId != _playbackSessionId) {
       return;
     }
     if (_handlingNaturalCompletion) {
@@ -1234,7 +1447,7 @@ class PracticeRecordDetailController
     }
     _handlingNaturalCompletion = true;
     try {
-      state = AsyncData<PracticeRecordDetailState>(
+      _publish(
         current.copyWith(
           playbackStatus: PracticeRecordPlaybackStatus.idle,
           clearPlaybackErrorMessage: true,
@@ -1251,11 +1464,82 @@ class PracticeRecordDetailController
   /// [RealAudioPlaybackService.dispose] — the service is
   /// shared via `realAudioPlaybackServiceProvider` and is
   /// torn down by the Riverpod scope's own lifecycle.
+  ///
+  /// T035A — page-exit stop. If a playback session is still
+  /// active when the page exits (`playing` | `paused` |
+  /// `loading` | `ready`), the controller best-effort fires
+  /// a `service.stop()` so the shared service is left in a
+  /// clean state for the next page (recording page, another
+  /// detail page, etc.). The stop is fire-and-forget —
+  /// `onDispose` is synchronous — and is wrapped in
+  /// `.catchError` so a `stop` failure never produces an
+  /// unhandled async error and never re-throws out of the
+  /// dispose hook. The service is still NOT disposed here;
+  /// it is the Riverpod scope's responsibility.
   void _onDispose() {
     _disposed = true;
+    // T035A — best-effort stop. See the method-level
+    // docstring above for the contract. We use the
+    // [_lastPublishedPlaybackStatus] mirror (NOT
+    // `state.value`) because Riverpod 3.x forbids reading
+    // the AsyncNotifier's `state` inside an `onDispose`
+    // hook. The mirror is updated by [_publish] on every
+    // `state = ...` write, so it is in sync with the
+    // most recent published status. `idle` / `error`
+    // are skipped so we never ask the service to stop
+    // when there is nothing to release. Note that the
+    // controller intentionally does NOT collapse
+    // service-side `completed` into a separate status
+    // value — the natural-completion handler flips the
+    // state back to `idle` synchronously, so by the time
+    // a page exit happens the status is either `idle`
+    // (post-completion) or one of the active states below.
+    final PracticeRecordPlaybackStatus status = _lastPublishedPlaybackStatus;
+    final RealAudioPlaybackService? cachedService = _cachedPlaybackService;
+    if (cachedService != null &&
+        (status == PracticeRecordPlaybackStatus.playing ||
+            status == PracticeRecordPlaybackStatus.paused ||
+            status == PracticeRecordPlaybackStatus.loading ||
+            status == PracticeRecordPlaybackStatus.ready)) {
+      // Fire-and-forget. `onDispose` is synchronous so we
+      // cannot await; `.catchError` swallows any throw so
+      // a stop failure never produces an unhandled async
+      // error and never re-throws out of this hook. The
+      // closure returns a sentinel `AudioPlaybackStopResult`
+      // so the result type stays compatible with
+      // [RealAudioPlaybackService.stop]'s `Future<AudioPlaybackStopResult>`
+      // signature under Dart's strict `Future.catchError`
+      // typing (the analyzer requires the onError closure
+      // to return the same type as the parent future).
+      //
+      // `cachedService` is the captured reference from
+      // [_playbackService]; we read it directly here so
+      // the dispose hook never touches `ref` (Riverpod
+      // 3.x forbids `ref` inside lifecycle hooks).
+      // ignore: unawaited_futures
+      cachedService.stop().catchError((Object e, StackTrace st) {
+        debugPrint(
+          'PracticeRecordDetailController dispose-time stop failed: '
+          '$e\n$st',
+        );
+        return const AudioPlaybackStopResult(
+          path: '<dispose-time-stop>',
+          position: Duration.zero,
+          duration: null,
+          isCompleted: false,
+        );
+      });
+    }
     final Future<void> cancel =
         _playbackStateSubscription?.cancel() ?? Future<void>.value();
     _playbackStateSubscription = null;
+    // T035A — drop the cached service reference so a
+    // re-instantiated controller re-reads against its
+    // fresh `ref`. Keeping it would not leak (the
+    // service itself is shared) but nulling it keeps
+    // the controller instance self-contained for the
+    // GC scanner.
+    _cachedPlaybackService = null;
     // ignore: unawaited_futures
     cancel;
   }

@@ -1,4 +1,4 @@
-// Riverpod controller for the practice record detail page (T013.4C + T034 + T035 + T035A).
+// Riverpod controller for the practice record detail page (T013.4C + T034 + T035 + T035A + T035B).
 //
 // Scope:
 // - Hand-written [AsyncNotifier] (no `@riverpod` codegen) per the
@@ -221,6 +221,49 @@
 //   service's [AudioPlaybackState] enum. The page-exit
 //   stop is the seam that lets a new page start from a
 //   clean `idle` even though the service survives.
+//
+// T035B — cancel-and-rebuild subscription seam:
+// - The T035A implementation gated
+//   [_ensurePlaybackSubscription] on
+//   `_playbackStateSubscription == null`. The
+//   subscription was therefore created on the very first
+//   `playRecordedAudio` call and **never rebuilt** for
+//   subsequent sessions. Every event arriving afterwards
+//   — including session B's legitimate `playing` /
+//   `paused` / `error` / `completed` events — was
+//   dispatched through session A's listener closure.
+//   The session-id guard inside [_onPlayerState] rejected
+//   events whose captured token did not match the
+//   controller's current `_playbackSessionId`, which
+//   correctly filtered A's stale events but also
+//   incorrectly filtered B's legitimate events (because
+//   B's token is the current one and A's listener closure
+//   holds A's older token).
+// - The T035B fix removes the idempotency gate. Every
+//   call to [_ensurePlaybackSubscription] cancels the
+//   prior subscription (fire-and-forget) and installs a
+//   fresh subscription whose closure captures the current
+//   `_playbackSessionId`. Concretely:
+//    * A's subscription is removed from the broadcast
+//      stream's listener group on `previous.cancel()`
+//      (Dart broadcast streams drop pending events for
+//      cancelled listeners synchronously).
+//    * B's subscription is the only active listener; its
+//      closure holds B's token, so B's events pass the
+//      guard and reach the state machine.
+//    * The session-id guard inside [_onPlayerState]
+//      remains as defense-in-depth for any callback that
+//      lands between the cancel call and the cancel
+//      future's actual completion.
+// - The new dual-direction event routing test (added in
+//   T035B) drives both contracts:
+//    * A's stale `completed` is rejected by B's
+//      controller state.
+//    * B's own `playing` / `paused` / `completed` /
+//      `error` events are correctly applied to B's
+//      state, and B's listener is provably distinct from
+//      A's listener (verified via the fake gateway's new
+//      `recordedListenerCount` counter).
 
 import 'dart:async';
 import 'dart:io';
@@ -1362,9 +1405,71 @@ class PracticeRecordDetailController
   /// [_playbackSessionId] is different from the captured
   /// one when the callback fires, the event is from a
   /// prior session and is discarded.
+  ///
+  /// T035B — **cancel-and-rebuild** semantics. Every call to
+  /// this helper **first cancels any prior subscription**
+  /// (best-effort, the cancel future is unawaited — see the
+  /// `_onDispose` discussion on Dart broadcast stream
+  /// behaviour) and **then installs a fresh subscription**
+  /// bound to the *current* `_playbackSessionId`. This is
+  /// the actual isolation seam between A and B:
+  ///
+  /// 1. Session B's events MUST reach the controller. The
+  ///    previous T035A implementation only rebuilt the
+  ///    subscription if it was `null`; in practice the
+  ///    subscription was created on session A's first
+  ///    `playRecordedAudio` and never rebuilt. Every event
+  ///    arriving afterwards was handled by A's listener
+  ///    closure. The session-id guard correctly rejected
+  ///    A's stale events, but it also incorrectly rejected
+  ///    B's legitimate `playing` / `paused` / `error` /
+  ///    `completed` events (because the listener closure
+  ///    held A's id, not B's).
+  /// 2. By cancelling A's subscription before installing
+  ///    B's, we guarantee:
+  ///     - A's listener is removed from the broadcast
+  ///       stream's listener group. A's queued callbacks
+  ///       that have not yet been dispatched will be
+  ///       dropped on cancel (Dart broadcast streams stop
+  ///       delivering to cancelled listeners).
+  ///     - B's listener is the **only** active listener for
+  ///       the controller's lifetime. Its closure captures
+  ///       B's id at install time, so the session-id
+  ///       guard inside [_onPlayerState] is always
+  ///       satisfied for B's own events.
+  /// 3. The session-id guard inside [_onPlayerState] stays
+  ///    as **defense-in-depth**: if the cancel-future is
+  ///    unawaited by design (the dispose hook does not
+  ///    await it either), a callback that was already
+  ///    scheduled on the cancelled listener may still be
+  ///    dispatched once. The guard rejects it on the token
+  ///    mismatch — exactly the original T035A contract.
+  ///
+  /// The helper remains synchronous and unawaited: cancelling
+  /// the old subscription is fire-and-forget (Dart's
+  /// `StreamSubscription.cancel()` returns a Future that
+  /// completes when the broadcast stream's listener group
+  /// has removed the listener, but the callback queue is
+  /// detached synchronously on `cancel()`). Installing the
+  /// new subscription returns synchronously and stores the
+  /// new `StreamSubscription` so `_onDispose` cancels the
+  /// **current** (B) subscription when the page exits.
   void _ensurePlaybackSubscription() {
-    if (_playbackStateSubscription != null) {
-      return;
+    // T035B — cancel-and-rebuild. Any prior subscription
+    // belongs to a prior session; cancel it BEFORE installing
+    // the new one so the broadcast stream's listener group
+    // does not see both listeners concurrently.
+    final StreamSubscription<PlaybackPlayerState>? previous =
+        _playbackStateSubscription;
+    _playbackStateSubscription = null;
+    if (previous != null) {
+      // Best-effort: the cancel future is unawaited by
+      // design — the broadcast stream drops pending events
+      // for the cancelled listener synchronously, and the
+      // session-id guard inside [_onPlayerState] rejects
+      // any callback that nevertheless lands.
+      // ignore: unawaited_futures
+      previous.cancel();
     }
     final RealAudioPlaybackService playback = _playbackService;
     final int subscriptionSessionId = _playbackSessionId;

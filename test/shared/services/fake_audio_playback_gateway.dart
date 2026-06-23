@@ -34,7 +34,16 @@ import 'package:ukulele_app/shared/services/audio_playback_gateway.dart';
 /// / thrown exceptions. Call counts / argument records let tests assert
 /// "the service called gateway exactly once with X".
 class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
-  FakeAudioPlaybackGateway();
+  FakeAudioPlaybackGateway() {
+    // T035B — register this fake as the current instance
+    // for the static onListen / onCancel callbacks. The
+    // production test suite creates exactly one fake per
+    // test, so a single slot is sufficient. The slot is
+    // released on [dispose] so a future pattern of
+    // multiple fakes per test (e.g. recording + playback
+    // paired) can switch the pointer explicitly.
+    _PlayerStateListenerCounters.setActive(this);
+  }
 
   // ---- pre-seed values (controls) ----
 
@@ -164,6 +173,34 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
   int stopCallCount = 0;
   int disposeCallCount = 0;
 
+  /// T035B — total number of `playerStateStream.listen`
+  /// calls that have created an active subscription on this
+  /// fake across the fake's whole lifetime. The counter
+  /// never decreases; tests assert the **install** count
+  /// after a `playRecordedAudio` call to prove that a NEW
+  /// subscription was created (the T035A implementation
+  /// kept a single subscription for the whole controller
+  /// lifetime; the T035B fix must rebuild on every session
+  /// boundary). The counter is incremented synchronously
+  /// inside the broadcast controller's `onListen` callback
+  /// (see [_PlayerStateListenerCounters.onListenCallback]).
+  int playerStateListenerInstallCount = 0;
+
+  /// T035B — number of `playerStateStream` subscriptions
+  /// that are currently **active** (installed but not yet
+  /// cancelled). Increments on `listen`, decrements on
+  /// `cancel`. Tests can read this counter after a
+  /// `playRecordedAudio` call to prove that the prior
+  /// subscription was cancelled (expected value: `1`,
+  /// because the prior session's subscription is gone
+  /// and the new session's is fresh). The T035A
+  /// implementation had `== 1` here too (the single
+  /// subscription was never cancelled), so the assertion
+  /// `>= 1` is the right shape for the contract — the
+  /// real signal is [playerStateListenerInstallCount]
+  /// which the cancel-and-rebuild fix increments.
+  int playerStateActiveListenerCount = 0;
+
   String? lastLoadPath;
   Duration? lastSeekPosition;
 
@@ -177,6 +214,31 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
       StreamController<Duration?>.broadcast();
 
   // ---- gateway contract ----
+
+  @override
+  Stream<PlaybackPlayerState> get playerStateStream =>
+      // T035B — wrap the controller's broadcast stream with
+      // `asBroadcastStream` so the `onListen` / `onCancel`
+      // callbacks fire on EVERY subscription add/cancel
+      // (NOT just the first listener as the
+      // `StreamController.broadcast` constructor's
+      // `onListen` does). The wrapper creates a fresh
+      // broadcast delegate on every call, so each
+      // `service.playerStateStream.listen(...)` sees a
+      // new wrapper with its own onListen/onCancel. The
+      // resulting `StreamSubscription` is a real
+      // subscription on the underlying controller, so
+      // `cancel()` semantics are identical to production.
+      _playerStateController.stream.asBroadcastStream(
+        onListen: _PlayerStateListenerCounters.onListenCallback,
+        onCancel: _PlayerStateListenerCounters.onCancelCallback,
+      );
+
+  @override
+  Stream<Duration> get positionStream => _positionController.stream;
+
+  @override
+  Stream<Duration?> get durationStream => _durationController.stream;
 
   @override
   Future<Duration?> loadFile(String filePath) async {
@@ -333,6 +395,10 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
     if (!_durationController.isClosed) {
       await _durationController.close();
     }
+    // T035B — release the static pointer so a subsequent
+    // fake constructed in the same process starts from a
+    // clean state.
+    _PlayerStateListenerCounters.setActive(null);
   }
 
   @override
@@ -342,16 +408,6 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
       throw nextSetLoopModeOffException!;
     }
   }
-
-  @override
-  Stream<PlaybackPlayerState> get playerStateStream =>
-      _playerStateController.stream;
-
-  @override
-  Stream<Duration> get positionStream => _positionController.stream;
-
-  @override
-  Stream<Duration?> get durationStream => _durationController.stream;
 
   @override
   Duration get position => currentPosition;
@@ -426,5 +482,58 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
   void emitDuration(Duration? duration) {
     currentDuration = duration;
     _durationController.add(duration);
+  }
+}
+
+/// T035B — listener-count helper for the broadcast
+/// `playerStateStream`. The fake's broadcast controller
+/// was created with `onListen` / `onCancel` callbacks
+/// pointing at the static methods below so a test can read
+/// [FakeAudioPlaybackGateway.playerStateListenerInstallCount]
+/// (total subscription installs across the fake's lifetime)
+/// or [FakeAudioPlaybackGateway.playerStateActiveListenerCount]
+/// (currently-live subscription count) without intercepting
+/// `Stream.listen`.
+///
+/// Why static state: the `onListen` / `onCancel` callbacks
+/// are invoked by the `StreamController.broadcast`
+/// constructor with the controller itself as the
+/// subscriber argument, but the fake instance is created
+/// later. We bridge the two via a per-fake "currently
+/// active fake" pointer — every fake's `onListen` /
+/// `onCancel` re-routes through the current instance. The
+/// production `RealAudioPlaybackService` only ever creates
+/// ONE fake per test, so the single-slot pointer is
+/// sufficient.
+class _PlayerStateListenerCounters {
+  /// Increments the install counter on the current fake,
+  /// if any. The callback fires synchronously inside
+  /// `StreamController`'s listener bookkeeping on every
+  /// `.listen` call; tests can read the resulting count
+  /// from the fake instance immediately afterwards.
+  static void onListenCallback(StreamSubscription<PlaybackPlayerState> sub) {
+    final FakeAudioPlaybackGateway? fake = _activeFake;
+    if (fake != null) {
+      fake.playerStateListenerInstallCount += 1;
+      fake.playerStateActiveListenerCount += 1;
+    }
+  }
+
+  /// Decrements the active count on the current fake.
+  static void onCancelCallback(StreamSubscription<PlaybackPlayerState> sub) {
+    final FakeAudioPlaybackGateway? fake = _activeFake;
+    if (fake != null) {
+      fake.playerStateActiveListenerCount -= 1;
+    }
+  }
+
+  /// Set by the fake's constructor; cleared by `dispose`.
+  /// The static callbacks need a way to find the fake that
+  /// owns the broadcast controller.
+  static FakeAudioPlaybackGateway? _activeFake;
+
+  /// Public for tests; resets between fakes.
+  static void setActive(FakeAudioPlaybackGateway? fake) {
+    _activeFake = fake;
   }
 }

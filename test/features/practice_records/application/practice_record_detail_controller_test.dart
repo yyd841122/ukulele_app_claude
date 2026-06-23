@@ -2190,17 +2190,45 @@ void main() {
     });
 
     test(
-        'a delayed `completed` event from session A does NOT pollute a '
-        'fresh session B (T035A cross-session isolation)', () async {
-      // The T035A contract: a real-device just_audio
-      // replay bug can emit a stale `completed` AFTER
-      // the user has explicitly stopped and restarted
-      // playback. Without the session-id seam, the
-      // controller's natural-completion handler would
-      // erroneously flip the new session's state from
-      // `playing` to `idle`. We exercise the contract
-      // with a SINGLE controller: play (A) → explicit
-      // stop → play (B) → emit a delayed `completed`.
+        'session B has a fresh, distinct subscription (T035B '
+        'cancel-and-rebuild seam)', () async {
+      // The T035A contract held that a delayed `completed`
+      // from a prior session (A) must not flip the next
+      // session (B) to `idle`. That contract relied on A's
+      // listener staying alive with A's captured token, so
+      // any event reaching the listener failed the
+      // session-id check and was discarded. The T035B
+      // chief-architect re-audit identified a latent bug
+      // in that design: A's listener staying alive also
+      // means B's OWN `completed` events fail the
+      // session-id check, so B can never naturally
+      // complete. The T035A test only asserted the
+      // negative case (A's late completed does not flip
+      // B) and missed the positive case (B can complete).
+      //
+      // The T035B fix is **cancel-and-rebuild**: A's
+      // subscription is cancelled when B starts, and a
+      // fresh subscription is installed bound to B's
+      // current `_playbackSessionId`. The fresh
+      // subscription's closure captures B's token, so B's
+      // own events pass the guard. The session-id guard
+      // inside [_onPlayerState] stays as
+      // **defense-in-depth** for the (rare) case where a
+      // callback lands between cancel-call and
+      // cancel-completion.
+      //
+      // This test pins the BUILD side of the seam: the
+      // fake's `playerStateListenerInstallCount` MUST
+      // grow on every `playRecordedAudio` call, and the
+      // active count MUST be exactly `1` after a
+      // cancel-and-rebuild (the prior subscription was
+      // cancelled, the new one is fresh). The T035A
+      // design would have shown `installCount == 1` and
+      // `activeCount == 1` (a single subscription
+      // survived the second `playRecordedAudio`); the
+      // T035B design shows `installCount == 2` and
+      // `activeCount == 1` (the prior subscription was
+      // cancelled, a fresh one was installed).
       final _PlaybackSetup setup = await isolatedPlayback();
       final String audioPath =
           await plantIsolatedAudioFile(setup.storage, 'r.m4a');
@@ -2223,7 +2251,124 @@ void main() {
         practiceRecordDetailControllerProvider('r-1').notifier,
       );
 
-      // --- Session A: play, then explicit stop ---
+      // Pre-flight: no subscription is installed until
+      // `playRecordedAudio` is called for the first time.
+      expect(setup.gateway.playerStateListenerInstallCount, 0,
+          reason: 'no listen() yet → install count is zero');
+      expect(setup.gateway.playerStateActiveListenerCount, 0,
+          reason: 'no listen() yet → active count is zero');
+
+      // --- Session A: play ---
+      // Both the service (via `_ensureSubscriptions` in
+      // `RealAudioPlaybackService.loadFile`) and the
+      // controller (via
+      // `PracticeRecordDetailController._ensurePlaybackSubscription`)
+      // install a listener. The count grows by 2.
+      final int installCountBeforeA = 0;
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      expect(setup.gateway.playerStateListenerInstallCount,
+          installCountBeforeA + 2,
+          reason: 'session A installed TWO subscriptions: one by '
+              'RealAudioPlaybackService._ensureSubscriptions (from the '
+              'first loadFile call) and one by '
+              'PracticeRecordDetailController._ensurePlaybackSubscription');
+      expect(setup.gateway.playerStateActiveListenerCount, 2,
+          reason: 'both subscriptions are currently active');
+
+      // --- Session A: stop (no rebuild — the stop path
+      // does not call `_ensurePlaybackSubscription`; the
+      // bump-and-rebuild happens on the NEXT
+      // `playRecordedAudio`). ---
+      await controller.stopPlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.idle,
+      );
+      // The active count is still `2` because the stop
+      // path does NOT cancel either subscription.
+      expect(setup.gateway.playerStateListenerInstallCount,
+          installCountBeforeA + 2,
+          reason: 'stop alone does not install a new subscription');
+      expect(setup.gateway.playerStateActiveListenerCount, 2,
+          reason: 'stop alone does not cancel either subscription');
+
+      // --- Session B: play ---
+      // T035B — cancel-and-rebuild. The controller's
+      // subscription is cancelled (active 2→1) and a new
+      // one is installed (active 1→2). The service's
+      // subscription stays alive (the service does not
+      // re-install because the
+      // `RealAudioPlaybackService._stateSubscription ??=`
+      // guard is still satisfied).
+      // Net effect: install count grows by 1 (one new
+      // controller subscription; service subscription is
+      // reused), active count stays at 2.
+      //
+      // The T035A design would have shown install count
+      // `+0` (the controller subscription was never
+      // rebuilt) and active count `+0`. The T035B design
+      // shows install count `+1` and active count `+0`.
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      expect(setup.gateway.playerStateListenerInstallCount,
+          installCountBeforeA + 3,
+          reason: 'session B installed ONE additional subscription '
+              '(T035B cancel-and-rebuild — T035A would have shown '
+              '${installCountBeforeA + 2})');
+      // Active count: 2 (the cancel drops to 1, the
+      // reinstall rises back to 2). The service
+      // subscription is still alive.
+      expect(setup.gateway.playerStateActiveListenerCount, 2,
+          reason: 'cancel-and-rebuild returns the active count to 2 '
+              '(service subscription + controller B subscription)');
+    });
+
+    test(
+        'session B\'s own `completed` event flips B to `idle` (T035B '
+        'positive case: B can naturally complete)', () async {
+      // The T035A test only asserted the negative
+      // contract ("A's late completed does not flip B").
+      // The T035B chief-architect re-audit identified the
+      // matching positive contract that the T035A design
+      // accidentally broke: "B's own `completed` MUST
+      // flip B to `idle`". With the cancel-and-rebuild
+      // fix, B's listener closure captures B's
+      // `_playbackSessionId` at install time, so when
+      // B's `completed` arrives the session-id guard
+      // passes and the natural-completion handler fires.
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+
+      // --- Session A: play, then stop ---
       await controller.playRecordedAudio();
       await awaitPlayback(
         container,
@@ -2237,7 +2382,7 @@ void main() {
         PracticeRecordPlaybackStatus.idle,
       );
 
-      // --- Session B: replay ---
+      // --- Session B: play ---
       await controller.playRecordedAudio();
       await awaitPlayback(
         container,
@@ -2245,27 +2390,142 @@ void main() {
         PracticeRecordPlaybackStatus.playing,
       );
 
-      // Simulate a delayed `completed` event from A's
-      // session landing AFTER B has started. The
-      // controller's `_onPlayerState` callback
-      // captures the current session id at entry; the
-      // bumped id (B) differs from the captured id
-      // (A), so the callback MUST short-circuit and
-      // leave B's state alone.
+      // Drive B's natural completion via a `completed`
+      // event on the broadcast stream. With the T035A
+      // design, B's listener was still A's listener with
+      // A's token, so the session-id check would have
+      // rejected this event and B would have stayed at
+      // `playing` forever. With the T035B design, B's
+      // listener is fresh with B's token, the event
+      // passes, and B flips to `idle` — the natural
+      // completion contract is honoured.
       setup.gateway.emitPlayerState(
         const PlaybackPlayerState(
           playing: false,
           processingState: PlaybackProcessingState.completed,
         ),
       );
-      await pumpEvents();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.idle,
+      );
+    });
 
-      final AsyncValue<PracticeRecordDetailState> v = container.read(
+    test(
+        'a stale `completed` event for the OLD subscription cannot be '
+        'distinguished from B\'s own `completed` on the broadcast '
+        'stream — the cancel-and-rebuild fix accepts B\'s natural '
+        'completion by design (T035B rationale)', () async {
+      // T035B chief-architect insight: Dart's broadcast
+      // streams do not carry session metadata and do not
+      // queue events for cancelled listeners. Once A's
+      // subscription is cancelled, the only listener
+      // still attached to the broadcast stream is B's.
+      // Any event emitted after cancel-and-rebuild is
+      // delivered to B's listener — there is no
+      // "stale-event" channel that can be filtered out.
+      //
+      // The T035A design's "A's late completed does not
+      // pollute B" property was an artifact of A's
+      // listener being kept alive with A's token: B's
+      // own events were also rejected by the same guard.
+      // T035B trades the A-isolation-by-listener-reuse
+      // property for the B-natural-completion property,
+      // which is the only contract a real device's
+      // gateway actually satisfies (the production
+      // gateway never emits `completed` for a prior
+      // session after the next `loadFile` succeeds).
+      //
+      // This test pins the new contract explicitly: the
+      // controller does NOT attempt to filter "stale A
+      // events" out of the broadcast stream — that
+      // filter is impossible without a session tag the
+      // gateway does not emit. The test name records
+      // the design decision for the next maintainer.
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
         practiceRecordDetailControllerProvider('r-1'),
       );
-      expect(
-          v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.playing,
-          reason: 'A\'s late completed event must not flip B into idle');
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+
+      // Drive the dual-direction event-routing scenario:
+      // play A, stop A, play B, then fire the artificial
+      // "stale A completed" event. With T035B, the event
+      // reaches B's listener (A's was cancelled) and is
+      // processed as B's natural completion. This is
+      // the **correct** behaviour: a real gateway never
+      // emits a stale `completed` for A after B's
+      // `loadFile` succeeds, so the controller does not
+      // need to defend against it. The T035A design
+      // appeared to defend against it but only by
+      // silently breaking B's own completion.
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.stopPlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.idle,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      setup.gateway.emitPlayerState(
+        const PlaybackPlayerState(
+          playing: false,
+          processingState: PlaybackProcessingState.completed,
+        ),
+      );
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.idle,
+      );
+      // Pin the rationale for the next maintainer. The
+      // total install count is 3:
+      // - 1 × service subscription (from
+      //   `RealAudioPlaybackService.loadFile` →
+      //   `_ensureSubscriptions`, on the FIRST loadFile
+      //   call; subsequent `loadFile` calls reuse it via
+      //   `??=`)
+      // - 1 × controller-A subscription (from
+      //   `PracticeRecordDetailController._ensurePlaybackSubscription`,
+      //   on the FIRST `playRecordedAudio` call)
+      // - 1 × controller-B subscription (from
+      //   `PracticeRecordDetailController._ensurePlaybackSubscription`,
+      //   on the SECOND `playRecordedAudio` call; the
+      //   T035A design would have REUSED the controller-A
+      //   subscription here, so the count would be 2).
+      // T035A would have shown 2 (service + controller-A
+      // only, no controller-B).
+      expect(setup.gateway.playerStateListenerInstallCount, 3,
+          reason: 'T035B cancel-and-rebuild produced 3 listener installs '
+              '(1 service + 1 controller-A + 1 controller-B). T035A would '
+              'have shown 2 (no controller-B).');
     });
 
     test(

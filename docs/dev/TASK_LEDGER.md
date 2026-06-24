@@ -396,4 +396,15 @@
 
 **Reviewer 协作**：T045A 范围内由 1 个独立 Flutter Router Reviewer（只读）复审修复 + 端到端测试是否覆盖了 4 项场景；待 Blocker 修复后复审（见 `AGENT_QUALITY_METRICS.md` §T045A Scorecard）。
 
-**未**修改：除 `lib/app/router.dart` 外的任何生产代码 / 任何路由或课程功能 / 既有 740 项测试 / Manifest / Gradle / Drift schema / 依赖 / 版本号 / 既有 doc（除 T045 QA doc 追加节段）/ Release 产物 / `agents/*.md` / Day 1-7 任何任务 / 完成状态 / 数据库持久化 / 节拍器 / 录音 controller / **未** push / **未** Tag / **未** amend / rebase / reset。
+### T045A 真机收口（2026-06-24）
+
+- **修复 commit**：`d707313738609fa7052f1b93b7e8a8f216d29e59`（`fix: allow lesson child route navigation`，未 push 至 origin / 未 Tag / 未 amend / 未 rebase / 未 reset）。
+- **真机 PASS（用户手动）**：用户在原设备（HUAWEI CDY-AN90 / Android 10）执行 `adb install -r build/app/outputs/flutter-apk/app-debug.apk`（**未** `flutter install` / **未**卸载 / **未**清数据 / **未**撤权限 / **未**输出完整序列号）覆盖安装后，按 T044 验收矩阵逐项确认：
+  1. C 和弦页点击"开始课程" → 课程详情页真实显示，**不再**跳回主页；
+  2. 课程页 AppBar 返回箭头 → 正常 pop 回 C 和弦页；
+  3. 课程页"调整到 60 BPM 后开始" → 节拍器页打开，**未**自动启动 / **未**改 BPM；
+  4. 课程页"录音复盘" → 录音页打开，**未**自动开始录音。
+- **数据保留口径**：T045A 真机步骤仅 `adb install -r` 覆盖安装，**不**改变"数据已在前置阶段不可恢复地丢失"的事实；验收表第 6 项保持 **N/A**，**不**得改写为通过。
+- **推送**：在用户当前指令明确授权后执行 `git push origin master`（普通 fast-forward，本地领先 8 / 落后 0 → push 后 0 / 0）；**未** force / **未** Tag / **未** amend / rebase / reset / **未** `flutter install` / **未**卸载 / **未**清数据。
+
+**未**修改：除 `lib/app/router.dart` 外的任何生产代码 / 任何路由或课程功能 / 既有 740 项测试 / Manifest / Gradle / Drift schema / 依赖 / 版本号 / 既有 doc 主体（仅追加 T045A 节段）/ Release 产物 / `agents/*.md` / Day 1-7 任何任务 / 完成状态 / 数据库持久化 / 节拍器 / 录音 controller / **未** Tag / **未** amend / rebase / reset / **未** force push。

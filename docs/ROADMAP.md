@@ -321,6 +321,45 @@
 
 ---
 
+## Product V2 路线（T047 后）
+
+> T047 (`T047_PRODUCT_V2_SYSTEM_DESIGN`) 已落盘 `docs/architecture/SDD_V2.md` v0.2（442 行，3 位 Reviewer 全部 Approved with Conditions，0 Blocker）。
+> 该 SDD 把 v2 长期对标功能（P1-P6）压缩为 10 个模块边界 + Drift `beforeOpen` `scores` 表策略 + OP-1~OP-5 Spike 候选 + 9 步 mapping + 平台边界声明 + 不锁定算法。
+> **T047 不进入 P1-P6 实现**；后续 T048 起按 SDD §10.2 风险缓解与 §3 模块边界逐步落地。
+
+### Product V2 阶段门（SDD §8 + PRD §6 对齐）
+
+| 阶段 | 名称 | SDD §8 关键约束 | TDD 启动信号 |
+|------|------|----------------|--------------|
+| **P1 Foundation** | 调音器实时反馈 + 节拍器可听 + 7 和弦 + 7 单音 + 设置 + 深色 token + **OP-1 Spike 决议** | OP-1 ~ OP-5 在 P1 内做 Spike 产出 ADR；不锁定具体算法 | T048A / T048B / T048C（T047 完成后启动） |
+| **P2 Interactive Slice** | 9 步闭环第一课 + 起音/节奏反馈 + 真机录屏 | **P2 关键门 = 9 步闭环真机录屏 + 节奏/起音对齐初始校准完成 + Day 3/5/6/7 课程仍冻结** | T049+（P1 关闭门后启动） |
+| P3 Audio Intelligence | 调音器精度 + 音高 + 和弦 + 哑音 | OP-3 / OP-4 在 P3 启动前 Spike；P2 不引入 | T050+ |
+| P4 Curriculum | 课程地图 + 进度 + 复习 + 原创歌曲 | Drift schemaVersion=2 → 3（含 P2 `scores` 表列对齐）；P5 不在 P4 引入 | T051+ |
+| P5 Personalization | 个性化推荐 + streak + 难度 | LocalProfile streak 字段 P5 启动时增列；schema 升级 | T052+ |
+| P6 Platform | 账号 + 云同步 + CMS + 订阅 + iOS + 平板 | INTERNET 权限 + 合规前置（PRD §10）全部完成 | T053+；**不永久排除** iOS / 平板 / Low-G |
+
+### SDD v0.2 关键决策摘要（与 ROADMAP §"Phase 1-6 / V1-V5" 对齐）
+
+| SDD 章节 | 决策 | 对 ROADMAP 影响 |
+|----------|------|-----------------|
+| §1.2 平台边界声明 | Android-first / common High-G GCEA 优先；iOS / 平板 / Low-G = Deferred + 前置条件（非永久 Out） | V1-V5 商业化路线不变；iOS 推迟到 P6+ 受合规前置约束 |
+| §3.10 CMS/Account/Sync/Subscription 边界 | 严格 Deferred；P6 前不创建任何联网模块 / 抽象接口 / 占位 Dart 文件 | V5 商业化路线由 P6 阶段独立设计，不在 P1-P5 提前抽象 |
+| §3.8 Drift schemaVersion 策略 | P2 `beforeOpen` 幂等新增 `scores` 表（不升级 schemaVersion）；P4 统一 v3 | T013 既有 schemaVersion=2 保持；P2 不破坏 P4 升级路径 |
+| §3.9 LocalProfile streak 字段 | P1-P5 不持有 streak 数据；P5 启动时再走 schema 升级 | P5 Personalization 阶段显式触发 streak schema 升级 |
+| §7.2 OP-1 推荐方案 A | 双 record 实例 + PCM 流 + m4a 并行；P1 Spike 必含双实例并发 5s/30s/5min 断点验证 | P1 启动 T048A Spike 验证；失败回退到 C（事后解码）或 D（FFI） |
+| §8 P2 关键门 | 9 步闭环真机录屏 + 节奏/起音对齐初始校准完成 + Day 3/5/6/7 课程仍冻结 | T049+ 真机验收硬门 |
+| §8 新依赖联签 | 任何 P1-P5 任务如需引入新依赖，必须经主会话 + Compliance Reviewer 联签 + ADR | V1-V5 路线新依赖走联签，不绕过 ROADMAP |
+
+### ROADMAP 阶段门与 SDD v0.2 的引用关系
+
+- **Phase 6 MVP Polish (T014)**：T016 已完成；T019-T024 Release 工程化完成；T025-T031E 真实音频 MVP 完成。
+- **Product V2 Foundation (P1)** = T047 SDD → T048 TDD → T048A OP-1 Spike → 9 步闭环 T049+ 实现。
+- **SDD 是 ROADMAP 的"骨架"**：阶段门顺序不变；模块边界 / Drift 策略 / OP-1 决议 / 9 步 mapping / 平台边界 在 SDD v0.2 一次性锁定；T048+ TDD 任务按 SDD §3 + §4 + §6 落地。
+
+> **不**修改本节前的 `Phase 0-6 / V1-V5` 任何条目；仅追加"Product V2 路线（T047 后）"章节作为 SDD v0.2 的 ROADMAP 引用层。
+
+---
+
 ## 版本标签
 
 | 标签 | 说明 |

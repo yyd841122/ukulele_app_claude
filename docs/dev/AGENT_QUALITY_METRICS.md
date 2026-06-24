@@ -2198,3 +2198,25 @@
 **测试基线**：744 保持不变；**未** push / **未** Tag / **未** amend / rebase / reset；**未**修改除 docs/PRD_v2.md + docs/T046_AI_MUSIC_SCHOOL_BENCHMARK.md + docs/T046_ROADMAP.md + docs/dev/TASK_LEDGER.md + docs/dev/AGENT_QUALITY_METRICS.md 外的任何文件。
 
 **GPT 复审**：**待复审**——T046 最终批准前**不**启动 T047 SDD。
+
+---
+
+### 4.X T047 Scorecard（Product V2 系统设计）
+
+| 字段 | 值 |
+| --- | --- |
+| Task ID | `T047_PRODUCT_V2_SYSTEM_DESIGN` |
+| Primary Agent | 主会话（Chief Architect） |
+| Review Agents | Audio Architecture Reviewer `a29d26f55a6a993e8`、Flutter Data Architecture Reviewer `af3e5bbcdbc28a57d`、Product Alignment Reviewer `aaa74dd285a4ed015` |
+| High Risk Areas | 10 模块边界 / v1.1.0 模块处置（KEEP/ADJUST/REFACTOR/RETIRE）/ Drift schemaVersion 策略 / `record ^7.1.0` 双实例 + Android 平台层风险 / OP-1~OP-5 算法不锁定 / 9 步闭环 PRD 对齐 / P2 关键门 + Day 3/5/6/7 课程冻结 / LocalProfile streak 字段边界 / 隐私与无 INTERNET 原则 |
+| Blockers Found | 0（3 位 Reviewer 均给 `Approved with Conditions`，未发现 Blocker；其中 Flutter Reviewer F-1 标 Blocker 但内容为 Major 级 Drift schemaVersion 冲突，v0.2 已采用 `beforeOpen` 幂等策略闭环） |
+| Blockers Valid | 0（无 Blocker） |
+| Findings Found | Audio 7 项（3 Major + 4 Minor）+ Flutter 10 项（1 Blocker 等价 + 4 Major + 5 Minor）+ Product 9 项（2 Major + 7 Minor）= 26 项 |
+| Findings Valid | 26 / 26（全部采纳；合并去重为 §10.2 12 项风险缓解） |
+| Fix Commits Required | 0（v0.1 → v0.2 一次性合并修订，3 位 Reviewer 条件全部闭环） |
+| Tests Passed | 744（基线保持；新增 / 更新 / 删除测试 0 / 0 / 0；不写实现代码） |
+| Scope Clean | Yes（仅新建 `docs/architecture/SDD_V2.md`；仅修改 `docs/dev/TASK_LEDGER.md`、`docs/dev/AGENT_QUALITY_METRICS.md`、`docs/ROADMAP.md`） |
+| Command discipline violation | No（全程单条命令；无管道 / 重定向 / `&&` / 复合） |
+| Final Approval | 待 GPT 复审 |
+| Collaboration Value | **High**（3 位 Reviewer 全部 Approved with Conditions；0 Blocker；Findings Valid 26/26；Fix Commits 0；v0.2 一次性闭环 26 项 Reviewer 反馈；3 位 Reviewer 在不同维度独立识别 Drift schemaVersion 冲突 / Android 平台层隐藏风险 / PRD §5.5 字面偏离 / 9 步 mapping 显式度不足等真实风险，未显著拖慢任务进度；多 Agent 协作机制在 SDD 高风险架构任务上首次产生真实价值） |
+| Notes | ① Audio Reviewer 准确识别 `record ^7.1.0` `start()` 与 `startStream()` 互斥（Context7 验证）→ 推荐 A 方案双实例；② Flutter Reviewer 准确识别 Drift 2.34.x `@DriftDatabase(tables: ...)` 与 raw SQL 边界张力 → v0.2 采用 `beforeOpen` `CREATE TABLE IF NOT EXISTS scores` 显式幂等策略；③ Product Reviewer 准确识别 iOS / 平板 / Low-G 在 PRD v0.3 后边界（Deferred + 前置条件 ≠ 永久 Out），避免 SDD 全文对 PRD 平台边界误读；④ 3 位 Reviewer 报告均按 `AGENT_REVIEW_TEMPLATE.md` 模板填写 `Scope Reviewed` / `Evidence Checked` / `Findings` / `Approval`，无"已通过"模糊表述；⑤ SDD v0.2 总行数 442（≤ 500 限制）；Mermaid 数据流图 4 张（3 数据流 + 1 依赖图），每张 ≤ 5 节点横向；⑥ 不运行 Flutter 测试或构建；⑦ 不修改 `docs/PRD_v2.md` / `docs/ARCHITECTURE.md` v1.0；⑧ 下一阶段建议 `T048_PRODUCT_V2_PHASE1_TDD`，必须由 GPT 首席架构师出具独立 Prompt 后才能启动 |

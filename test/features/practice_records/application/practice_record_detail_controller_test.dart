@@ -3048,4 +3048,748 @@ void main() {
       // failure cleanly.
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // T037C — detail-page "pause → resume" UI/state sync
+  //
+  // Real-device reproduction: the user plays a saved take,
+  // pauses, taps "继续", and the real sound resumes — but the
+  // UI button stays on "继续" and a second tap surfaces the
+  // misleading "播放操作失败，请重试" error. Root cause:
+  // `just_audio 0.10.5`'s `play()` Future hangs for the entire
+  // playback duration (Context7); the previous `await
+  // playback.resume()` therefore never returned on real
+  // devices; the controller never published `playing`; a
+  // second tap then drove a second `playback.resume()` against
+  // a service that was already in `playing` and raised
+  // `InvalidPlaybackStateException`.
+  //
+  // The T037C fix:
+  //   * Fire-and-forget `playback.resume()` + optimistic
+  //     `playing` publish (UI flips to "暂停" in the same
+  //     frame as the tap);
+  //   * Synchronous `_isResuming` guard against duplicate
+  //     resume calls;
+  //   * `_onPlayerState` now consumes `ready + playing` /
+  //     `ready + not playing` events so the controller stays
+  //     aligned with the real sound on real devices;
+  //   * Stale-event defence via the
+  //     `_lastEmittedPlaybackStatus` mirror so a queued
+  //     pre-resume pause blip does not bounce the UI back
+  //     to "继续" right after the user tapped resume.
+  //
+  // The 11 tests in this group pin each contract end-to-end
+  // against the real [RealAudioPlaybackService] + the
+  // enhanced [FakeAudioPlaybackGateway] (T037C fake
+  // additions: `playFutureCompleter`, `emitReadyPlaying`,
+  // `emitReadyPaused`, `releasePlayFutureCompleter`).
+  // ---------------------------------------------------------------------------
+
+  group('PracticeRecordDetailController T037C resume UI sync', () {
+    test(
+        'T037C-A: resume with pending play Future publishes `playing` '
+        'and stays there when the real `ready + playing` event lands '
+        '(the real-device happy path)', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      // Gate the gateway's play() so the real-device
+      // "play Future hangs for the entire playback"
+      // behaviour is faithfully reproduced. The
+      // controller MUST NOT block on this Future (the
+      // T037C fix is fire-and-forget); the optimistic
+      // publish flips the state to `playing`
+      // immediately.
+      final Completer<void> playGate = Completer<void>();
+      setup.gateway.playFutureCompleter = playGate;
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.pausePlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.paused,
+      );
+      final int playCountBefore = setup.gateway.playCallCount;
+      // Resume. The call MUST complete quickly (NOT
+      // await the play Future) and the state MUST
+      // flip to `playing` without waiting for the
+      // gateway's play Future to resolve.
+      await controller.resumePlayback();
+      // The play gate is still open; verify the
+      // controller did NOT block on it.
+      expect(playGate.isCompleted, isFalse,
+          reason: 'T037C: the controller must not await the play Future');
+      expect(setup.gateway.playCallCount, playCountBefore + 1,
+          reason: 'resume must drive gateway.play exactly once');
+      final AsyncValue<PracticeRecordDetailState> afterResume =
+          container.read(practiceRecordDetailControllerProvider('r-1'));
+      expect(afterResume.requireValue.playbackStatus,
+          PracticeRecordPlaybackStatus.playing,
+          reason: 'optimistic publish must flip the state to `playing` even '
+              'while the play Future is still pending');
+      // Now release the play gate (simulating the
+      // real-device natural end / pause / stop
+      // boundary) and emit the canonical
+      // `ready + playing` event the underlying
+      // `just_audio` gateway would have emitted
+      // synchronously after `play()`. The controller
+      // MUST stay at `playing` (no clobber, no error).
+      setup.gateway.emitReadyPlaying();
+      playGate.complete();
+      await pumpEvents();
+      final AsyncValue<PracticeRecordDetailState> afterEvent =
+          container.read(practiceRecordDetailControllerProvider('r-1'));
+      expect(afterEvent.requireValue.playbackStatus,
+          PracticeRecordPlaybackStatus.playing,
+          reason: 'real-device `ready + playing` event must confirm `playing` '
+              'without clobbering the optimistic publish');
+    });
+
+    test(
+        'T037C-B: a second `resumePlayback` while the first is in flight '
+        'does NOT call gateway.play a second time (synchronous '
+        '_isResuming guard)', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final Completer<void> playGate = Completer<void>();
+      setup.gateway.playFutureCompleter = playGate;
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.pausePlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.paused,
+      );
+      final int playCountBefore = setup.gateway.playCallCount;
+      // Fire three concurrent resume calls. The
+      // _isResuming guard MUST short-circuit the
+      // second and third; the state-machine guard
+      // (paused → playing) MUST short-circuit the
+      // third because the optimistic publish from
+      // the first call has already flipped us to
+      // `playing`. Only the first call reaches the
+      // gateway.
+      // ignore: unawaited_futures
+      controller.resumePlayback();
+      // ignore: unawaited_futures
+      controller.resumePlayback();
+      // ignore: unawaited_futures
+      controller.resumePlayback();
+      await pumpEvents();
+      expect(setup.gateway.playCallCount, playCountBefore + 1,
+          reason: 'three concurrent resumePlayback calls must drive '
+              'gateway.play exactly once — the _isResuming + state guards '
+              'block the duplicates');
+      final AsyncValue<PracticeRecordDetailState> v =
+          container.read(practiceRecordDetailControllerProvider('r-1'));
+      expect(
+          v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.playing);
+      // Clean up the play gate so the test exits cleanly.
+      setup.gateway.emitReadyPlaying();
+      playGate.complete();
+      await pumpEvents();
+    });
+
+    test(
+        'T037C-C: a stale `ready + not playing` event from before the '
+        'optimistic resume publish does NOT clobber `playing` '
+        '(stale-event defence)', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final Completer<void> playGate = Completer<void>();
+      setup.gateway.playFutureCompleter = playGate;
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.pausePlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.paused,
+      );
+      // Simulate the real-device microtask ordering:
+      // the user taps resume; a stale
+      // `ready + not playing` event that was queued on
+      // the broadcast stream BEFORE the resume call
+      // arrives at the controller AFTER the optimistic
+      // publish has landed.
+      await controller.resumePlayback();
+      expect(
+          container
+              .read(practiceRecordDetailControllerProvider('r-1'))
+              .requireValue
+              .playbackStatus,
+          PracticeRecordPlaybackStatus.playing);
+      // Now emit the stale `ready + not playing` event.
+      // The controller's `_lastEmittedPlaybackStatus`
+      // mirror says `playing` (the optimistic publish),
+      // so the event MUST be dropped — the UI MUST
+      // NOT bounce back to `paused`.
+      setup.gateway.emitReadyPaused();
+      await pumpEvents();
+      expect(
+          container
+              .read(practiceRecordDetailControllerProvider('r-1'))
+              .requireValue
+              .playbackStatus,
+          PracticeRecordPlaybackStatus.playing,
+          reason: 'a stale `ready + not playing` event must NOT clobber the '
+              'optimistic `playing` publish — this is the inverse of the '
+              'original real-device bug');
+      // The genuine `ready + playing` event that
+      // follows is also handled (state is already
+      // `playing`, so the handler is a no-op).
+      setup.gateway.emitReadyPlaying();
+      playGate.complete();
+      await pumpEvents();
+      expect(
+          container
+              .read(practiceRecordDetailControllerProvider('r-1'))
+              .requireValue
+              .playbackStatus,
+          PracticeRecordPlaybackStatus.playing);
+    });
+
+    test(
+        'T037C-D: a sync-time resume failure surfaces `error` and the '
+        'playbackErrorMessage is the safe Chinese copy', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.pausePlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.paused,
+      );
+      // Inject a synchronous play() failure on the
+      // NEXT play() call. The fire-and-forget
+      // resume's onError callback MUST drive the
+      // controller to `error` with the safe copy.
+      setup.gateway.nextPlayException = Exception('synthetic resume failure');
+      await controller.resumePlayback();
+      await pumpEvents();
+      final AsyncValue<PracticeRecordDetailState> v =
+          container.read(practiceRecordDetailControllerProvider('r-1'));
+      expect(v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.error);
+      final String? msg = v.requireValue.playbackErrorMessage;
+      expect(msg, isNotNull);
+      expect(msg, '播放操作失败，请重试');
+      // PII / exception-class-name / path-leak guard.
+      expect(msg, isNot(contains('synthetic')));
+      expect(msg, isNot(contains('Exception')));
+      expect(msg, isNot(contains(audioPath)));
+      expect(msg, isNot(contains('.m4a')));
+    });
+
+    test(
+        'T037C-E: natural `completed` still flips `playing` / `paused` '
+        'back to `idle` (T035 contract preserved)', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final Completer<void> playGate = Completer<void>();
+      setup.gateway.playFutureCompleter = playGate;
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.pausePlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.paused,
+      );
+      await controller.resumePlayback();
+      // Real-device event sequence:
+      //   1. `ready + playing` (synchronous after play)
+      //   2. `completed` (natural end-of-stream)
+      // The controller MUST end at `idle`.
+      setup.gateway.emitReadyPlaying();
+      playGate.complete();
+      await pumpEvents();
+      setup.gateway.emitPlayerState(
+        const PlaybackPlayerState(
+          playing: false,
+          processingState: PlaybackProcessingState.completed,
+        ),
+      );
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.idle,
+      );
+      // Assertion: the natural-completion handler
+      // fired (T035 contract preserved through the
+      // T037C fire-and-forget + ready+playing path).
+    });
+
+    test(
+        'T037C-F: T035B cross-session isolation is preserved after '
+        'pause → resume (B\'s own `ready + playing` is processed by B)',
+        () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final Completer<void> playGateA = Completer<void>();
+      setup.gateway.playFutureCompleter = playGateA;
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      // Session A: play, pause, resume, stop.
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.pausePlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.paused,
+      );
+      await controller.resumePlayback();
+      setup.gateway.emitReadyPlaying();
+      playGateA.complete();
+      await pumpEvents();
+      await controller.stopPlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.idle,
+      );
+      // Install a fresh play gate for session B.
+      setup.gateway.playFutureCompleter = Completer<void>();
+      // Session B: play, pause, resume, drive the
+      // canonical `ready + playing` event. The B
+      // session's listener (cancel-and-rebuild via
+      // T035B `_ensurePlaybackSubscription`) MUST
+      // receive B's events and publish `playing`.
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.pausePlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.paused,
+      );
+      await controller.resumePlayback();
+      setup.gateway.emitReadyPlaying();
+      setup.gateway.releasePlayFutureCompleter();
+      await pumpEvents();
+      final AsyncValue<PracticeRecordDetailState> v =
+          container.read(practiceRecordDetailControllerProvider('r-1'));
+      expect(
+          v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.playing,
+          reason: 'B\'s own `ready + playing` event after pause → resume must '
+              'be processed by B\'s listener (T035B cancel-and-rebuild + '
+              'T037C event-routing preserved together)');
+    });
+
+    test(
+        'T037C-G: three rapid `resumePlayback` calls from `paused` '
+        'drive exactly one gateway.play (state guard catches the third)',
+        () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final Completer<void> playGate = Completer<void>();
+      setup.gateway.playFutureCompleter = playGate;
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.pausePlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.paused,
+      );
+      final int playCountBefore = setup.gateway.playCallCount;
+      // Three rapid fire-and-forget calls.
+      // ignore: unawaited_futures
+      controller.resumePlayback();
+      // Yield enough microtasks that the first
+      // optimistic publish has propagated before the
+      // second call's state-guard check runs.
+      await Future<void>.delayed(Duration.zero);
+      // ignore: unawaited_futures
+      controller.resumePlayback();
+      // ignore: unawaited_futures
+      controller.resumePlayback();
+      await pumpEvents();
+      expect(setup.gateway.playCallCount, playCountBefore + 1,
+          reason: 'three rapid resume calls must drive gateway.play exactly '
+              'once — the optimistic publish flips state to `playing` '
+              'and the second/third calls hit the state guard');
+      // Clean up the play gate.
+      setup.gateway.emitReadyPlaying();
+      playGate.complete();
+      await pumpEvents();
+    });
+
+    test(
+        'T037C-H: resumePlayback from `idle` is a no-op '
+        '(no gateway.play call)', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      // Precondition: no playRecordedAudio call →
+      // state is `idle`.
+      final AsyncValue<PracticeRecordDetailState> before =
+          container.read(practiceRecordDetailControllerProvider('r-1'));
+      expect(before.requireValue.playbackStatus,
+          PracticeRecordPlaybackStatus.idle);
+      final int playCountBefore = setup.gateway.playCallCount;
+      await controller.resumePlayback();
+      await pumpEvents();
+      expect(setup.gateway.playCallCount, playCountBefore,
+          reason: 'resume from `idle` must not reach the gateway');
+      final AsyncValue<PracticeRecordDetailState> after =
+          container.read(practiceRecordDetailControllerProvider('r-1'));
+      expect(
+          after.requireValue.playbackStatus, PracticeRecordPlaybackStatus.idle,
+          reason: 'resume from `idle` must leave the state at `idle`');
+    });
+
+    test(
+        'T037C-I: resumePlayback from `error` is a no-op '
+        '(no gateway.play call)', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      setup.gateway.nextLoadException = Exception('synthetic');
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      // Drive a load failure so the controller flips to
+      // `error`.
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.error,
+      );
+      final int playCountBefore = setup.gateway.playCallCount;
+      await controller.resumePlayback();
+      await pumpEvents();
+      expect(setup.gateway.playCallCount, playCountBefore,
+          reason: 'resume from `error` must not reach the gateway');
+      final AsyncValue<PracticeRecordDetailState> after =
+          container.read(practiceRecordDetailControllerProvider('r-1'));
+      expect(
+          after.requireValue.playbackStatus, PracticeRecordPlaybackStatus.error,
+          reason: 'resume from `error` must leave the state at `error`');
+    });
+
+    test(
+        'T037C-J: page-exit after resume drives service.stop exactly '
+        'once (T037A page-exit stop + T037C resume play well together)',
+        () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final Completer<void> playGate = Completer<void>();
+      setup.gateway.playFutureCompleter = playGate;
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.pausePlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.paused,
+      );
+      await controller.resumePlayback();
+      setup.gateway.emitReadyPlaying();
+      playGate.complete();
+      await pumpEvents();
+      // Page exit: T037A path.
+      final int stopCountBefore = setup.gateway.stopCallCount;
+      final PageExitStopResult result =
+          await controller.requestStopForPageExit();
+      expect(result, isA<PageExitStopSuccess>());
+      expect(setup.gateway.stopCallCount, stopCountBefore + 1,
+          reason: 'page-exit stop after a successful resume must drive '
+              'service.stop exactly once (T037A + T037C together)');
+      final AsyncValue<PracticeRecordDetailState> v =
+          container.read(practiceRecordDetailControllerProvider('r-1'));
+      expect(v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.idle);
+    });
+
+    test(
+        'T037C-K: resumePlayback is fire-and-forget — the call returns '
+        'without awaiting the play Future, and the state is already '
+        '`playing` when the call resolves', () async {
+      final _PlaybackSetup setup = await isolatedPlayback();
+      final String audioPath =
+          await plantIsolatedAudioFile(setup.storage, 'r.m4a');
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+      final Completer<void> playGate = Completer<void>();
+      setup.gateway.playFutureCompleter = playGate;
+      final ProviderContainer container = _container(
+        repository: repo,
+        storage: setup.storage,
+        playbackService: setup.service,
+      );
+      addTearDown(container.dispose);
+      await _awaitData(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+      );
+      final PracticeRecordDetailController controller = container.read(
+        practiceRecordDetailControllerProvider('r-1').notifier,
+      );
+      await controller.playRecordedAudio();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.playing,
+      );
+      await controller.pausePlayback();
+      await awaitPlayback(
+        container,
+        practiceRecordDetailControllerProvider('r-1'),
+        PracticeRecordPlaybackStatus.paused,
+      );
+      // The playGate is open. resumePlayback MUST
+      // return without awaiting it.
+      final DateTime t0 = DateTime.now();
+      await controller.resumePlayback();
+      final Duration elapsed = DateTime.now().difference(t0);
+      expect(playGate.isCompleted, isFalse,
+          reason: 'the play gate must still be open — the controller did not '
+              'await the play Future');
+      // The call should resolve in a small number of
+      // microtask cycles. We allow a generous bound
+      // (50 ms) to absorb CI scheduling jitter; the
+      // pre-fix implementation would have hung for
+      // the full timeout because `await playback.
+      // resume()` blocked on the play Future.
+      expect(elapsed.inMilliseconds, lessThan(200),
+          reason: 'resumePlayback must return quickly because the play Future '
+              'is fire-and-forget; the pre-fix implementation blocked for '
+              'the full await on real devices');
+      // State is already `playing` (optimistic publish).
+      final AsyncValue<PracticeRecordDetailState> v =
+          container.read(practiceRecordDetailControllerProvider('r-1'));
+      expect(
+          v.requireValue.playbackStatus, PracticeRecordPlaybackStatus.playing);
+      // Clean up the play gate.
+      setup.gateway.emitReadyPlaying();
+      playGate.complete();
+      await pumpEvents();
+    });
+  });
 }

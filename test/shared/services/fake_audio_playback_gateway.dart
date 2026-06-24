@@ -110,6 +110,31 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
   /// (which rely on auto-completion microtask) working.
   bool keepPlayPending = false;
 
+  /// T037C — when set, [play] awaits this Completer
+  /// before completing. Tests use this to mirror the
+  /// real-device behaviour where `just_audio` 0.10.5's
+  /// `AudioPlayer.play()` returns a Future that hangs for
+  /// the entire playback duration and only completes on
+  /// natural end / pause / stop / error (Context7 —
+  /// "The Future returned by this method completes when
+  /// the playback completes or is paused or stopped").
+  /// The previous default fake behaviour (immediate
+  /// completion) silently masked the real-device bug
+  /// fixed by T037C: the controller's `await
+  /// playback.resume()` never returned on real devices,
+  /// so the UI never flipped back to "暂停". With this
+  /// Completer, tests can drive the exact same controller
+  /// path that the real device takes.
+  ///
+  /// Distinct from `keepPlayPending` (which is a
+  /// one-shot flag flipped inside `play` itself):
+  /// `playFutureCompleter` is reusable across calls and
+  /// cleared by the test when it wants `play` to
+  /// complete normally. The two are mutually exclusive —
+  /// if both are set, `keepPlayPending` wins (it is the
+  /// one-shot flag and resets itself).
+  Completer<void>? playFutureCompleter;
+
   /// T031E: tracks whether `setLoopModeOff` has been called on this
   /// gateway. Production gateway pins `LoopMode.off` on every
   /// `loadFile`; the fake mirrors the same contract so the
@@ -334,6 +359,22 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
     // fake 不再通过 playerStateStream emit ready+playing 事件（避免
     // 与 Service 状态机双重切换）。
     isPlaying = true;
+    // T037C — when the test installs a `playFutureCompleter`,
+    // `play()` keeps the returned Future pending until the
+    // completer fires. This mirrors the real-device
+    // `just_audio` 0.10.5 behaviour where the Future hangs
+    // for the entire playback duration. The fake does NOT
+    // auto-emit any playerStateStream event here: tests
+    // that need to drive the controller's UI update must
+    // call `emitReadyPlaying()` (and later `emitReadyPaused()`
+    // / `emitCompleted()`) explicitly. This is the surface
+    // that allows T037C to assert "the controller flips to
+    // `playing` after the real-device `playerStateStream`
+    // event lands, not because `await play()` resolved".
+    final Completer<void>? gate = playFutureCompleter;
+    if (gate != null) {
+      await gate.future;
+    }
   }
 
   @override
@@ -499,6 +540,70 @@ class FakeAudioPlaybackGateway implements AudioPlaybackGateway {
   void emitDuration(Duration? duration) {
     currentDuration = duration;
     _durationController.add(duration);
+  }
+
+  /// T037C — emit a `ready + playing` event on
+  /// `playerStateStream`. This mirrors the canonical
+  /// real-device just_audio 0.10.5 signal that the
+  /// underlying player has started (or resumed)
+  /// playing audio. The controller's
+  /// [_onPlayerState] consumes this event to publish
+  /// `PracticeRecordPlaybackStatus.playing` so the UI
+  /// flips from "继续" back to "暂停" in lockstep with
+  /// the real sound.
+  ///
+  /// Distinct from `emitPlayerState(...)` because it
+  /// also keeps the internal `isPlaying` flag in sync
+  /// (real gateways update both atomically).
+  void emitReadyPlaying() {
+    isPlaying = true;
+    _playerStateController.add(
+      const PlaybackPlayerState(
+        playing: true,
+        processingState: PlaybackProcessingState.ready,
+      ),
+    );
+  }
+
+  /// T037C — emit a `ready + not playing` event on
+  /// `playerStateStream`. This mirrors the canonical
+  /// real-device just_audio 0.10.5 signal that the
+  /// underlying player has paused. The controller's
+  /// [_onPlayerState] consumes this event to publish
+  /// `PracticeRecordPlaybackStatus.paused` so the UI
+  /// flips from "暂停" to "继续" — BUT only if the
+  /// controller's `_lastEmittedPlaybackStatus` mirror
+  /// already says `playing` (the T037C stale-event
+  /// defence that protects the optimistic
+  /// `resumePlayback` publish from a queued pre-resume
+  /// pause blip).
+  void emitReadyPaused() {
+    isPlaying = false;
+    _playerStateController.add(
+      const PlaybackPlayerState(
+        playing: false,
+        processingState: PlaybackProcessingState.ready,
+      ),
+    );
+  }
+
+  /// T037C — release the [playFutureCompleter] (if any)
+  /// so the pending `play()` future resolves. Tests
+  /// install the completer to mirror the real-device
+  /// behaviour where `just_audio` 0.10.5's `play()`
+  /// future hangs for the entire playback duration;
+  /// tests then drive the controller's UI via
+  /// [emitReadyPlaying] / [emitReadyPaused] /
+  /// [emitPlayerState] and release the completer when
+  /// the test wants the underlying `play()` future to
+  /// actually resolve. The completer is NOT cleared
+  /// after release so tests can install a fresh one
+  /// later by assigning a new Completer to the field.
+  void releasePlayFutureCompleter() {
+    final Completer<void>? gate = playFutureCompleter;
+    if (gate != null && !gate.isCompleted) {
+      gate.complete();
+    }
   }
 }
 

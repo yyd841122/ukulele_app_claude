@@ -2461,6 +2461,602 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
+  // T037C — detail-page "pause → resume" UI/state sync
+  //
+  // Real-device reproduction: the user plays a saved take,
+  // pauses, taps "继续", and the real sound resumes — but the
+  // UI button stays on "继续" and a second tap surfaces the
+  // misleading "播放操作失败，请重试" error. The T037C fix
+  // makes resume fire-and-forget (no `await playback.resume`)
+  // and consumes the `ready + playing` / `ready + not playing`
+  // events on `playerStateStream` so the UI flips back to
+  // "暂停" in lockstep with the real sound.
+  //
+  // The 7 widget tests in this group pin the user-visible
+  // behaviour end-to-end:
+  //   * Pause → "继续" button is visible;
+  //   * Tap "继续" → button immediately flips back to
+  //     "暂停" without a second-tap failure;
+  //   * No "播放操作失败，请重试" appears;
+  //   * Sound + UI are in lockstep (fake.playCallCount ==
+  //     N → state == playing);
+  //   * Pause → resume → stop is a clean full lifecycle;
+  //   * Resume → natural completion still flips to "播放";
+  //   * Resume is fire-and-forget (the tap returns quickly
+  //     even with the play Future gated).
+  // ---------------------------------------------------------------------------
+
+  group('T037C detail-page resume UI sync', () {
+    /// Bundles the T037C test setup: an isolated
+    /// playback service + a real audio file path
+    /// inside the service's storage root, identical to
+    /// the T037A helper. Renamed for clarity.
+    ({
+      RealAudioPlaybackService service,
+      FakeAudioPlaybackGateway gateway,
+      AudioFileStorageService storage,
+      String audioPath,
+    }) setupT037C() {
+      final Directory root = Directory.systemTemp.createTempSync(
+        't037c_widget_',
+      );
+      addTearDown(() {
+        if (root.existsSync()) {
+          try {
+            root.deleteSync(recursive: true);
+          } on FileSystemException {
+            // best-effort
+          }
+        }
+      });
+      final AudioFileStorageService storage = AudioFileStorageService(
+        rootDirectoryProvider: () async => root,
+      );
+      final FakeAudioPlaybackGateway gateway = FakeAudioPlaybackGateway();
+      final RealAudioPlaybackService service = RealAudioPlaybackService(
+        gateway: gateway,
+        storage: storage,
+      );
+      final Directory saved = Directory(p.join(root.path, 'saved'))
+        ..createSync(recursive: true);
+      final File audio = File(p.join(saved.path, 'r.m4a'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('bytes');
+      final String audioPath = audio.path;
+      return (
+        service: service,
+        gateway: gateway,
+        storage: storage,
+        audioPath: audioPath,
+      );
+    }
+
+    /// Self-contained widget pump (mirrors the T037A
+    /// `pumpT037A` pattern) so the T037C tests do
+    /// not depend on the `PracticeRecordDetailPage`
+    /// group's inner `pumpDetailPage` / `settleGetById`
+    /// helpers.
+    Future<void> pumpT037C(
+      WidgetTester tester, {
+      required _FakePracticeRecordRepository repository,
+      required AudioFileStorageService storage,
+      required RealAudioPlaybackService playbackService,
+      String id = 'r-1',
+    }) async {
+      final GoRouter router = GoRouter(
+        initialLocation: '/records/$id',
+        routes: <RouteBase>[
+          GoRoute(
+            path: '/records',
+            name: 'records',
+            builder: (BuildContext context, GoRouterState state) =>
+                const _RecordsSentinelPage(),
+            routes: <RouteBase>[
+              GoRoute(
+                path: ':recordId',
+                name: 'record-detail',
+                builder: (BuildContext context, GoRouterState state) =>
+                    PracticeRecordDetailPage(
+                  recordId: state.pathParameters['recordId'] ?? '',
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: <Override>[
+            practiceRecordRepositoryProvider.overrideWithValue(repository),
+            audioFileStorageServiceProvider.overrideWithValue(storage),
+            realAudioPlaybackServiceProvider.overrideWithValue(playbackService),
+          ],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+      // Drive the initial getById through the real
+      // async clock so the page can transition out of
+      // the loading state.
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pump();
+    }
+
+    Future<void> pumpAndSettleWithRealAsyncT037C(
+      WidgetTester tester, {
+      Duration settle = const Duration(milliseconds: 200),
+    }) async {
+      await tester.runAsync(() async {
+        await Future<void>.delayed(settle);
+      });
+      await tester.pump();
+    }
+
+    testWidgets(
+        'T037C-W1: tap pause → "继续" button appears; tap 继续 → '
+        'button immediately flips back to "暂停" without a second-tap '
+        'failure (the real-device happy path)', (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) = setupT037C();
+      // Gate the play Future so the controller MUST
+      // rely on the optimistic publish + the
+      // `ready + playing` event (the real-device
+      // behaviour).
+      gateway.playFutureCompleter = Completer<void>();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpT037C(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+
+      // Tap play → controller reaches `playing`.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+
+      // Tap pause → "继续" button appears.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-pause-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-resume-button')),
+        findsOneWidget,
+        reason: 'after pause, the resume button must be visible',
+      );
+
+      final int playCountBeforeResume = gateway.playCallCount;
+
+      // Tap "继续" (resume). The controller MUST
+      // publish `playing` immediately (the optimistic
+      // publish) and the button MUST flip back to
+      // "暂停" in the same frame. We do NOT need to
+      // emit `ready + playing` for the UI to flip —
+      // the optimistic publish is the user-visible
+      // fix.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-resume-button')));
+      await tester.pump();
+
+      // The pause button is now visible (state ==
+      // playing).
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-pause-button')),
+        findsOneWidget,
+        reason: 'T037C: resume must immediately flip the UI from "继续" to '
+            '"暂停" via the optimistic publish',
+      );
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-resume-button')),
+        findsNothing,
+        reason: 'T037C: the resume button must be gone after the user tapped '
+            'it (state is `playing` not `paused`)',
+      );
+      // gateway.play was called exactly once for the
+      // resume (the fire-and-forget resume).
+      expect(gateway.playCallCount, playCountBeforeResume + 1,
+          reason: 'exactly one gateway.play call must be driven by the resume');
+      // The play Future is still pending — the
+      // controller did not await it.
+      expect(gateway.playFutureCompleter!.isCompleted, isFalse,
+          reason: 'the play gate must still be open (T037C fire-and-forget)');
+      // No "播放操作失败，请重试" SnackBar / error
+      // message rendered anywhere on the page.
+      expect(find.textContaining('播放操作失败'), findsNothing,
+          reason: 'no error message must appear after a successful resume');
+      // Clean up the play gate.
+      gateway.emitReadyPlaying();
+      gateway.releasePlayFutureCompleter();
+      await pumpAndSettleWithRealAsyncT037C(tester);
+    });
+
+    testWidgets(
+        'T037C-W2: a rapid second tap on the original "继续" location '
+        'after the UI has flipped to "暂停" does NOT drive a second '
+        'gateway.play call (the button is now "暂停")',
+        (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) = setupT037C();
+      gateway.playFutureCompleter = Completer<void>();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpT037C(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+
+      // Play, then pause.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-pause-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+
+      // Tap resume — the button position now hosts the
+      // "暂停" button.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-resume-button')));
+      await tester.pump();
+      final int playCountAfterFirstResume = gateway.playCallCount;
+
+      // The same row now shows the pause button.
+      // Tapping it (the new "暂停" button at the
+      // original "继续" location) drives a pause, NOT
+      // a second resume. The duplicate-resume bug is
+      // structurally impossible: the button is no
+      // longer "继续" so the user cannot tap it.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-pause-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+
+      // gateway.play was NOT called a second time.
+      expect(gateway.playCallCount, playCountAfterFirstResume,
+          reason: 'no second resume must reach the gateway after the first '
+              'one already flipped the UI to "暂停"');
+      // The UI now shows the resume button again
+      // (we paused).
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-resume-button')),
+        findsOneWidget,
+        reason: 'after the second tap (which paused the new playback), the '
+            'resume button is visible again — this is the natural '
+            'pause/resume round-trip',
+      );
+      // No error.
+      expect(find.textContaining('播放操作失败'), findsNothing);
+      // Clean up.
+      gateway.emitReadyPlaying();
+      gateway.releasePlayFutureCompleter();
+      await pumpAndSettleWithRealAsyncT037C(tester);
+    });
+
+    testWidgets(
+        'T037C-W3: a resume followed by a natural `completed` event '
+        'restores the page to the "播放" affordance (T035 natural-'
+        'completion contract preserved through the T037C resume path)',
+        (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) = setupT037C();
+      gateway.playFutureCompleter = Completer<void>();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpT037C(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+
+      // Play, pause, resume.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-pause-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-resume-button')));
+      await tester.pump();
+      // Drive the real-device event sequence:
+      // `ready + playing` then natural `completed`.
+      gateway.emitReadyPlaying();
+      gateway.releasePlayFutureCompleter();
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      // The pause button is still visible (state ==
+      // playing).
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-pause-button')),
+        findsOneWidget,
+      );
+      // Natural completion.
+      gateway.emitPlayerState(
+        const PlaybackPlayerState(
+          playing: false,
+          processingState: PlaybackProcessingState.completed,
+        ),
+      );
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      // The page is back to the "播放录音" affordance
+      // (status == idle).
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-play-button')),
+        findsOneWidget,
+      );
+      expect(find.text('准备播放'), findsOneWidget);
+    });
+
+    testWidgets(
+        'T037C-W4: pause → resume → stop is a clean full lifecycle '
+        '(buttons swap correctly: pause / 继续 / pause / stop)',
+        (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) = setupT037C();
+      gateway.playFutureCompleter = Completer<void>();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpT037C(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+
+      // 1. Tap play.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-pause-button')),
+        findsOneWidget,
+        reason: 'after play, the pause button must be visible',
+      );
+
+      // 2. Tap pause.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-pause-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-resume-button')),
+        findsOneWidget,
+        reason: 'after pause, the resume button must be visible',
+      );
+
+      // 3. Tap resume.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-resume-button')));
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-pause-button')),
+        findsOneWidget,
+        reason: 'T037C: after resume, the pause button must be visible again',
+      );
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-resume-button')),
+        findsNothing,
+      );
+
+      // 4. Tap stop.
+      final int stopCountBefore = gateway.stopCallCount;
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-stop-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      expect(gateway.stopCallCount, stopCountBefore + 1);
+      // Page is back to the "播放" affordance (status
+      // == idle).
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-play-button')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-pause-button')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-resume-button')),
+        findsNothing,
+      );
+      // Clean up the play gate.
+      gateway.emitReadyPlaying();
+      gateway.releasePlayFutureCompleter();
+      await pumpAndSettleWithRealAsyncT037C(tester);
+    });
+
+    testWidgets(
+        'T037C-W5: a stale `ready + not playing` event from before the '
+        'optimistic resume publish does NOT bounce the UI back to '
+        '"继续" (stale-event defence visible at the widget level)',
+        (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) = setupT037C();
+      gateway.playFutureCompleter = Completer<void>();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpT037C(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+      // Play, pause.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-pause-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+
+      // Tap resume.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-resume-button')));
+      await tester.pump();
+      // Button is "暂停" now.
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-pause-button')),
+        findsOneWidget,
+      );
+
+      // Now emit a stale `ready + not playing` event
+      // (a pre-resume pause blip that arrived on the
+      // broadcast stream after the user tapped
+      // resume). The widget MUST stay on "暂停" — the
+      // inverse of the original real-device bug.
+      gateway.emitReadyPaused();
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-pause-button')),
+        findsOneWidget,
+        reason: 'a stale `ready + not playing` event must NOT clobber the '
+            'optimistic `playing` publish — the UI must stay on "暂停"',
+      );
+      // Clean up.
+      gateway.emitReadyPlaying();
+      gateway.releasePlayFutureCompleter();
+      await pumpAndSettleWithRealAsyncT037C(tester);
+    });
+
+    testWidgets(
+        'T037C-W6: gateway.playCallCount is in lockstep with the UI '
+        'state (one play per active session — pause does not call play, '
+        'resume calls play exactly once)', (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) = setupT037C();
+      gateway.playFutureCompleter = Completer<void>();
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpT037C(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+
+      // Precondition: no plays.
+      expect(gateway.playCallCount, 0);
+      // Tap play → exactly one play call.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      expect(gateway.playCallCount, 1);
+      // Tap pause → no additional play call.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-pause-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      expect(gateway.playCallCount, 1,
+          reason: 'pause must not drive an additional gateway.play call');
+      // Tap resume → exactly one more play call.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-resume-button')));
+      await tester.pump();
+      expect(gateway.playCallCount, 2,
+          reason: 'resume must drive exactly one additional gateway.play call');
+      // A rapid second tap on the "暂停" button now
+      // would pause (not resume), so playCallCount
+      // stays at 2.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-pause-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      expect(gateway.playCallCount, 2);
+      // Clean up.
+      gateway.emitReadyPlaying();
+      gateway.releasePlayFutureCompleter();
+      await pumpAndSettleWithRealAsyncT037C(tester);
+    });
+
+    testWidgets(
+        'T037C-W7: the resume tap returns quickly even when the play '
+        'Future is gated (fire-and-forget; the controller does not '
+        'block the UI on the gateway play Future)',
+        (WidgetTester tester) async {
+      final (:service, :gateway, :storage, :audioPath) = setupT037C();
+      final Completer<void> playGate = Completer<void>();
+      gateway.playFutureCompleter = playGate;
+      final _FakePracticeRecordRepository repo =
+          _FakePracticeRecordRepository(seed: <String, PracticeRecord>{
+        'r-1': _record(id: 'r-1', audioFilePath: audioPath),
+      });
+      addTearDown(repo.close);
+
+      await pumpT037C(
+        tester,
+        repository: repo,
+        storage: storage,
+        playbackService: service,
+      );
+      // Play, pause.
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-play-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-pause-button')));
+      await pumpAndSettleWithRealAsyncT037C(tester);
+      // The play gate from the first play is still
+      // open (we haven't completed it). The resume
+      // tap MUST still complete quickly because the
+      // controller is fire-and-forget.
+      final DateTime t0 = DateTime.now();
+      await tester.tap(find.byKey(const ValueKey<String>(
+          'practice-record-detail-playback-resume-button')));
+      await tester.pump();
+      final Duration elapsed = DateTime.now().difference(t0);
+      expect(elapsed.inMilliseconds, lessThan(500),
+          reason: 'the resume tap must return quickly — the controller does '
+              'not block on the gated play Future');
+      // The button flipped to "暂停" — the optimistic
+      // publish landed synchronously.
+      expect(
+        find.byKey(const ValueKey<String>(
+            'practice-record-detail-playback-pause-button')),
+        findsOneWidget,
+      );
+      // Clean up.
+      gateway.emitReadyPlaying();
+      playGate.complete();
+      await pumpAndSettleWithRealAsyncT037C(tester);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // T035 — real-audio playback section (page-level)
   //
   // The T035 group exercises the [_PlaybackSection] widget:

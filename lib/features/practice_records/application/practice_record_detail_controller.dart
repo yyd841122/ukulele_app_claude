@@ -586,6 +586,41 @@ class PracticeRecordDetailController
   /// pattern.
   bool _isStartingPlayback = false;
 
+  /// T037C — synchronous guard against concurrent resume
+  /// attempts. Prevents a second `resumePlayback` call from
+  /// racing past the `playbackStatus == paused` check before
+  /// the optimistic `playing` publish has propagated to the
+  /// UI. Mirrors the `_isStartingPlayback` pattern. This is
+  /// the duplication-prevention layer on the controller side:
+  /// the user-visible "继续" button must NOT trigger a second
+  /// `playback.resume()` call after the first click has flipped
+  /// the state to `playing` (the real-device bug the user
+  /// reported: first tap stays on "继续" because the
+  /// `await playback.resume()` future never completes on a
+  /// real device, and the second tap then drives a second
+  /// `playback.resume()` against a service that is already in
+  /// `playing` state, raising `InvalidPlaybackStateException`
+  /// and surfacing the misleading "播放操作失败，请重试" error).
+  bool _isResuming = false;
+
+  /// T037C — last playback status that the controller actively
+  /// published (NOT read from `state.value`). This mirror is
+  /// the stale-event guard for [_onPlayerState]: a stream event
+  /// is only allowed to overwrite the published status if it is
+  /// semantically compatible with the last active publish. This
+  /// prevents a `ready + not playing` event that arrived BEFORE
+  /// the controller flipped to `playing` from clobbering the
+  /// freshly-published `playing` state (the inverse-bug of the
+  /// original report: clicking resume used to never reach
+  /// `playing`; now we must not let stale `paused` events
+  /// bounce us back).
+  ///
+  /// Updated inside [_publish] (every active publish path) and
+  /// reset to `idle` at the top of [build]. Never read inside
+  /// `onDispose` (Riverpod 3.x lifecycle guard).
+  PracticeRecordPlaybackStatus _lastEmittedPlaybackStatus =
+      PracticeRecordPlaybackStatus.idle;
+
   /// T035 — re-entrancy guard for the natural-completion handler.
   /// `just_audio` may emit `processingState == completed` more
   /// than once in a session; the second event must be a no-op
@@ -648,8 +683,15 @@ class PracticeRecordDetailController
   /// "Ref cannot be used in life-cycle" assertion blocks
   /// `state.value` reads inside `onDispose`, so this
   /// pre-publish mirror is the only safe path.
+  ///
+  /// T037C — the same chokepoint also keeps the
+  /// [_lastEmittedPlaybackStatus] mirror in sync. This mirror
+  /// is consumed exclusively by [_onPlayerState] to decide
+  /// whether an incoming stream event is allowed to overwrite
+  /// the currently published status (stale-event defence).
   void _publish(PracticeRecordDetailState newState) {
     _lastPublishedPlaybackStatus = newState.playbackStatus;
+    _lastEmittedPlaybackStatus = newState.playbackStatus;
     state = AsyncData<PracticeRecordDetailState>(newState);
   }
 
@@ -685,6 +727,7 @@ class PracticeRecordDetailController
     // carry over.
     _isDeleting = false;
     _isStartingPlayback = false;
+    _isResuming = false;
     _handlingNaturalCompletion = false;
     _disposed = false;
     // T035A — reset the playback-status mirror so the
@@ -692,6 +735,10 @@ class PracticeRecordDetailController
     // lifetime (a previous lifetime's mirror must not
     // leak across invalidations).
     _lastPublishedPlaybackStatus = PracticeRecordPlaybackStatus.idle;
+    // T037C — reset the active-emit mirror so a stale
+    // stream event from a previous lifetime cannot
+    // poison the new lifetime's stale-event guard.
+    _lastEmittedPlaybackStatus = PracticeRecordPlaybackStatus.idle;
     await _playbackStateSubscription?.cancel();
     _playbackStateSubscription = null;
     // T035A — invalidate the cached playback service
@@ -1247,11 +1294,65 @@ class PracticeRecordDetailController
   }
 
   /// Resumes a paused session. No-op unless the current state
-  /// is [PracticeRecordPlaybackStatus.paused]. Internally
-  /// delegates to [RealAudioPlaybackService.resume] which is
-  /// semantically equivalent to `play` from the `paused` state.
+  /// is [PracticeRecordPlaybackStatus.paused].
+  ///
+  /// T037C — fire-and-forget `playback.resume()` + optimistic
+  /// `playing` publish + dual-layer duplicate-prevention guard.
+  ///
+  /// Real-device reproduction (T037C root cause):
+  /// - `RealAudioPlaybackService.resume()` internally awaits
+  ///   `play()` which awaits the gateway's `play()`. On a
+  ///   real `just_audio` 0.10.5 device the `play()` Future
+  ///   hangs for the entire playback duration and only
+  ///   completes on natural end / pause / stop / error
+  ///   (Context7 — see `audio_playback_gateway.dart` docstring).
+  /// - The previous implementation `await playback.resume()`
+  ///   therefore never returned on real devices: the controller
+  ///   never published `playing`; the UI stayed on "继续" with
+  ///   the real sound already audible.
+  /// - A second tap on "继续" then raced the same code path:
+  ///   state was still `paused` so the guard passed, and the
+  ///   second `await playback.resume()` raised
+  ///   `InvalidPlaybackStateException` from the service
+  ///   (which is already in `playing`), surfacing the
+  ///   misleading "播放操作失败，请重试" error.
+  ///
+  /// Fix (T037C):
+  /// 1. Do NOT await the play Future. The service's `play()`
+  ///    is observed to transition `_state` to `playing`
+  ///    synchronously (line 262 in `real_audio_playback_service.dart`),
+  ///    so the gateway's "playing" event will arrive shortly
+  ///    on `playerStateStream` regardless of whether we await.
+  /// 2. Optimistically publish `playing` immediately after
+  ///    firing the unawaited resume call, so the UI flips
+  ///    from "继续" back to "暂停" in the same frame as the
+  ///    user's tap.
+  /// 3. Listen for the gateway's `ready + playing` event on
+  ///    `playerStateStream` and use it as defence-in-depth
+  ///    (handled in [_onPlayerState]). The optimistic publish
+  ///    is the primary signal; the stream event is the
+  ///    canonical truth from the underlying player.
+  /// 4. The `_isResuming` flag is a synchronous duplicate
+  ///    guard so a second tap that lands BEFORE the optimistic
+  ///    publish has propagated to `state.value` cannot drive
+  ///    a second `playback.resume()` call.
+  /// 5. Errors from the unawaited resume future are surfaced
+  ///    via the `onError` callback exactly like the unawaited
+  ///    `playRecordedAudio` future (T035 contract). Only
+  ///    sync-time errors (e.g. the service already disposed)
+  ///    land in the try/catch block.
   Future<void> resumePlayback() async {
     if (_disposed || !ref.mounted) {
+      return;
+    }
+    if (_isResuming) {
+      // A previous resume is still in flight; refuse the
+      // duplicate so the service is never asked to resume
+      // a session it has already accepted. This is the
+      // synchronous layer of the duplicate-prevention
+      // guard (the state-based layer below catches the
+      // case where a previous tap has already published
+      // `playing` and is now `false` again).
       return;
     }
     final PracticeRecordDetailState? current = state.value;
@@ -1259,34 +1360,93 @@ class PracticeRecordDetailController
       return;
     }
     if (current.playbackStatus != PracticeRecordPlaybackStatus.paused) {
+      // Only `paused` is a valid source state for resume.
+      // `playing` means a previous resume already accepted
+      // the request; `idle | ready | loading | error` all
+      // mean the player has nothing to resume and the call
+      // must be a no-op (also blocks the second-tap bug:
+      // the optimistic publish in the first tap has
+      // already flipped us to `playing` so the second tap
+      // lands here and is dropped).
       return;
     }
     final RealAudioPlaybackService playback = _playbackService;
+    _isResuming = true;
+    // Optimistic publish. The service has already accepted
+    // the resume (its internal `play()` synchronously flips
+    // `_state` to `playing`); the gateway will independently
+    // emit a `ready + playing` event on `playerStateStream`
+    // which [_onPlayerState] handles as defence-in-depth.
+    // The UI flips from "继续" back to "暂停" in the same
+    // frame as the user's tap — this is the visible fix.
     try {
-      await playback.resume();
-    } on Object catch (e, st) {
-      debugPrint(
-        'PracticeRecordDetailController resumePlayback failed: $e\n$st',
-      );
-      if (_disposed || !ref.mounted) {
-        return;
-      }
       _publish(
-        _currentOrLoaded().copyWith(
-          playbackStatus: PracticeRecordPlaybackStatus.error,
-          playbackErrorMessage: '播放操作失败，请重试',
+        current.copyWith(
+          playbackStatus: PracticeRecordPlaybackStatus.playing,
+          clearPlaybackErrorMessage: true,
         ),
       );
-      return;
+    } on Object {
+      // _publish is best-effort; never propagate state-write
+      // failures to the caller. The service-side resume is
+      // already fire-and-forget below.
     }
-    if (_disposed || !ref.mounted) {
-      return;
-    }
-    _publish(
-      _currentOrLoaded().copyWith(
-        playbackStatus: PracticeRecordPlaybackStatus.playing,
-        clearPlaybackErrorMessage: true,
-      ),
+    // Fire-and-forget. Do NOT `await playback.resume()`:
+    // on real devices the returned future hangs for the
+    // entire playback duration and would deadlock the
+    // controller. The optimistic publish above + the
+    // `playerStateStream` consumer ([_onPlayerState]) are
+    // the two sources of UI truth. Errors from the
+    // unawaited future land in `onError`; sync-time errors
+    // (e.g. `disposed`) cannot throw because the state
+    // guard above already restricted us to a `paused`
+    // session that the service owns.
+    // ignore: unawaited_futures
+    playback.resume().then(
+      (_) {
+        _isResuming = false;
+      },
+      onError: (Object e, StackTrace st) {
+        _isResuming = false;
+        debugPrint(
+          'PracticeRecordDetailController resumePlayback failed: $e\n$st',
+        );
+        if (_disposed || !ref.mounted) {
+          return;
+        }
+        // Service-state guard: if the service is actually
+        // in `playing` we MUST NOT surface an error — the
+        // underlying player is running and the unawaited
+        // resume future is reporting a stale failure (e.g.
+        // a transport-layer hiccup after the service has
+        // already accepted the resume). `RealAudioPlayback
+        // Service.play` is synchronous: it sets
+        // `_state = playing` BEFORE the gateway's play
+        // future can complete / fail, so a service state
+        // of `playing` is the canonical "the sound is on"
+        // signal.
+        if (playback.state == AudioPlaybackState.playing) {
+          return;
+        }
+        // Only surface the error if we are still
+        // presenting as `playing`. A natural-completion
+        // event arriving before this callback would have
+        // already flipped us to `idle`; we must not
+        // clobber that.
+        final PracticeRecordDetailState? latest = state.value;
+        if (latest == null) {
+          return;
+        }
+        if (latest.playbackStatus != PracticeRecordPlaybackStatus.playing) {
+          return;
+        }
+        _publish(
+          latest.copyWith(
+            playbackStatus: PracticeRecordPlaybackStatus.error,
+            playbackErrorMessage: '播放操作失败，请重试',
+          ),
+        );
+      },
     );
   }
 
@@ -1688,7 +1848,10 @@ class PracticeRecordDetailController
 
   /// `playerStateStream` callback. Translates the gateway's
   /// `completed` event into a controller-side transition back
-  /// to [PracticeRecordPlaybackStatus.idle].
+  /// to [PracticeRecordPlaybackStatus.idle], and synchronises
+  /// the controller's `playing` / `paused` mirror with the
+  /// underlying `just_audio` `playerStateStream` so the UI
+  /// stays aligned with the actual sound state on real devices.
   ///
   /// Design notes (T035):
   /// - We deliberately do NOT call
@@ -1705,11 +1868,34 @@ class PracticeRecordDetailController
   /// - `_disposed` and `!ref.mounted` checks run BEFORE any
   ///   state write so a post-dispose event cannot push
   ///   into a torn-down Provider.
+  ///
+  /// T037C — `ready + playing` / `ready + not playing` events
+  /// now drive the controller's `playing` / `paused` mirror.
+  /// The previous implementation only consumed `completed`
+  /// and silently dropped the playing/paused events; that is
+  /// the root cause of the user's real-device bug (the
+  /// `await playback.resume()` future hangs on real `just_audio`,
+  /// so the controller MUST consume the player's stream event
+  /// to know the sound is actually playing).
+  ///
+  /// Stale-event defence (T037C): the controller's optimistic
+  /// publish in [resumePlayback] can land BEFORE a `ready + not
+  /// playing` event that was queued earlier in the gateway
+  /// (e.g. an event from a brief `paused` blip during a real
+  /// pause→resume cycle on certain Android devices). To keep
+  /// the UI from bouncing back to `paused` after the user
+  /// tapped resume, the stream consumer only allows a
+  /// `ready + not playing` event to overwrite `playing` if the
+  /// mirror says we have not just optimistically published
+  /// `playing`. Symmetrically, a `ready + playing` event is
+  /// allowed to overwrite any non-`playing` state. `completed`
+  /// is handled as before (T035 contract). The
+  /// `subscriptionSessionId == _playbackSessionId` guard
+  /// remains as defence-in-depth against any callback that
+  /// lands between the cancel call and the cancel future's
+  /// actual completion (T035A contract).
   void _onPlayerState(PlaybackPlayerState ps, int subscriptionSessionId) {
     if (_disposed || !ref.mounted) {
-      return;
-    }
-    if (ps.processingState != PlaybackProcessingState.completed) {
       return;
     }
     // T035A — cross-session isolation. The session id
@@ -1719,49 +1905,131 @@ class PracticeRecordDetailController
     // on every `playRecordedAudio`, `stopPlayback`,
     // and `_stopPlaybackIfActive`. If the controller's
     // current [_playbackSessionId] no longer matches
-    // the captured one, this `completed` event
-    // belongs to a prior session and MUST NOT flip
-    // the state. Without this check, a real-device
-    // just_audio replay bug that emits a stale
-    // `completed` AFTER the user has explicitly
-    // stopped and restarted playback would
+    // the captured one, this event belongs to a prior
+    // session and MUST NOT flip the state. Without this
+    // check, a real-device just_audio replay bug that
+    // emits a stale `completed` AFTER the user has
+    // explicitly stopped and restarted playback would
     // erroneously flip the new session's state from
     // `playing` to `idle`.
     if (subscriptionSessionId != _playbackSessionId) {
       return;
     }
-    if (_handlingNaturalCompletion) {
-      // Duplicate `completed` event from the gateway. The
-      // first event has already driven the state back to
-      // `idle`; the second one is a no-op.
+    if (ps.processingState == PlaybackProcessingState.completed) {
+      if (_handlingNaturalCompletion) {
+        // Duplicate `completed` event from the gateway. The
+        // first event has already driven the state back to
+        // `idle`; the second one is a no-op.
+        return;
+      }
+      final PracticeRecordDetailState? current = state.value;
+      if (current == null) {
+        return;
+      }
+      // If the controller has already moved on (e.g. the user
+      // tapped stop before the gateway's `completed` event
+      // arrived, or a previous `playRecordedAudio` has
+      // already started a new session), do not clobber the
+      // new state.
+      if (current.playbackStatus != PracticeRecordPlaybackStatus.playing &&
+          current.playbackStatus != PracticeRecordPlaybackStatus.paused &&
+          current.playbackStatus != PracticeRecordPlaybackStatus.ready &&
+          current.playbackStatus != PracticeRecordPlaybackStatus.loading) {
+        return;
+      }
+      _handlingNaturalCompletion = true;
+      try {
+        _publish(
+          current.copyWith(
+            playbackStatus: PracticeRecordPlaybackStatus.idle,
+            clearPlaybackErrorMessage: true,
+          ),
+        );
+      } finally {
+        _handlingNaturalCompletion = false;
+      }
+      return;
+    }
+    if (ps.processingState != PlaybackProcessingState.ready) {
+      // T037C — only `ready` carries the playing/paused
+      // distinction. `idle` and `loading` events are
+      // dropped on purpose: they are emitted during
+      // `loadFile` / `dispose` / `seek` and the
+      // controller's own `playRecordedAudio` /
+      // `stopPlayback` paths already publish the
+      // matching `loading` / `idle` transitions.
       return;
     }
     final PracticeRecordDetailState? current = state.value;
     if (current == null) {
       return;
     }
-    // If the controller has already moved on (e.g. the user
-    // tapped stop before the gateway's `completed` event
-    // arrived, or a previous `playRecordedAudio` has
-    // already started a new session), do not clobber the
-    // new state.
-    if (current.playbackStatus != PracticeRecordPlaybackStatus.playing &&
-        current.playbackStatus != PracticeRecordPlaybackStatus.paused &&
-        current.playbackStatus != PracticeRecordPlaybackStatus.ready &&
-        current.playbackStatus != PracticeRecordPlaybackStatus.loading) {
-      return;
-    }
-    _handlingNaturalCompletion = true;
-    try {
+    if (ps.playing) {
+      // T037C — `ready + playing` is the canonical truth
+      // from the underlying player. Allow it to overwrite
+      // any non-`playing` state so the UI flips to
+      // "暂停" in lockstep with the real sound.
+      // `error` is NOT overwritten here: the user has
+      // seen the error SnackBar and tapped "重试" — the
+      // retry must succeed before we re-enter `playing`.
+      if (current.playbackStatus == PracticeRecordPlaybackStatus.playing) {
+        // Already in `playing`; no-op so the mirror is
+        // not pointlessly re-published.
+        return;
+      }
+      if (current.playbackStatus == PracticeRecordPlaybackStatus.error) {
+        // An error has been surfaced; do not auto-rescue
+        // via a stale `playing` event that may have
+        // arrived before the error path was finalised.
+        return;
+      }
       _publish(
         current.copyWith(
-          playbackStatus: PracticeRecordPlaybackStatus.idle,
+          playbackStatus: PracticeRecordPlaybackStatus.playing,
           clearPlaybackErrorMessage: true,
         ),
       );
-    } finally {
-      _handlingNaturalCompletion = false;
+      return;
     }
+    // `ready + not playing` → service is paused. The
+    // T037C stale-event defence is anchored on the
+    // [_lastEmittedPlaybackStatus] mirror:
+    //   * `pausePlayback` actively publishes `paused` on
+    //     success, so `_lastEmittedPlaybackStatus ==
+    //     paused` ⇒ the next `ready + not playing` event
+    //     confirms the pause and is allowed to overwrite
+    //     the (still `playing`) `state.value` if it has
+    //     not yet propagated. The publish is a no-op
+    //     (state is already `paused`).
+    //   * `resumePlayback` actively publishes `playing`
+    //     optimistically. A `ready + not playing` event
+    //     that lands in the same microtask window (a
+    //     pre-resume pause blip queued on the broadcast
+    //     stream) MUST NOT clobber the freshly-published
+    //     `playing` — that would visibly bounce the UI
+    //     back to "继续" right after the user tapped it.
+    //     The defence: only overwrite when
+    //     `_lastEmittedPlaybackStatus == paused` (i.e.
+    //     the controller last published `paused`, not
+    //     `playing`).
+    if (current.playbackStatus != PracticeRecordPlaybackStatus.playing) {
+      // State is already `paused` (or `idle` / `ready` /
+      // `loading` / `error`) — no need to overwrite.
+      return;
+    }
+    if (_lastEmittedPlaybackStatus == PracticeRecordPlaybackStatus.playing) {
+      // The controller optimistically published `playing`
+      // for this session (resume path) and has not yet
+      // confirmed a real pause. The `ready + not playing`
+      // event is stale (pre-resume pause blip). Drop it
+      // so the optimistic `playing` is not clobbered.
+      return;
+    }
+    _publish(
+      current.copyWith(
+        playbackStatus: PracticeRecordPlaybackStatus.paused,
+      ),
+    );
   }
 
   /// T035 — Riverpod teardown hook. Cancels the playback

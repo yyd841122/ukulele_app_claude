@@ -375,3 +375,25 @@
 **未**修改：生产代码（除 5 个新建 / 3 个修改文件）/ 测试代码（除 2 个新建 / 2 个修改文件）/ 依赖 / Android 配置（Manifest / Gradle）/ Drift schema / `app_database.g.dart`（schemaVersion = 1）/ `pubspec.yaml`（version 仍为 `1.1.0+3`）/ `pubspec.lock` / `key.properties` / `.gitignore` / 既有 `MetronomeSetting` / `MetronomeController` / `RecordingPracticeController` / `PracticeRecordRepository` / 7 天计划常量 / 既有 lesson doc / Release 产物 / `agents/*.md` / `MULTI_AGENT_WORKFLOW.md` / 既有 ROADMAP / PRD / DATA_MODEL_DRAFT / T041 / T042 / T043 任何 doc。
 
 **未**改 Day 1-7 任何任务 / **未**新增完成状态 / **未**新增数据库持久化 / **未**接节拍器 / 录音的 controller / **未** push / **未**创建 Tag / **未** amend / rebase / reset --hard；下一阶段建议 `T045_LESSON_TEST_AND_ACCEPTANCE`（T044 复审通过后启动；本任务**不替代**）。
+
+## T045A_FIX_LESSON_CHILD_ROUTE_REDIRECT（路由父 redirect 不拦截子路由 · FIX）
+
+**任务目标**：修复 T044 落地后真机验收暴露的 `lib/app/router.dart` `/lessons` 父级 `redirect: (_, __) => '/'` 在 go_router 17.x 下同时拦截子路由 `/lessons/:lessonId` 的 production bug；新增用真实 `appRouter` 驱动的端到端回归测试。**不**修改其它路由 / **不**调整课程功能 / **不**修改 T044 已交付的 widget / controller / 入口卡片。
+
+**协作模型**：Primary（修复 + 测试 + 真机协调）+ 1 个独立 Flutter Router Reviewer（只读，Bloker 修复后复审）。
+
+**Bug 根因**：go_router 17.x 在解析子路由 `/lessons/:lessonId` 时仍调用父级 `/lessons` 的 `redirect`；父级无条件返回 `'/'` 导致 `context.push('/lessons/c_am_down_4x4')` 被静默重写为 `'/'`，`LessonPage` 永远不挂载。T044 在 router 注释中错误假设父 redirect 仅在直接访问 `/lessons` 时生效。
+
+**修复方案**：父级 redirect 改为按 `state.uri.path` 区分——`/lessons` 自身 → 返回 `'/'`；子路由路径（含 `/lessons/<id>`）→ 返回 `null` 让子路由 builder 正常挂载。未知 lessonId 仍由 `LessonPage._LessonNotFound` 内部渲染，保留"受控错误页"语义。
+
+**Files Modified / Created**：① `lib/app/router.dart`（`/lessons` 父 redirect 改为按 `state.uri.path` 区分，+30 / -11 行）；② `test/integration/lesson_route_e2e_test.dart`（新建，4 项 e2e：直接 push 有效 id / 直接 push 未知 id / 直接访问父级重定向 / C 和弦页点击"开始课程"）；③ `test/features/lesson_c_am_down_4x4/presentation/lesson_navigation_isolation_test.dart`（顶部 doc 增加一句"不经过生产 appRouter"声明，结构不变）；④ `docs/qa/T045_LESSON_ANDROID_ACCEPTANCE.md`（追加 T045A 修复交付记录 + 数据保留状态事实 + 真机复测要求）；⑤ `docs/dev/TASK_LEDGER.md`（本节段）；⑥ `docs/dev/AGENT_QUALITY_METRICS.md`（追加 T045A Scorecard）。
+
+**自动化验收**：① `flutter analyze` → No issues found ✓；② `flutter test test/integration/lesson_route_e2e_test.dart` → 4 / 4 ✓；③ `flutter test` 全量 → **740 + 4 = 744 tests passed**，既有 740 全部保留 ✓；④ `git diff --check` → 干净 ✓；⑤ `git status --short` 仅 1 处生产代码修改 + 2 个新文件 + 1 个 doc 追加 ✓。
+
+**真机验收**：本次修复提交**不**含 Approved 标注；必须在用户原设备执行 `adb install -r build/app/outputs/flutter-apk/app-debug.apk`（**禁止** `flutter install` / 卸载 / 清数据 / 撤权限），点击"开始课程"确认课程页真实显示后由用户手动标记 PASS。
+
+**数据保留状态**：T045 早期真机阶段使用了 `flutter install`，按 Android 平台行为已卸载旧版并清空应用数据；旧版（含未备份的练习记录、录音音频、节拍器设置、安装日期等）**已不可恢复地丢失**。T045A 仅修改路由配置 + 新增测试，**不存在"数据保留 PASS"的验收口径**——真实情况是数据已在前置阶段被清除且本任务范围没有恢复手段。验收表第 6 项保持 **N/A**，不得改写为通过。
+
+**Reviewer 协作**：T045A 范围内由 1 个独立 Flutter Router Reviewer（只读）复审修复 + 端到端测试是否覆盖了 4 项场景；待 Blocker 修复后复审（见 `AGENT_QUALITY_METRICS.md` §T045A Scorecard）。
+
+**未**修改：除 `lib/app/router.dart` 外的任何生产代码 / 任何路由或课程功能 / 既有 740 项测试 / Manifest / Gradle / Drift schema / 依赖 / 版本号 / 既有 doc（除 T045 QA doc 追加节段）/ Release 产物 / `agents/*.md` / Day 1-7 任何任务 / 完成状态 / 数据库持久化 / 节拍器 / 录音 controller / **未** push / **未** Tag / **未** amend / rebase / reset。

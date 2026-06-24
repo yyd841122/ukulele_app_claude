@@ -66,18 +66,37 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/lessons',
       name: 'lessons',
-      // T044: beginner teaching phase 2 page. The `lessonId`
-      // path param is resolved against `lessonByIdProvider` —
-      // unknown / empty ids render a friendly not-found state
-      // inside the page (mirrors `ChordDetailPage`).
+      // T045A: the parent `/lessons` route has no builder on
+      // purpose — every link pushes `/lessons/<id>`. A bare
+      // parent without `builder / pageBuilder / redirect`
+      // trips go_router's assertion, so we declare a
+      // `redirect` here.
       //
-      // The parent `/lessons` route has no builder because it
-      // is never meant to be visited directly — every link
-      // pushes `/lessons/<id>`. We use a redirect to send a
-      // direct visit back home instead of crashing go_router's
-      // "builder / pageBuilder / redirect must be provided"
-      // assertion.
-      redirect: (BuildContext context, GoRouterState state) => '/',
+      // go_router 17.x runs a parent route's `redirect` for
+      // every match in that subtree, including when a child
+      // path such as `/lessons/:lessonId` is the actual
+      // target. Returning `'/'` unconditionally therefore
+      // silently swallows every `context.push('/lessons/<id>')`
+      // (see `lesson_intro_card.dart`), which is the T045
+      // production bug — `LessonPage` never mounted and the
+      // user landed back on `HomePage`.
+      //
+      // Disambiguate by inspecting `state.uri.path`: if it
+      // is exactly `/lessons`, the user visited the parent
+      // directly and we send them home; otherwise we are
+      // resolving a child route and we MUST return `null` so
+      // go_router proceeds with the child `builder`.
+      //
+      // Unknown / empty lesson ids are still handled inside
+      // `LessonPage` itself (mirrors `ChordDetailPage`), so
+      // the friendly not-found state is preserved without
+      // touching the router.
+      redirect: (BuildContext context, GoRouterState state) {
+        if (state.uri.path == '/lessons') {
+          return '/';
+        }
+        return null;
+      },
       routes: <RouteBase>[
         GoRoute(
           path: ':lessonId',

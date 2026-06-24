@@ -288,3 +288,37 @@
 **未**修改：生产代码（除 4 个新建文件）/ 测试代码（除 2 个新建测试文件）/ 依赖 / Android 配置 / Drift schema / `MetronomeSetting` / `MetronomeController` / `RecordingPracticeController` / `PracticeRecordRepository` / 7 天计划常量 / 既有 lesson doc / Release 产物 / `key.properties` / `.gitignore` / `agents/*.md` / `MULTI_AGENT_WORKFLOW.md` / 既有 ROADMAP / PRD / DATA_MODEL_DRAFT / `T041_BEGINNER_LEARNING_PHASE_2_SCOPE.md`。
 
 **未**接页面 / **未**加路由 / **未**改 LessonPage（归 T044）/ **未**真机验收（归 T046）/ **未** push / **未**创建 Tag / **未** amend / rebase / reset --hard；下一阶段建议 `T044_LESSON_PAGE_AND_NAVIGATION`（由 GPT 首席架构师出具独立 Prompt 后才能启动，本任务**不替代**）。
+
+### T043 精简架构复审（3 个独立只读 Reviewer · 0 Blocker · 0 代码修改）
+
+**复审启动**：用户本轮在 commit `105aad9` 之后追加一次精简架构复审，限定 3 个独立只读 Reviewer（UI/Accessibility + Music Domain + Architecture），不动 T044。
+
+**Reviewer 1 — UI/Accessibility**（agentId `ab09acaf817be8764` · `general-purpose` subagent · 独立只读）
+- **判定**：**Approved with non-blocker observations**
+- **关键 finding 1**（Non-blocker）：per-cell `Text` widgets（`C`/`Am` + `1`/`2`/`3`/`4`）位于 `Semantics(container: true)` 内且无 `MergeSemantics` / `ExcludeSemantics` 包装，读屏可能朗读外层 group label 后再读 per-cell 子项 → 产生轻微冗余。T044 page 集成时若重视读屏简洁性可考虑 `MergeSemantics` 或在 per-cell 上加 `Semantics(label: '...')` 节点。
+- **关键 finding 2**（Non-blocker）：widget lines 68-70 硬编码 `_kChordSequence = ['C', 'C', 'Am', 'Am']` / `_kBeatsPerMeasure = 4`，**不**读 `kBuiltInLessons[0].strumPattern`。当前值与常量一致，但未来编辑常量不会传递到 widget。
+
+**Reviewer 2 — Music Domain**（agentId `a36ca96df85c8b740` · `general-purpose` subagent · 独立只读）
+- **判定**：**Approved with non-blocker observations**
+- **关键 finding 1**（Non-blocker）：与 UI/Accessibility 同源 —— widget 与 constants 硬编码 drift。`strum_pattern_diagram.dart:68-76` 4 个 `_k*` 常量 + `_kSemanticsLabel` 不读 `kBuiltInLessons[0].strumPattern`。
+- **关键 finding 2**（Approved）：节拍器 / 拍数 / 下扫方向 / `Am` 序列 / 60-80 BPM 步骤 / `linkedTaskIds=['day4_chord_switch']` / `②Am按` v0.2 修正 / "中指始终在位" 禁词扫描全部通过；与 `docs/learning/lesson_c_am_down_4x4.md` v0.2 + `T041 §3.1 / §4.1` 100% 对齐。
+
+**Reviewer 3 — Architecture**（agentId `ae8969bfdec372b3c` · `general-purpose` subagent · 独立只读 · 用户本轮新增）
+- **判定**：**Approved with non-blocker observations**（**0 Blocker**）
+- **关键 finding 1**（Non-blocker / Q1）：`practice_plan_constants.dart:1-26` 明示"types in domain, data in constants"分层；T043 把 4 个 lesson types 内联到 `core/constants/lesson_constants.dart` 违反该先例。Recommendation：未来提取至 `lib/features/lesson_c_am_down_4x4/domain/`。
+- **关键 finding 2**（Non-blocker / Q2 / Approved）：`T041 §4.1` line 83 显式 pin `core/constants/` 槽位 → 既有（a）`practice_plan_constants` 先例胜出；`kBuiltInLessons` 放 `core/constants/` 合规。
+- **关键 finding 3**（Non-blocker / Q3）：`features/lesson_c_am_down_4x4/` 命名匹配 lesson id 而非稳定 feature 名（contrast `chord_library/`）。Recommendation：lesson 2 上线前把目录重命名为 `features/lessons/` 或 `features/beginner_lessons/` —— 1 处 test import 改动、widget 零改动。
+- **关键 finding 4**（Non-blocker / Q4）：缺 `domain/` slot，但 widget 显式解耦（line 40 仅 import `flutter/material.dart`，**未** import `lesson_constants.dart`）—— types 迁移不需要改 widget；5 个 constants test import 需更新。**churn 数：types 留在原位 = 0；types 迁移 = 5**。
+
+**架构结论**：
+- T043 范围内 0 Blocker，**不**做重构。T041 §4.1 line 83 已显式 pin `core/constants/lesson_constants.dart` 数据文件位置；types 内联到 `core/constants/` 违反 `practice_plan_constants` 既有先例但**不**违反 T041 设计文档。
+- 3 个非阻塞观察（Q1 types 应迁 `domain/` / Q3 目录命名匹配 id 而非 feature / 跨 Reviewer 共识 widget 硬编码 vs 常量 drift）**全部是 T044 / lesson-2 时机问题**，本任务**不**制造代码改动。
+- **修改决策**：**NO COMMIT**。所有 Reviewer Approved；T041 §4.1 显式 pin 已遵守；既有测试 732 / 0 回归。
+
+**复审触达的高风险面**：① 领域类型位置违反既有分层先例（`practice_plan_constants.dart:1-26`）→ 已记为 T044 跟进；② feature 目录命名匹配 lesson id 而非稳定 feature 名 → 已记为 lesson-2 跟进；③ widget 硬编码 vs constants drift（UI + Music 双 Reviewer 共识）→ T044 应 widget 接 `kBuiltInLessons[0].strumPattern`；④ 窄屏安全（320x800 / 280x600）→ 既有 2 项测试覆盖 + `FittedBox(scaleDown)` 兜底；⑤ Semantics 完整性 → `container: true` 一句话 + `ExcludeSemantics` 防重读；⑥ 音乐事实（4/4 / 4 拍 / 下扫 / `[C,C,Am,Am]` / 切换点 / BPM 60+80）→ Music Domain Reviewer 全维度通过。
+
+**前置状态**：HEAD = `105aad9`（T043 commit `feat: add beginner strum pattern widget`）；`git status --short` 空；`git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 四项均空；测试基线 732（基线 720 + T043 新增 12）已在本轮 start 前稳定。
+
+**未**修改：生产代码 / 测试代码 / 依赖 / Android 配置 / Drift schema / `app_database.g.dart` / `pubspec.yaml` / `pubspec.lock` / `key.properties` / `.gitignore` / 既有 T006-T042 任何台账条目 / 既有 §4.1-§4.31 任何 Scorecard / T041 / T042 任何 doc / `MULTI_AGENT_WORKFLOW.md` / `agents/*.md` / 构建产物。
+
+**未** push / **未**创建 Tag / **未** amend / rebase / reset --hard；下一阶段建议 `T044_LESSON_PAGE_AND_NAVIGATION`（由 GPT 首席架构师出具独立 Prompt 后才能启动，本任务**不替代**）。

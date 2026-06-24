@@ -1927,3 +1927,25 @@
 | T040 验证（逐条） | ① 验证器定向测试 = PASS（`flutter test test/tool/verify_release_artifacts_test.dart` `+9: All tests passed!`）；② 对当前 Release APK / AAB 运行验证器 = **PASS**（`VERIFY_OK: all required checks passed.` —— APK 61064006B / AAB 60586365B，`versionName=1.1.0` / `versionCode=3`，签名 v2/v3/v4，INTERNET 缺席，RECORD_AUDIO 已声明，Release/Debug 证书不同）；③ `flutter analyze` = **No issues found!**（0 问题）；④ `flutter test` = **+720: All tests passed!**（基线 711 + 9 新增 = 720，0 回归）；⑤ `git diff --check` = **PASS**（仅 Windows CRLF 提示，**不**是 Blocker） |
 | Remaining Blockers | **0**（Reviewer 唯一观察 = dart format 空白整理 318 行变更对 60 行实质改动，**不**是 Blocker） |
 | 详细文档 | `docs/dev/TASK_LEDGER.md` T040 节段 + `docs/dev/AGENT_QUALITY_METRICS.md` §4.28 T040 Scorecard（本段）+ `docs/dev/TECH_DEBT.md` TD-022 闭环说明段 = 3 个 doc 文件 |
+
+#### 4.29 T041 Scorecard（T041_BEGINNER_LEARNING_PHASE_2_SCOPE · 仅文档 · 初学者教学阶段 2 设计）
+
+| 项目 | 内容 |
+| --- | --- |
+| Task ID | `T041_BEGINNER_LEARNING_PHASE_2_SCOPE` |
+| Task Name | 初学者教学阶段 2 设计（仅文档，不编码） |
+| Status | 通过(待 GPT 复审) |
+| Tests Passed | 720（基线保持；**不**新增 / 修改 / 删除任何测试；**不**运行 build_runner / 构建 APK / AAB / **不**调用 `flutter test`） |
+| Scope Clean | Yes（仅新建 `tasks/T041_BEGINNER_LEARNING_PHASE_2_SCOPE.md` + 仅修改 `docs/ROADMAP.md`（追加"阶段 2 后教学阶段"小节）/ `docs/dev/TASK_LEDGER.md`（追加 T041 行）/ `docs/dev/AGENT_QUALITY_METRICS.md`（追加本 §4.29 Scorecard）；总修改文件 = 4 个 doc，0 个 code / test / 依赖 / Android 配置） |
+| Command discipline violation | **No**（全程命令均为单条只读命令：`git status --short` / `git log -1 --oneline` / `git rev-parse HEAD` / `git branch --show-current` / `git diff --check` / `git diff --stat` / `Read` / `Write` / `Edit`；无管道、无重定向、无 `&&`、无分号、无复合命令） |
+| Sensitive Files Checked | N/A（**不**涉及 `key.properties` / keystore / 密码 / 录音文件 / Drift schema / Manifest；T041 为纯设计文档任务） |
+| Build Artifacts Tracked | N/A（**未**构建 APK / AAB） |
+| Primary Agent | `01-product-manager` + `05-music-domain-expert` 协作起草（基于已发布 v1.1.0 真实音频 MVP 既有能力 + `PRD` §7 / §9 + `DATA_MODEL_DRAFT.md` §3 + `practice_plan_constants.dart` Day 1-7） |
+| Review Agent | **1 个独立只读 Product / Flutter Architecture Reviewer**（`general-purpose` subagent，agentId `acb04af165c8932bf` / 27 次工具调用 / 103.3s / 44,696 tokens） |
+| Reviewer 初次判定 | **Blocker**（4 项 B-1 命名与项目 `PHASE_2_*`（T006 导航骨架）冲突 / B-2 内容与已发布 Day 4 任务（C↔Am + 节拍器 80 BPM + 录音 + 自评）逐项重叠 / B-3 节拍器跨过 PRD §6.5 "节奏型 不做" 边界 / B-4 领域模型缺乏 Day 3 / 5 / 6 后续切片扩展性） |
+| Primary 修订 | 全部 4 项 Blocker 在落盘前修订：① 改用 `T041_BEGINNER_LEARNING_PHASE_2_SCOPE` 命名 + 显式声明与 `PHASE_2_FLUTTER_SHELL` 不同；② §3.1 显式定位为 Day 4 任务**叠加层**（不替换既有 7 天计划 / 不修改 `practice_plan_constants.dart`）；③ §4.3 明确下扫节奏指引为**静态 SVG 资源 + 不可点击 widget** 叠加在节拍器 UI 顶部，**不修改** `MetronomeSetting` / **不存储**节奏型；④ §4 新增 `Lesson` / `LessonStep` / `StrumPattern` 常量模型支持 Day 3 / 5 / 6 后续切片扩展 |
+| Reviewer 终判 | **Approved**（修订后所有 Blocker 全部解除） |
+| Final Approval | 待 GPT 复审 |
+| Collaboration Value | **High**（1 个独立 Reviewer 在 Primary 起草后立即识别 4 项 Blocker，**避免设计落入实现后返工**；Reviewer 三大价值：① 拦截"Day 4 内容重叠 → 防止与已发布 v1.1.0 行为冲突"；② 强制"节拍器静态化约束 → 把下扫节奏限制为视觉指引，避免误读为 PRD §6.5 边界突破"；③ 推动"数据模型扩展性 → 避免硬编码 Day 4，支持 Day 3 / 5 / 6 后续切片"；属于"轻量协作拦截设计层塌方"的典型场景） |
+| 可复用经验 | ① 教学 / 内容设计类任务应**先经独立 Reviewer 复审再落盘**，而非"设计完直接写代码"；② Reviewer 重点检查 3 项：**与已发布内容是否冲突 / 是否越界既有 PRD 边界 / 数据模型是否可扩展**，避免设计层塌方；③ 低风险纯设计任务（无代码 / 无依赖 / 无 schema）使用 **Primary + 1 个独立 Reviewer** 即可，与 T040 工具升级任务协作模型一致；④ **不要**给纯设计任务扩展为 Primary + 2+ Reviewer 或引入交叉多 reviewer；⑤ "叠加层 vs 替换"边界是设计审查高频雷区，Reviewer 必须显式追问 |
+| Notes | T041 严格遵守：① 不修改生产代码 / 测试代码 / 依赖 / Android 配置 / Drift schema / `PracticeRecord` 字段 / `schemaVersion` / 节拍器 domain / `RecordingPracticeController` / `RealAudioRecorderService` / `RealAudioPlaybackService` / `PracticeRecordRepository`；② 不 push / 不 Tag / 不 amend / rebase / reset --hard；③ 不开始 T042-T046 任何实现（必须由 GPT 首席架构师出具独立 Prompt 后启动）；④ 4 个 doc 文件均通过 `git diff --check` 验证（CRLF Windows 提示为既有 line-ending 约定，非 Blocker）；详见 `docs/dev/TASK_LEDGER.md` T041 节段 + `tasks/T041_BEGINNER_LEARNING_PHASE_2_SCOPE.md` 全文 |

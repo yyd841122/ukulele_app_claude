@@ -89,7 +89,7 @@
 
 | # | 检查项 | 结果 | 来源 | 证据类型 |
 | --- | --- | --- | --- | --- |
-| 24 | 权限首次申请流程（拒绝 / 永久拒绝 / 重新申请 / 设置跳转） | **NOT RUN** | `adb install -r` 保留了既有 `RECORD_AUDIO` 授权；本轮**未**触发系统权限弹窗路径 | NOT RUN（**严禁**写成 PASS） |
+| 24 | 权限首次申请流程（拒绝 / 永久拒绝 / 重新申请 / 设置跳转） | **NOT RUN**（T037）/ **设备行为异常**（T038，详见 `docs/qa/REAL_AUDIO_MVP_RELEASE_CHECKPOINT.md` Permission Acceptance Results 节） | T037：`adb install -r` 保留了既有 `RECORD_AUDIO` 授权；T038：T038 已补做权限撤销真机验收，但 EMUI / Android 10 + `permission_handler 12.0.3` 在 `pm revoke` 后首次"开始录音"未出现系统弹窗，App 直接进入录音状态 | NOT RUN（**严禁**写成 PASS） |
 
 ### PASS / NOT RUN Matrix 汇总
 
@@ -157,6 +157,47 @@
 | `flutter analyze` | T037C 基线 | `No issues found!` |
 | 自动化回归覆盖 | T036 / T036A / T037A / T037A1 / T037B / T037B1 / T037B2 / T037C | 完整覆盖 T037 真机场景的**等价**自动化路径（pre-delete stop / page-exit stop / natural completion / resume UI sync / 录音 service 失败 retry / 录音页退出 stop 失败 retry） |
 | T037 真机验收**净增**自动化测试 | **0 项** | 本任务**不**新增 / 修改任何 `test/**/*.dart` 文件 |
+
+## T038 Permission Acceptance Results（T038 补做）
+
+> 本节由 T038（`T038_REAL_AUDIO_MVP_RELEASE_CHECKPOINT`）补做，**仅**记录真实设备表现，**不**修改任何 T037 既有结论。T038 麦克风首次权限申请结果 = **NOT RUN / 设备行为异常**（EMUI ROM 直接授权，**不**等价于"用户完成首次权限申请"）；T038 Release Checkpoint 整体状态 = **PENDING / NOT APPROVED**（`BLOCKED_BY_PERMISSION_ACCEPTANCE`）。
+
+### 撤销前状态
+
+| 字段 | 值 |
+| --- | --- |
+| 设备 | 华为 CDY-AN90 / Android 10 |
+| App | `com.yupi.ukulele` v1.0.0+2（versionCode=2） |
+| 权限状态 | `RECORD_AUDIO: granted=true`（保留自 T037 真机验收） |
+| App 数据 | `ukulele.db` + `audio/saved/` + `audio/temp/` 均存在 |
+| 撤销方式 | `adb shell pm revoke com.yupi.ukulele android.permission.RECORD_AUDIO`（仅撤销权限） |
+
+### 撤销后状态
+
+| 字段 | 值 |
+| --- | --- |
+| 权限状态 | `RECORD_AUDIO: granted=false` |
+| App 数据 | **未**丢失（`run-as` ls 显示 `ukulele.db` + `audio/saved` + `audio/temp` 仍在） |
+
+### 真实表现（T038 用户真机反馈）
+
+| 步骤 | 预期 | 实际表现 | 结果 |
+| --- | --- | --- | --- |
+| 1. 启动 App → 进入录音页 | App 正常启动 | App 正常启动并能进入录音页 | PASS |
+| 2. 点击"开始录音" | 系统弹出 RECORD_AUDIO 权限请求弹窗 | **未出现系统弹窗**，App 直接进入录音状态 | **NOT RUN / 设备行为异常**（EMUI / Android 10 + `permission_handler 12.0.3` 在 `pm revoke` 后的真实 ROM 行为） |
+| 3. 真实录音 | 听到真实环境音 + 计时递增 | 听到真实环境音 + 计时递增 | PASS |
+| 4. 录音 + 保存 | 新记录保存到列表 | 新记录保存成功 | PASS |
+| 5. 既有数据保留 | T037 既有练习记录仍保留 | 既有练习记录仍保留 | PASS |
+| 6. 详情页可播放 | 详情页可听到录音 | 详情页可听到录音 + 暂停 / 继续 / 停止正常 | PASS |
+| 7. 权限状态（最终） | `RECORD_AUDIO: granted=true`（首次"开始录音"自动授权） | `RECORD_AUDIO: granted=true` | **NOT RUN / 设备行为异常说明**（`granted=false` → `granted=true` 是 EMUI ROM 直接授权行为，**不**等价于"用户完成首次权限申请"；**不**得写为 PASS） |
+
+### 设备行为异常根因分析（仅记录，不修复）
+
+- **EMUI / Android 10 + `permission_handler 12.0.3` 在 `pm revoke` 后的真实表现**：用户点击"开始录音"触发 `MicrophonePermissionService.requestPermission()` → `PermissionHandlerMicrophonePermissionGateway.requestPermission()` → `permission_handler.request()` 内部调用平台 `Permission.requestPermissions`；HUAWEI CDY-AN90 / Android 10 的 EMUI 在 `permission_handler` 调用 `shouldShowRequestPermissionRationale` 返回 `false` + `request()` 的瞬间判断 `shouldShow` 为 `false` 时，**直接授权而不弹窗**（这是 HUAWEI EMUI 的特殊行为，与 AOSP 行为不一致）。
+- **`adb shell dumpsys package com.yupi.ukulele | grep RECORD_AUDIO`** 显示权限从 `granted=false` 变为 `granted=true`，**未**经过任何用户交互确认 —— 与 AOSP 预期的"弹窗 → 用户选择"流程不一致。
+- **本节**不**修复此行为**：① T038 任务定位**不**修改生产代码 / 依赖 / `permission_handler` 版本 / `MicrophonePermissionService` 公共契约；② T037 既有 `permission_handler 12.0.3` 单元测试（14 项）通过；③ `MicrophonePermissionService` 6 状态映射（granted / denied / permanentlyDenied / restricted / limited / unknown）契约**未**被破坏 —— EMUI 实际行为直接授权到 `granted` 状态；④ 建议后续独立 Task ID：`T038B_FIX_PERMISSION_FIRST_REQUEST_REAL_DEVICE_PROMPT`（真机厂商 ROM 适配 + `permission_handler` 升级评估 + 在不同 ROM 上真机验收）。
+- **本节**不**绕过此行为**：T038 **不**执行 `adb uninstall` / `adb install` / `pm reset-permissions` 等会清除数据或破坏 T037 既有数据隔离的动作；T038 **不**通过"卸载重装触发首次权限弹窗"作为 PASS 替代品 —— 这会**违反**"保留现有 App 数据"的本任务前置条件。
+- **本节**与 T037 NOT RUN 的关系**：T037 既有"权限首次申请 NOT RUN"是因 `adb install -r` 保留了既有授权、**未**触发系统弹窗路径；T038 补做后**首次"开始录音"仍未触发系统弹窗**（设备行为异常）；T038 因此仍维持"权限首次申请 NOT RUN"结论，**严禁**写成 PASS；建议 `T038B_FIX_PERMISSION_FIRST_REQUEST_REAL_DEVICE_PROMPT` 由 GPT 首席架构师独立 Prompt 启动。
 
 ## Evidence Source Separation
 

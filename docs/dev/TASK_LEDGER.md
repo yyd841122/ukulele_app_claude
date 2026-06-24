@@ -231,3 +231,25 @@
 **最终交付**：`docs/learning/lesson_c_am_down_4x4.md`（新建，13 节含 11 项必答内容 + 三步反思 + 引用）；与 `tasks/T041_BEGINNER_LEARNING_PHASE_2_SCOPE.md` 形成"边界文档 → 内容文档"两级闭环；与 `lib/core/constants/practice_plan_constants.dart` Day 4 既定任务零修改对齐；与 PRD §6.5 / §9 / §7 边界严守。
 
 **Files Modified / Created**：① `docs/learning/lesson_c_am_down_4x4.md`（新建）；② `docs/dev/TASK_LEDGER.md`（追加本 T042 行 + 本节段，**仅**追加）；③ `docs/dev/AGENT_QUALITY_METRICS.md`（追加 §4.30 T042 Scorecard 段，**仅**追加）。**未**修改：生产代码 / 测试代码 / 依赖 / Android 配置（Manifest / Gradle）/ Drift schema / `app_database.g.dart` / `key.properties` / `.gitignore` / keystore / 构建产物 / 既有 T006-T041 任何台账条目 / 既有 ROADMAP 任何 Phase 0-6 任何 V1-V5 任何条目 / 既有 PRD / DATA_MODEL_DRAFT / 既有 `practice_plan_constants.dart` Day 1-7 内容 / 既有 `T041_BEGINNER_LEARNING_PHASE_2_SCOPE.md` 内容 / 既未生成任何 SVG 资源文件（SVG 由 T043 独立任务创建）。**未**开始 T043-T046 任何实现；**未** push；**未**创建 Tag；**未** amend / rebase / reset --hard；下一阶段建议 `T043_STRUM_PATTERN_ASSETS_AND_WIDGET`（由 GPT 首席架构师出具独立 Prompt 后才能启动，本任务**不替代**）。
+
+---
+
+## T042 v0.2 修正（音乐事实纠正：手指定位不准）
+
+**修正触发**：v0.1 commit `9c9afd0` 在 commit 后被用户/上游 GPT 指出音乐事实错误——C 与 Am 实际上**没有共同按住的手指**（任意时刻只有一个和弦在响，手指集合完全不同），但 v0.1 全文使用"锚点 / 共用手指 = 中指 / Am 手型是 C 手型子集 / 中指始终在位"等误导性措辞。
+
+**v0.1 Reviewer 漏检经验（必填）**：v0.1 阶段的 2 个 Reviewer（`05-music-domain-expert` agentId `a6d16402f8d56d676` + UX Reviewer agentId `a109095b3b610d108`）均漏检此项关键事实。**漏检根因**：① 05-music-domain-expert 误把"两和弦各 1 根手指碰巧在同品"等同于"两和弦有共同保留指"；② UX Reviewer 仅检查"用户能否理解"，未校验"音乐事实是否正确"——**两类 Reviewer 角色边界未隔离，导致两边都未发现错误**。
+
+**v0.2 改进经验（必填）**：① **Reviewer 角色必须按"事实校验"和"表达可读性"严格分离**，不能合并；② "音乐事实"是独立审查维度（与"零基础可理解性 / PRD 边界 / 可实施性 / 范围一致性"并列），需专门的 Music Domain Reviewer 承担；③ 当 Reviewer 给"一次性 Approved"且"无 Blocker"时，**主 Agent 必须额外追问一次"还有哪些事实未校验"**，避免单一 Reviewer 视角盲区；④ **任何"两和弦共用 X"措辞需明确"任意时刻只有一个和弦在响"作为前提**——这是事实校验的硬性 check 项。
+
+**v0.2 修正动作**（不修改 v0.1 commit，新提交 `docs: correct C Am transition fingering`）：
+- **新启动 2 个独立 Reviewer**（不复用 v0.1 任何 Reviewer）：
+  - 新 Music Domain Reviewer agentId `a8f9b2f089241f9ca`：硬性 4 事实基准 + 禁词扫描 → **Approved**（v0.2 完全符合 + 禁词 0 残留）。
+  - 新 UX Reviewer agentId `a36fa1835146c4d1d`：4 维度 UX 复核 → **Approved**（非 Blocker；提 1 项 nice-to-have："低位悬停"首次出现处加"约 5 mm"量化距离）。
+- **§2.2 完全重写**：标题"共用手指与手型关系" → "C 与 Am 的手指动作（关键事实）"；首句改为"C 和 Am 没有共同按住的手指"；明确"按 C 时中指抬起或低位悬停（**约 5 mm**），不得按弦"+"按 Am 时中指按 4 弦 G 第 2 品"+"两者没有共同按住的手指"；图示标注改为 ①C按 / ②A按 / ③C按，标注每个手指在 C 与 Am 时的"按下 / 松开"状态。
+- **§2.3 完全重写**：标题"转换时哪 2 个手指先动（中指不动）" → "转换时手指动作（弹 C 时中指不得按弦）"；明确"C → Am"为"抬无名指 + 抬食指 + 按中指"（中指从"悬停 / 抬起"到"按下"，**不是"保留"**）；"Am → C"为"抬中指 + 按无名指 + 按食指"+ 强调"弹 C 时中指必须抬起或低位悬停（靠近 4 弦 2 品上方但不接触琴弦）"。
+- **§2.4 误区 1 完全重写**："中指也跟着离开 4 弦 → Am 音色发虚" → "弹 C 时中指也按着 4 弦 → 4 弦 G 被闷掉，C 音色发虚"+"**C 和 Am 没有共同按住的手指**——弹 C 时中指必须抬起或低位悬停，不得按弦"+ 新增**误区 1b**"弹 Am 时中指还没按下去就开始扫弦 → Am 出空弦散音"。
+- **§3.2 左手按弦"独立抬落"补"按 C 时中指必须抬起或低位悬停（不得按 4 弦 G 第 2 品）"**——v0.1 此处原写"按 C 时中指落 4 弦 G 第 2 品"是错误事实。
+- **§12.2 / §12.3 三步反思新增 v0.2 修正说明**：明确 v0.1 错误 + 修正动作 + 不动代码 / schema / domain 承诺。
+
+**Files Modified（v0.2 新提交，禁 amend）**：① `docs/learning/lesson_c_am_down_4x4.md`（v0.1 → v0.2 修正）；② `docs/dev/TASK_LEDGER.md`（追加本 v0.2 修正节段，**仅**追加）；③ `docs/dev/AGENT_QUALITY_METRICS.md`（追加 §4.31 T042 v0.2 修正 Scorecard 段，**仅**追加）。**未**修改：v0.1 commit（禁 amend）、生产代码 / 测试代码 / 依赖 / Android 配置 / Drift schema / `app_database.g.dart` / `key.properties` / `.gitignore` / keystore / 构建产物 / 既有 T006-T041 任何台账条目 / 既有 ROADMAP 任何 Phase 0-6 任何 V1-V5 任何条目 / 既有 PRD / DATA_MODEL_DRAFT / 既有 `practice_plan_constants.dart` Day 1-7 内容 / 既有 `T041_BEGINNER_LEARNING_PHASE_2_SCOPE.md` 内容。**未**开始 T043-T046 任何实现；**未** push；**未**创建 Tag；**未** amend / rebase / reset --hard；下一阶段建议 `T043_STRUM_PATTERN_ASSETS_AND_WIDGET`（由 GPT 首席架构师出具独立 Prompt 后才能启动，本任务**不替代**）。

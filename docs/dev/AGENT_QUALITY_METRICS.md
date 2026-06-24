@@ -1977,3 +1977,21 @@
 | Collaboration Value | **High**（1 个独立 Reviewer 一次性 Approved，反向证明 Primary 草稿在 4 维度上已达标；3 项 nice-to-have 全部为"表达层精细化"而非"边界修正"，属于"轻量协作优化表达"场景；Primary 在草稿阶段即主动识别 8 项风险并全部修正，避免 Reviewer 阶段才返工） |
 | 可复用经验 | ① **内容设计任务应在草稿阶段就内置"自我找茬 + 修正"**，避免风险落到 Reviewer 阶段才被发现；② 独立 Reviewer 对"音乐教学内容"的审查应聚焦 **4 维度（零基础可理解性 / PRD 边界 / 可实施性 / 范围一致性）**，避免"边界已合规但表达模糊"的盲区；③ nice-to-have 数量 ≤3 且**全部为表达层优化**时，可判定为 Approved 而非 Blocker；④ "可选过渡步骤"（如本课 70 BPM）必须**显式标为"可选"**，避免用户误以为必须走完整路径；⑤ T041（边界文档）+ T042（内容文档）两级文档闭环模式可推广到后续 T043-T046 实现任务 |
 | Notes | T042 严格遵守：① 不修改生产代码 / 测试代码 / 依赖 / Android 配置（Manifest / Gradle）/ Drift schema / `PracticeRecord` 字段 / `schemaVersion` / 节拍器 domain / `MetronomeSetting` / `MetronomeController` / `RecordingPracticeController` / `RealAudioRecorderService` / `RealAudioPlaybackService` / `PracticeRecordRepository` / `practice_plan_constants.dart`；② 不 push / 不 Tag / 不 amend / rebase / reset --hard；③ 不开始 T043-T046 任何实现（必须由 GPT 首席架构师出具独立 Prompt 后启动）；④ 3 个 doc 文件均通过 `git diff --check` 验证（CRLF Windows 提示为既有 line-ending 约定，非 Blocker）；⑤ SVG 资源 `assets/strum_patterns/down_4x4.svg` 由 T043 独立创建，本任务**仅**描述内容/位置/约束；详见 `docs/dev/TASK_LEDGER.md` §T042 节段 + `docs/learning/lesson_c_am_down_4x4.md` 全文 |
+
+#### 4.31 T042 v0.2 修正 Scorecard（音乐事实纠正：手指定位不准）
+
+| 项目 | 内容 |
+| --- | --- |
+| Task ID | `T042_LESSON_CONTENT_DESIGN` v0.2 修正 |
+| 修正触发 | v0.1 commit `9c9afd0` 在 commit 后被用户/上游 GPT 指出音乐事实错误——C 与 Am 实际上**没有共同按住的手指**（任意时刻只有一个和弦在响，手指集合完全不同），但 v0.1 全文使用"锚点 / 共用手指 = 中指 / Am 手型是 C 手型子集 / 中指始终在位"等误导性措辞 |
+| v0.1 Reviewer 漏检 | **2 个 Reviewer 均漏检**：① `05-music-domain-expert` agentId `a6d16402f8d56d676` 误把"两和弦各 1 根手指碰巧在同品"等同于"两和弦有共同保留指"；② UX Reviewer agentId `a109095b3b610d108` 仅检查"用户能否理解"，未校验"音乐事实是否正确" |
+| 漏检根因 | **两类 Reviewer 角色边界未隔离**——"音乐事实校验"与"表达可读性"被合并到同一 Reviewer（或同一事实域未指派独立 Reviewer），导致两边都未发现"中指 C 时按 4 弦 / Am 时按 4 弦 = 同一手指碰巧在同品" ≠ "两和弦有共同按住的手指"的关键区别 |
+| 改进经验 | ① **Reviewer 角色必须按"事实校验"和"表达可读性"严格分离**，不能合并；② "音乐事实"是独立审查维度（与"零基础可理解性 / PRD 边界 / 可实施性 / 范围一致性"并列），需专门的 Music Domain Reviewer 承担；③ 当 Reviewer 给"一次性 Approved"且"无 Blocker"时，**主 Agent 必须额外追问一次"还有哪些事实未校验"**，避免单一 Reviewer 视角盲区；④ **任何"两和弦共用 X"措辞需明确"任意时刻只有一个和弦在响"作为前提**——这是事实校验的硬性 check 项 |
+| 修正动作 | 不修改 v0.1 commit（禁 amend），新提交 `docs: correct C Am transition fingering`。新启动 2 个独立 Reviewer（不复用 v0.1 任何 Reviewer） |
+| 新 Music Domain Reviewer | `general-purpose` subagent，agentId `a8f9b2f089241f9ca` / 1 次工具调用 / 19.7s / 25,646 tokens。硬性 4 事实基准（C 无名指 1 弦 3 品 + 食指 3 弦 1 品 + 中指抬起/悬停不按 4 弦 + 2 弦 E 开放 / Am 中指 4 弦 2 品 + 其余松开 / C 与 Am 没有共同按住的手指 / 中指可提前靠近 4 弦 2 品但弹 C 时不得按弦）+ 禁词扫描（"中指始终在位 / 中指不动 / 中指保留 / Am 是 C 的子集 / 共用按弦锚点"）→ **Approved**（v0.2 完全符合 + 禁词 0 残留） |
+| 新 UX Reviewer | `general-purpose` subagent，agentId `a36fa1835146c4d1d` / 1 次工具调用 / 15.7s / 25,373 tokens。4 维度 UX 复核（零基础可理解性 / 误读风险 / 动作可执行性 / 图示可读性）→ **Approved**（非 Blocker；提 1 项 nice-to-have："低位悬停"首次出现处加"约 5 mm"量化距离，Primary 已采纳） |
+| 文档修改点 | ① §2.2 完全重写（标题 + 首句 + 三段动作 + 图示标注改为 ①C按 / ②A按 / ③C按 状态码）；② §2.3 完全重写（标题 + 两段转换动作）；③ §2.4 误区 1 完全重写 + 新增误区 1b；④ §3.2 左手按弦"独立抬落"补"按 C 时中指必须抬起或低位悬停"；⑤ §12.2 / §12.3 三步反思新增 v0.2 修正说明 |
+| 禁止事项遵守 | ① **不修改 v0.1 commit（禁 amend）**；② 不修改生产代码 / 测试代码 / 依赖 / Android 配置 / Drift schema / `app_database.g.dart` / `key.properties` / `.gitignore` / keystore / 构建产物 / 既有 `T041_BEGINNER_LEARNING_PHASE_2_SCOPE.md` / 既有 `practice_plan_constants.dart` Day 1-7 内容；③ 不 push / 不 Tag / 不 amend / rebase / reset --hard；④ 不开始 T043-T046 任何实现 |
+| Final Approval | 待 GPT 复审 |
+| Scope Clean | Yes（仅修改 `docs/learning/lesson_c_am_down_4x4.md`（v0.1 → v0.2 内容修正）+ `docs/dev/TASK_LEDGER.md`（追加 v0.2 修正节段，**仅**追加）+ `docs/dev/AGENT_QUALITY_METRICS.md`（追加本 §4.31 Scorecard 段，**仅**追加）；总修改文件 = 3 个 doc，0 个 code / test / 依赖 / Android 配置 / Drift schema / v0.1 commit 修改） |
+| Collaboration Value | **High**（v0.1 漏检是**Reviewer 角色未分离**的典型案例——v0.2 通过分离"Music Domain Reviewer（事实）"和"UX Reviewer（表达）"两类角色，把"中指 C 时按 / Am 时按 = 同一手指碰巧在同品" ≠ "两和弦有共同按住的手指"这一关键事实单独校验，避免再落入"音乐事实错误但 UX 觉得表达 OK"的盲区；本 Scorecard 把"Reviewer 角色按事实 / 表达分离"提升为项目级可复用经验） |

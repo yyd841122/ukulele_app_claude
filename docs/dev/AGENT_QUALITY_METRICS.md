@@ -2220,3 +2220,27 @@
 | Final Approval | 待 GPT 复审 |
 | Collaboration Value | **High**（3 位 Reviewer 全部 Approved with Conditions；0 Blocker；Findings Valid 26/26；Fix Commits 0；v0.2 一次性闭环 26 项 Reviewer 反馈；3 位 Reviewer 在不同维度独立识别 Drift schemaVersion 冲突 / Android 平台层隐藏风险 / PRD §5.5 字面偏离 / 9 步 mapping 显式度不足等真实风险，未显著拖慢任务进度；多 Agent 协作机制在 SDD 高风险架构任务上首次产生真实价值） |
 | Notes | ① Audio Reviewer 准确识别 `record ^7.1.0` `start()` 与 `startStream()` 互斥（Context7 验证）→ 推荐 A 方案双实例；② Flutter Reviewer 准确识别 Drift 2.34.x `@DriftDatabase(tables: ...)` 与 raw SQL 边界张力 → v0.2 采用 `beforeOpen` `CREATE TABLE IF NOT EXISTS scores` 显式幂等策略；③ Product Reviewer 准确识别 iOS / 平板 / Low-G 在 PRD v0.3 后边界（Deferred + 前置条件 ≠ 永久 Out），避免 SDD 全文对 PRD 平台边界误读；④ 3 位 Reviewer 报告均按 `AGENT_REVIEW_TEMPLATE.md` 模板填写 `Scope Reviewed` / `Evidence Checked` / `Findings` / `Approval`，无"已通过"模糊表述；⑤ SDD v0.2 总行数 442（≤ 500 限制）；Mermaid 数据流图 4 张（3 数据流 + 1 依赖图），每张 ≤ 5 节点横向；⑥ 不运行 Flutter 测试或构建；⑦ 不修改 `docs/PRD_v2.md` / `docs/ARCHITECTURE.md` v1.0；⑧ 下一阶段建议 `T048_PRODUCT_V2_PHASE1_TDD`，必须由 GPT 首席架构师出具独立 Prompt 后才能启动 |
+
+---
+
+### 4.Y T047A Scorecard（Product V2 系统设计修正）
+
+| 字段 | 值 |
+| --- | --- |
+| Task ID | `T047A_CORRECT_PRODUCT_V2_SYSTEM_DESIGN` |
+| Primary Agent | 主会话（Chief Architect） |
+| Review Agents | Audio Architecture Reviewer `t047a-audio-reviewer`（r1 **Blocker** → r2 **Approved** → final **Approved**）；Flutter Data Architecture Reviewer `t047a-flutter-data-reviewer`（r1 **Blocker** → final **Approved**）。Product Alignment 不重复运行（本次未改 PRD 范围）。 |
+| High Risk Areas | PCM 时间基准真实性 / 双 record 实例 Android 平台层可证伪性 / Drift schemaVersion 编号唯一性 / `beforeOpen` 与正式 schema 边界 / Reviewer 二元裁决闭环 |
+| Blockers Found (r1) | 2：① Audio Reviewer F-5 = §2 KEEP/ADJUST 表 `app_database.dart` 行 "schemaVersion=2 沿用；P4 升级到 3" 与 §3.8 / §5 / §11 v0.3 表述矛盾；② Flutter Reviewer F-1 = §3.8(b) `addColumn` 伪代码会触发 `duplicate column` 运行时错误；F-2 = P2 与 P4 同时占用 schemaVersion=3 编号冲突 |
+| Blockers Valid | 2 / 2 |
+| Blockers Found (r2) | 0 |
+| Findings Found (r1 Audio) | 5：F-5 Blocker + F-1 to F-4 Minor |
+| Findings Found (r1 Flutter) | 5：F-1 to F-2 Blocker + F-3 to F-5 Minor |
+| Findings Valid | 10 / 10 |
+| Fix Commits Required | 0（v0.3 一次性合并修订；reviewer 在文档内闭环） |
+| Tests Passed | 744（基线保持；新增 / 更新 / 删除测试 0 / 0 / 0；不写实现代码） |
+| Scope Clean | Yes（仅修改 `docs/architecture/SDD_V2.md` + `docs/dev/TASK_LEDGER.md` + `docs/dev/AGENT_QUALITY_METRICS.md` + `docs/ROADMAP.md` 中 v0.2 → v0.3 修订条目；ROADMAP 修订表仅追加 schemaVersion 编号独立化说明，未改既有 Phase 0-6 / V1-V5 条目） |
+| Command discipline violation | No（全程单条命令；无管道 / 重定向 / `&&` / 复合） |
+| Final Approval | 待 GPT 复审 |
+| Collaboration Value | **High**（T047A 二元裁决闭环机制实证有效：① Audio r1 → Blocker（F-5 §2 行矛盾）→ 主会话修正 → Audio r2 **Approved** → Audio final **Approved**；② Flutter r1 → Blocker（F-1 addColumn + F-2 编号冲突）→ 主会话修正 → Flutter final **Approved**；最终 0 Blocker；两轮 Reviewer 在 Drift schemaVersion 边界 + PCM 时间基准真实性 + Android 平台层可证伪性三个核心问题上均识别出真实风险；Reviewer 报告完整按 `AGENT_REVIEW_TEMPLATE.md` 模板填写 Scope Reviewed / Evidence Checked / Findings / Verdict；多 Agent 二元裁决闭环机制首次在 SDD 修正任务上产生真实价值） |
+| Notes | ① T047A 三项架构修正全部落地：① §3.6 时间基准改为**四类时钟区分**（会话单调 / PCM 样本 / chunk 到达 / 设备采集待 Spike 验证），明确不得把 chunk 到达时间伪装成设备采集时间；5 分钟 ≤ 50 ms 改为**初始验收目标**（测量对象 = OnsetEvent ↔ BeatTick 相对漂移，非 wall-clock 绝对漂移，起止基准 = Session start / Session stop）；② §7.2 A 方案改为**"首选 Spike 验证候选（非已证明架构）"**；T048A 真机清单 7 项必含 + ADR 产出强制；③ §3.8 / §5 / §8 从 `beforeOpen` 静默 CREATE TABLE 改为**显式升级 schemaVersion: 2 → 3 + MigrationStrategy.onUpgrade + @DriftDatabase(tables: [..., Scores]) + 类型化 Into 插入**；schemaVersion 编号独立化（P2 = 2→3 引入 scores，P4 = 3→4 处理 practice_records.lessonId，**不**冲突）；② T048 TDD 验收硬门 v0.3 落地：新安装 onCreate 创建 v3 schema + v1.1.0 既有 v2 用户用 `e2e/sqlite/v1_1_0_v2.db` 真实 SQLite 文件 fixture + v2 表完整 + scores 表被 onUpgrade 创建 + 6 列齐备 + 重复 open 幂等 + 迁移失败回滚 + drift_dev `schema_dump.dart` 与运行时 `sqlite_master` 实物一致性人工 check；③ §2 / §3.8 / §5 / §8 / §9 / §10.2 / §11 v0.3 在 schemaVersion 编号上全部一致；④ 不运行 Flutter 测试或构建；⑤ 不修改生产代码 / 测试 / pubspec / Manifest / Drift schema；⑥ 不 push / 不 Tag / 不 amend / rebase / reset --hard；⑦ 下一阶段建议 `T048_PRODUCT_V2_PHASE1_TDD`，必须由 GPT 首席架构师出具独立 Prompt 后才能启动 |

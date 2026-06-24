@@ -1,4 +1,4 @@
-// Riverpod controller for the recording practice flow (T012 + T013.4A + T031 + T031C + T033).
+// Riverpod controller for the recording practice flow (T012 + T013.4A + T031 + T031C + T033 + T037B + T037B1 + T037B2).
 //
 // Design notes (T031 - real audio state machine integration):
 //
@@ -923,10 +923,10 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
   ///   allowed to call `recorder.cancel()` (which would
   ///   delete the file via the storage service).
   ///
-  /// T037B1 — failure-retry contract (replaces the pre-fix
-  /// "flip isRecording/isPlaying to false before await"
-  /// behaviour that made a second exit call observe the
-  /// page as idle and skip the actual stop):
+  /// T037B1 + T037B2 — failure-retry contract (replaces the
+  /// pre-fix "flip isRecording/isPlaying to false before
+  /// await" behaviour that made a second exit call observe
+  /// the page as idle and skip the actual stop):
   /// - **In-flight coordination**: a single in-flight
   ///   [_pageExitStopFuture] is shared across concurrent
   ///   callers. The first caller creates the Future; the
@@ -940,25 +940,25 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
   ///     retry call observes the recording branch again.
   ///   * On success, `isRecording` flips to false and the
   ///     ticker stops.
-  ///   * On failure, the recorder service has already
-  ///     cleared its session internally
-  ///     (`_state = idle` — see `RealAudioRecorderService
-  ///     .stop` catch block), so the controller
-  ///     synchronously mirrors that by flipping
-  ///     `isRecording` to false (the service is the source
-  ///     of truth for "is the native recorder running"),
-  ///     stops the ticker (the service will reject a second
-  ///     `stop()` with `InvalidRecorderStateException` so
-  ///     the ticker has nothing left to drive), and
-  ///     returns [PageExitStopFailure] so the page stays
-  ///     mounted.
-  ///   * A retry call observes `takeId != null && !isRecording
-  ///     && !isPlaying` and re-enters the recording branch;
-  ///     the recorder service is in `idle` so the
-  ///     controller short-circuits to
-  ///     [PageExitStopSkipped] with reason
-  ///     [PageExitStopSkipReason.serviceAlreadyTerminal].
-  ///     This is the "second exit finally pops" path.
+  ///   * On failure (T037B2 — the previous T037B1 behaviour
+  ///     mirrored the service's "clear session on throw"
+  ///     contract and lost the retry path), the recorder
+  ///     service has KEPT its active session (state stays
+  ///     `recording`, `_activeTakeId` / `_activeTempFile` /
+  ///     `_activePaths` preserved) so a retry call can
+  ///     re-issue a real `recorder.stop()` against the
+  ///     same path. The controller mirrors that on the
+  ///     page side by keeping `isRecording = true` AND
+  ///     restarting the ticker (so the MM:SS readout
+  ///     honestly reflects "recording not yet confirmed
+  ///     stopped"). `takeId` is preserved.
+  ///   * A retry call observes `takeId != null && isRecording
+  ///     == true` and re-enters the recording branch; the
+  ///     recorder service is still in `recording`, so the
+  ///     controller does NOT short-circuit to
+  ///     `skipped(serviceAlreadyTerminal)` and the retry
+  ///     drives a real second `recorder.stop()`. This is
+  ///     the "second exit actually retries" path.
   /// - **Playback branch**:
   ///   * `isPlaying` is NOT flipped to false before the
   ///     `await playback.stop()`. The playback service
@@ -1051,12 +1051,12 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
       );
     }
 
-    // T037B1 — recording branch. We stop the ticker (so the
-    // MM:SS readout does not advance while the
-    // platform-channel stop is in flight), but we DO NOT
-    // flip `isRecording` to false before the await — the
-    // failure-retry contract requires the controller to
-    // still report an active recording session to a
+    // T037B1 + T037B2 — recording branch. We stop the
+    // ticker (so the MM:SS readout does not advance while
+    // the platform-channel stop is in flight), but we DO
+    // NOT flip `isRecording` to false before the await —
+    // the failure-retry contract requires the controller
+    // to still report an active recording session to a
     // concurrent / retry caller so it can re-enter this
     // branch and issue a real `recorder.stop()`. The
     // in-flight coordination in [requestStopForPageExit]
@@ -1065,13 +1065,23 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
     // attempt in progress" with "no recording").
     if (wasRecording) {
       final RealAudioRecorderService recorder = _recorder;
-      // Defensive: if the service is already in a terminal
-      // state (the previous attempt threw AND cleaned up,
-      // OR a prior route lifecycle cleared the session),
-      // do NOT call `service.stop()` — it would throw
-      // `InvalidRecorderStateException`. Mirror the
-      // service-level terminal state to the controller
-      // and let the page pop.
+      // T037B2 — recorder service is the source of truth
+      // for "is the native recorder still running". After
+      // T037B2 the service keeps the active session
+      // across a stop failure (state stays `recording`,
+      // `_activeTakeId` / `_activeTempFile` /
+      // `_activePaths` preserved) — the only way
+      // `recorder.state == idle` is the natural one: a
+      // successful stop on a previous call. The terminal
+      // short-circuit is therefore still safe (it can
+      // only fire after a successful stop, where retrying
+      // is genuinely a no-op), but it is no longer
+      // reachable on the failure path. The retry call
+      // will observe `recorder.state == recording`,
+      // fall through the short-circuit, and re-issue
+      // a real `recorder.stop()` against the same
+      // active session — this is the "second exit
+      // actually retries" contract.
       if (recorder.state == AudioRecorderState.idle ||
           recorder.state == AudioRecorderState.disposed) {
         _stopTicker();
@@ -1125,53 +1135,73 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
         );
         return const PageExitStopResult.success();
       } on Object catch (e, st) {
-        // T037B1 — recorder.stop threw. Per the
-        // RealAudioRecorderService contract, the service
-        // has ALREADY cleared its active session and
-        // flipped `_state` to `idle` in the catch block
-        // (see `RealAudioRecorderService.stop`). The
-        // service is the source of truth for "is the
-        // native recorder running" — and after this
-        // throw the service says no. We mirror that on
-        // the controller side: flip `isRecording` to
-        // false so the page's UI state machine
-        // (recording controls disabled / playback
-        // enabled) lands in a sane state for the retry
-        // attempt. The ticker stays stopped (the
-        // service will reject a second `stop()` with
-        // `InvalidRecorderStateException`; creating a
-        // duplicate `Timer.periodic` here would
-        // re-publish `elapsedSeconds` that no longer
-        // corresponds to a real recording). Return
-        // failure so the page keeps itself mounted.
+        // T037B2 — recorder.stop threw. Per the
+        // RealAudioRecorderService contract (T037B2
+        // update), the service has KEPT its active
+        // session (state stays `recording`,
+        // `_activeTakeId` / `_activeTempFile` /
+        // `_activePaths` preserved) — the service is
+        // truthfully reporting "I tried to stop but
+        // cannot confirm; native state unknown, try
+        // again". The controller mirrors that on the
+        // page side:
+        //   * `isRecording` STAYS true so a retry call
+        //     re-enters the recording branch and
+        //     issues a real second `recorder.stop()`
+        //     against the same session (this is the
+        //     T037B2 fix — the previous T037B1
+        //     implementation would have flipped
+        //     `isRecording=false` and lost the
+        //     retry path);
+        //   * the ticker is restarted (NOT kept
+        //     stopped) so the MM:SS readout honestly
+        //     reflects the unknown-stop state;
+        //   * `takeId` is preserved;
+        //   * return failure so the page keeps
+        //     itself mounted.
         //
         // The retry call observes
-        // `takeId != null && !isRecording && !isPlaying`
-        // and re-enters the recording branch; the
-        // service-terminal-state guard above catches it
-        // and returns
-        // `skipped(serviceAlreadyTerminal)` so the page
-        // can finally pop.
+        // `takeId != null && isRecording == true` and
+        // re-enters the recording branch; the service
+        // is still in `recording` so the controller
+        // does NOT short-circuit to
+        // `skipped(serviceAlreadyTerminal)` —
+        // instead it re-issues
+        // `await recorder.stop()`. This is the
+        // "real-device retry actually retries" path.
         //
         // Caveat (documented in TECH_DEBT): when the
-        // service throws, we cannot tell whether the
-        // native `record` package actually stopped. If
-        // it did not, the audio file on disk may keep
-        // growing and the user's take will be lost.
-        // This is a service-layer limitation, not a
-        // controller-layer one; the controller preserves
-        // the user's retry path and surfaces the
-        // honest SnackBar.
+        // service throws, we still cannot tell
+        // whether the native `record` package
+        // actually stopped. If it did not, the audio
+        // file on disk may keep growing and the
+        // user's take will be lost. This is a
+        // service-layer limitation, not a
+        // controller-layer one; the controller
+        // preserves the user's retry path and
+        // surfaces the honest SnackBar.
         debugPrint(
           'RecordingPracticeController requestStopForPageExit '
           'recorder.stop failed: $e\n$st',
         );
-        _stopTicker();
-        _tickerSeconds = 0;
         if (ref.mounted) {
+          // T037B2 — keep `isRecording = true` so the
+          // retry call re-enters the recording
+          // branch. Restart the ticker (it was
+          // stopped above) so the MM:SS readout
+          // honestly reflects the unknown-stop
+          // state. Preserve `takeId`. Reset the
+          // ticker counter only if the local clock
+          // has not advanced since the failure —
+          // this keeps the MM:SS readout contiguous
+          // across the failure window so the user
+          // does not see the timer "jump back" to 0.
+          if (current.elapsedSeconds > 0) {
+            _tickerSeconds = current.elapsedSeconds;
+          }
+          _startTicker();
           state = current.copyWith(
-            isRecording: false,
-            elapsedSeconds: current.recordedDurationSeconds,
+            isRecording: true,
             clearLastError: true,
           );
         }

@@ -190,11 +190,17 @@ class RealAudioRecorderService {
   /// - 当前状态必须为 [AudioRecorderState.recording]，否则抛
   ///   [InvalidRecorderStateException]；
   /// - stop 期间状态切换为 [AudioRecorderState.stopping]；
-  /// - gateway.stop 返回 `null` 或与请求路径不一致 → 抛
-  ///   [RecorderStopFailedException]；状态回到 idle；temp 文件**不**
-  ///   清理（让 Controller / 后续 save 流程决定）；
   /// - gateway.stop 抛异常 → 抛 [RecorderStopFailedException]（带 cause），
-  ///   状态恢复 idle；
+  ///   **保留**活跃会话（`_activeTakeId` / `_activeTempFile` /
+  ///   `_activePaths`），状态回退到 [AudioRecorderState.recording]——
+  ///   native 录音是否真的停止仍是黑盒，service 不得假装成"安全
+  ///   stopped"，调用方可基于同一 `_activeTempFile.path` 重新
+  ///   调用 [stop] 进行重试（T037B2 修复）；
+  /// - gateway.stop 返回 `null` 或与请求路径不一致 → 抛
+  ///   [RecorderStopFailedException]；活跃会话被清除（这条分支
+  ///   表示 gateway 明确确认 stop 完成 → native 不再录音，无重试
+  ///   必要），状态回到 idle；temp 文件**不**清理（让 Controller /
+  ///   后续 save 流程决定）；
   /// - 成功路径返回 [AudioRecorderTakeResult]，状态恢复 idle。
   Future<AudioRecorderTakeResult> stop() async {
     if (_disposed) {
@@ -216,8 +222,18 @@ class RealAudioRecorderService {
     try {
       resolved = await _gateway.stop();
     } catch (e) {
-      _clearActiveSession();
-      _state = AudioRecorderState.idle;
+      // T037B2 — gateway.stop threw. We have NO proof the
+      // native recorder actually stopped; the platform-channel
+      // exception is the only signal we have. Preserve the
+      // active session so a retry call can re-issue
+      // `gateway.stop()` against the same path. Revert the
+      // state to `recording` so the controller / page can
+      // observe a stoppable recorder and so a retry sees a
+      // valid pre-state. Do NOT report the recorder as
+      // safely idle — the service is the source of truth for
+      // "is the native recorder running" and the only honest
+      // answer here is "unknown, try again".
+      _state = AudioRecorderState.recording;
       throw RecorderStopFailedException(
         'Failed to stop audio recorder for take "$takeId".',
         cause: e,
@@ -225,6 +241,15 @@ class RealAudioRecorderService {
     }
 
     if (resolved == null) {
+      // T037B2 — gateway.stop returned null. The native
+      // recorder explicitly reported "no path" which (per the
+      // `record` package contract) means the platform side
+      // considers the session over. There is no useful retry
+      // here — the gateway will keep returning null for
+      // subsequent stop() calls. Clear the active session and
+      // surface a hard failure to the caller. The temp file
+      // is preserved on disk so the controller can still
+      // surface it for a save attempt.
       _clearActiveSession();
       _state = AudioRecorderState.idle;
       throw RecorderStopFailedException(

@@ -281,8 +281,10 @@ void main() {
       _cleanupRoot(root);
     });
 
-    test('stop throwing an exception is translated and state recovers',
-        () async {
+    test(
+        'stop throwing an exception preserves the active session '
+        'and the recorder state stays `recording` so a retry can '
+        're-issue `stop()` (T037B2)', () async {
       final (:provider, :root) = _createIsolatedRoot();
       final ctx = _buildService(provider, root);
       await ctx.storage.ensureDirectories();
@@ -294,15 +296,218 @@ void main() {
         () => ctx.service.stop(),
         throwsA(isA<RecorderStopFailedException>()),
       );
-      expect(ctx.service.state, AudioRecorderState.idle);
+      // T037B2 — the service must NOT pretend to be safely
+      // stopped. It preserves the active session so a retry
+      // can re-issue `stop()` against the same path. The
+      // state stays `recording` (the only honest answer to
+      // "is the native recorder running" is "unknown, try
+      // again" — the gateway threw, the native state is
+      // unknowable).
+      expect(ctx.service.state, AudioRecorderState.recording,
+          reason: 'T037B2: recorder state MUST stay `recording` after '
+              'gateway.stop() throws so a retry call can re-enter the '
+              'same state and re-issue the stop');
 
-      // Next take works.
+      // T037B2 — a retry call with a successful gateway
+      // resolves to a normal take result and clears the
+      // active session / transitions to idle. The
+      // `resolvedPath` is preserved verbatim (the
+      // `record` package's stop() returned the same path
+      // it was given).
       ctx.gateway.nextStopException = null;
       ctx.gateway.nextStopResult =
-          p.join(root.path, 'temp', 'rec_after_throw.m4a');
-      await ctx.service.start(takeId: 'rec_after_throw');
-      final result = await ctx.service.stop();
-      expect(result.takeId, 'rec_after_throw');
+          p.join(root.path, 'temp', 'rec_stop_throw.m4a');
+      final AudioRecorderTakeResult retryResult = await ctx.service.stop();
+      expect(retryResult.takeId, 'rec_stop_throw');
+      expect(retryResult.resolvedPath,
+          p.join(root.path, 'temp', 'rec_stop_throw.m4a'),
+          reason: 'resolvedPath MUST be preserved verbatim across the '
+              'retry (no normalisation / reformatting)');
+      expect(ctx.service.state, AudioRecorderState.idle,
+          reason: 'a successful retry clears the active session and '
+              'transitions to idle');
+      _cleanupRoot(root);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // T037B2 — recorder stop failure retry semantics
+  // ---------------------------------------------------------------------
+  //
+  // T037B2 fixes a service-layer contract flaw: the previous behaviour
+  // (T029 / T037B1) was that `stop()`'s catch block cleared the active
+  // session and flipped state to `idle` even though we have no proof
+  // the native `record` package actually stopped. A retry would then
+  // observe `state == idle` and short-circuit — the user could pop the
+  // page while the native recorder was still running.
+  //
+  // T037B2 contract: on `gateway.stop()` throw, the service preserves
+  // the active session (`_activeTakeId` / `_activeTempFile` /
+  // `_activePaths`) and keeps `state` as `recording`. The retry call
+  // re-issues `gateway.stop()` against the SAME path. On a successful
+  // retry, the active session is cleared and state transitions to
+  // `idle`; `resolvedPath` is preserved verbatim.
+  group('T037B2 stop failure preserves active session for retry', () {
+    test(
+        'first gateway.stop() throws -> service stays in `recording` '
+        'state and active session is preserved (no premature idle)', () async {
+      final (:provider, :root) = _createIsolatedRoot();
+      final ctx = _buildService(provider, root);
+      await ctx.storage.ensureDirectories();
+
+      await ctx.service.start(takeId: 'rec_t037b2_throw');
+      ctx.gateway.nextStopException =
+          StateError('simulated native stop failure');
+
+      await expectLater(
+        () => ctx.service.stop(),
+        throwsA(isA<RecorderStopFailedException>()),
+      );
+      // T037B2 — service MUST NOT enter the
+      // non-retryable `idle` terminal state on a
+      // gateway exception. The only honest answer to
+      // "is the native recorder running" is
+      // "unknown, try again".
+      expect(ctx.service.state, AudioRecorderState.recording,
+          reason: 'T037B2: state MUST stay `recording` after a '
+              'gateway.stop() throw so a retry can re-issue the stop');
+      _cleanupRoot(root);
+    });
+
+    test(
+        'second gateway.stop() after first throws re-issues against the '
+        'same active session and resolves to a take result', () async {
+      final (:provider, :root) = _createIsolatedRoot();
+      final ctx = _buildService(provider, root);
+      await ctx.storage.ensureDirectories();
+
+      await ctx.service.start(takeId: 'rec_t037b2_retry');
+      final String expectedPath =
+          p.join(root.path, 'temp', 'rec_t037b2_retry.m4a');
+      // First stop throws.
+      ctx.gateway.nextStopException =
+          StateError('simulated native stop failure');
+      await expectLater(
+        () => ctx.service.stop(),
+        throwsA(isA<RecorderStopFailedException>()),
+      );
+      final int stopsAfterFirst = ctx.gateway.stopCallCount;
+      // Retry: gateway now returns the same path it was
+      // given (matches the `record` package contract).
+      ctx.gateway.nextStopException = null;
+      ctx.gateway.nextStopResult = expectedPath;
+      final AudioRecorderTakeResult retryResult = await ctx.service.stop();
+      expect(retryResult.takeId, 'rec_t037b2_retry');
+      expect(retryResult.resolvedPath, expectedPath,
+          reason: 'resolvedPath MUST be preserved verbatim across '
+              'the retry (no normalisation / reformatting)');
+      expect(ctx.gateway.stopCallCount, stopsAfterFirst + 1,
+          reason: 'T037B2: the retry MUST invoke gateway.stop() a '
+              'second time (the previous T037B1 contract short-'
+              'circuited to idle on the first failure)');
+      expect(ctx.service.state, AudioRecorderState.idle,
+          reason: 'a successful retry clears the active session and '
+              'transitions to idle');
+      _cleanupRoot(root);
+    });
+
+    test(
+        'verbatim resolvedPath invariant: the resolved path on the '
+        'take result equals the path the service originally requested '
+        '(no normalise / reformat / recompute)', () async {
+      final (:provider, :root) = _createIsolatedRoot();
+      final ctx = _buildService(provider, root);
+      await ctx.storage.ensureDirectories();
+
+      await ctx.service.start(takeId: 'rec_t037b2_verbatim');
+      final String expectedPath =
+          p.join(root.path, 'temp', 'rec_t037b2_verbatim.m4a');
+      // First stop throws.
+      ctx.gateway.nextStopException =
+          StateError('simulated native stop failure');
+      await expectLater(
+        () => ctx.service.stop(),
+        throwsA(isA<RecorderStopFailedException>()),
+      );
+      // Retry: gateway returns the EXACT same path
+      // (verbatim contract — no normalization).
+      ctx.gateway.nextStopException = null;
+      ctx.gateway.nextStopResult = expectedPath;
+      final AudioRecorderTakeResult retryResult = await ctx.service.stop();
+      expect(retryResult.resolvedPath, expectedPath,
+          reason: 'resolvedPath MUST be the gateway\'s returned '
+              'string AS-IS (verbatim). The service MUST NOT '
+              'normalise, reformat, or recompute the path.');
+      expect(retryResult.requestedPath, expectedPath,
+          reason: 'requestedPath must equal the path the service '
+              'originally handed to gateway.start()');
+      _cleanupRoot(root);
+    });
+
+    test(
+        'three consecutive stop failures still preserve the active '
+        'session (no premature idle, no file deletion)', () async {
+      final (:provider, :root) = _createIsolatedRoot();
+      final ctx = _buildService(provider, root);
+      await ctx.storage.ensureDirectories();
+
+      await ctx.service.start(takeId: 'rec_t037b2_repeat');
+      final String expectedPath =
+          p.join(root.path, 'temp', 'rec_t037b2_repeat.m4a');
+      // Three consecutive throws.
+      for (int i = 0; i < 3; i++) {
+        ctx.gateway.nextStopException =
+            StateError('simulated native stop failure #$i');
+        await expectLater(
+          () => ctx.service.stop(),
+          throwsA(isA<RecorderStopFailedException>()),
+        );
+        expect(ctx.service.state, AudioRecorderState.recording,
+            reason: 'after failure #$i, state MUST stay `recording`');
+      }
+      expect(ctx.gateway.stopCallCount, 3,
+          reason: 'T037B2: every retry MUST invoke gateway.stop() — '
+              'the service MUST NOT short-circuit');
+      // Successful retry.
+      ctx.gateway.nextStopException = null;
+      ctx.gateway.nextStopResult = expectedPath;
+      final AudioRecorderTakeResult retryResult = await ctx.service.stop();
+      expect(retryResult.takeId, 'rec_t037b2_repeat');
+      expect(ctx.service.state, AudioRecorderState.idle);
+      _cleanupRoot(root);
+    });
+
+    test(
+        'cancel still works correctly after a stop failure (existing '
+        'cancel semantics are not regressed by T037B2)', () async {
+      final (:provider, :root) = _createIsolatedRoot();
+      final ctx = _buildService(provider, root);
+      await ctx.storage.ensureDirectories();
+
+      await ctx.service.start(takeId: 'rec_t037b2_cancel_after');
+      // First stop throws — session is preserved.
+      ctx.gateway.nextStopException =
+          StateError('simulated native stop failure');
+      await expectLater(
+        () => ctx.service.stop(),
+        throwsA(isA<RecorderStopFailedException>()),
+      );
+      expect(ctx.service.state, AudioRecorderState.recording);
+      // Cancel from `recording` state must still work
+      // and must still clean up the temp file. (The
+      // service's cancel() requires `recording` state,
+      // and T037B2 keeps the state as `recording` after
+      // a stop failure, so cancel() is a valid
+      // transition.)
+      // Pre-create the file so cancel can delete it.
+      final File tempFile =
+          File(p.join(root.path, 'temp', 'rec_t037b2_cancel_after.m4a'));
+      tempFile.writeAsStringSync('pretend audio bytes');
+      await ctx.service.cancel();
+      expect(ctx.service.state, AudioRecorderState.idle);
+      expect(tempFile.existsSync(), isFalse,
+          reason: 'cancel still cleans up the temp file (existing '
+              'cancel semantics preserved)');
       _cleanupRoot(root);
     });
   });

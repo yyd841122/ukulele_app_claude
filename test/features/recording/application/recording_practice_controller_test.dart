@@ -4155,15 +4155,27 @@ void main() {
         expect(failure.message, isNot(contains('/abs/path')),
             reason: 'failure message must NOT leak the absolute path');
         expect(failure.message, isNot(contains('停止播放')));
-        // The controller flips `isRecording` to false on
-        // failure so the page's UI state machine is in a
-        // sane state for the retry attempt.
+        // T037B2 — the recorder service keeps its active
+        // session across a stop failure (state stays
+        // `recording`, `_activeTakeId` /
+        // `_activeTempFile` preserved). The controller
+        // mirrors that by keeping `isRecording = true`
+        // so a retry call re-enters the recording branch
+        // and drives a real second `recorder.stop()`.
+        // The MM:SS ticker is restarted so the readout
+        // honestly reflects "recording not yet
+        // confirmed stopped". takeId is preserved.
         final RecordingPracticeState state =
             ctx.container.read(recordingPracticeControllerProvider);
-        expect(state.isRecording, isFalse);
-        // takeId is preserved so the user can still see
-        // the (failed) take identity on the page.
-        expect(state.takeId, isNotNull);
+        expect(state.isRecording, isTrue,
+            reason: 'T037B2: isRecording must STAY true after '
+                'recorder.stop throws — the service keeps the '
+                'active session so a retry can re-issue '
+                'recorder.stop() against the same path');
+        expect(state.takeId, isNotNull,
+            reason: 'T037B2: takeId is preserved across the failure '
+                'so the retry call sees the recording branch');
+        expect(state.hasRecording, isFalse);
       },
     );
 
@@ -4417,9 +4429,10 @@ void main() {
     // =======================================================================
 
     test(
-      'T037B1 — recording stop failure: page is retained, '
-      'failure message returned, isRecording flipped to false '
-      '(service is the source of truth)',
+      'T037B2 — recording stop failure: page is retained, '
+      'failure message returned, isRecording STAYS true '
+      '(service keeps active session so a retry can re-issue '
+      'recorder.stop)',
       () async {
         final ctx = _buildContext(
           permission: (b) =>
@@ -4442,18 +4455,21 @@ void main() {
         expect(result.shouldPop, isFalse);
         final PageExitStopFailure failure = result as PageExitStopFailure;
         expect(failure.message, '停止录音失败，请重试');
-        // T037B1 — the service contract says the recorder
-        // service has ALREADY cleared its active session
-        // when stop() throws. The controller mirrors that
-        // by flipping isRecording to false (the service
-        // is the source of truth for "is the native
-        // recorder running"). takeId is preserved so the
+        // T037B2 — the recorder service keeps its active
+        // session when stop() throws (state stays
+        // `recording`, `_activeTakeId` /
+        // `_activeTempFile` preserved) so a retry can
+        // re-issue `recorder.stop()`. The controller
+        // mirrors that by keeping `isRecording = true`
+        // on the page side. takeId is preserved so the
         // user retains the identity of the failed take.
         final RecordingPracticeState state =
             ctx.container.read(recordingPracticeControllerProvider);
-        expect(state.isRecording, isFalse,
-            reason: 'T037B1: isRecording must mirror the service-level '
-                'idle state after recorder.stop throws');
+        expect(state.isRecording, isTrue,
+            reason: 'T037B2: isRecording must STAY true after '
+                'recorder.stop throws — the service keeps the '
+                'active session so a retry can re-issue '
+                'recorder.stop() against the same path');
         expect(state.takeId, isNotNull,
             reason: 'takeId is preserved so the retry call sees the '
                 'recording branch');
@@ -4462,9 +4478,9 @@ void main() {
     );
 
     test(
-      'T037B1 — recording retry: second requestStopForPageExit '
-      'after a recorder.stop failure resolves to skipped '
-      '(service-already-terminal) and lets the page finally pop',
+      'T037B2 — recording retry: second requestStopForPageExit '
+      'after a recorder.stop failure re-issues recorder.stop '
+      'against the SAME active session and resolves to success',
       () async {
         final ctx = _buildContext(
           permission: (b) =>
@@ -4483,29 +4499,29 @@ void main() {
             await controller.requestStopForPageExit();
         expect(first, isA<PageExitStopFailure>());
 
-        // Second attempt: the recorder service has already
-        // cleared its session internally (state == idle,
-        // per the RealAudioRecorderService.stop catch
-        // block). The controller must NOT call
-        // recorder.stop again (it would throw
-        // InvalidRecorderStateException) — it must
-        // short-circuit to skipped(serviceAlreadyTerminal)
-        // so the page can finally pop.
+        // T037B2 — the recorder service kept its active
+        // session (state stays `recording`,
+        // `_activeTempFile` preserved). The retry MUST
+        // re-issue `recorder.stop()` against the SAME
+        // path and succeed — this is the "second exit
+        // actually retries" contract that the previous
+        // T037B1 implementation (which short-circuited
+        // to skipped(serviceAlreadyTerminal) on the
+        // second call) violated.
         final int stopsBefore = ctx.recorderGateway.stopCallCount;
+        ctx.recorderGateway.nextStopException = null;
+        ctx.recorderGateway.nextStopResult = ctx.recorderGateway.lastStartPath;
         final PageExitStopResult second =
             await controller.requestStopForPageExit();
-        expect(second, isA<PageExitStopSkipped>());
-        expect((second as PageExitStopSkipped).reason,
-            PageExitStopSkipReason.serviceAlreadyTerminal,
-            reason: 'T037B1: after recorder.stop threw the service is '
-                'already terminal; the retry must short-circuit and '
-                'let the page pop');
+        expect(second, isA<PageExitStopSuccess>(),
+            reason: 'T037B2: the recorder retry MUST drive a real second '
+                'recorder.stop against the SAME active session and succeed');
         expect(second.shouldPop, isTrue);
         expect(second.hasUserFacingError, isFalse);
-        expect(ctx.recorderGateway.stopCallCount, stopsBefore,
-            reason: 'T037B1: the retry MUST NOT call recorder.stop again '
-                '(service is already idle — calling stop again would '
-                'throw InvalidRecorderStateException)');
+        expect(ctx.recorderGateway.stopCallCount, stopsBefore + 1,
+            reason: 'T037B2: the retry MUST call recorder.stop exactly '
+                'once (against the same session) and the controller '
+                'MUST NOT short-circuit on the failure path');
       },
     );
 
@@ -4674,9 +4690,11 @@ void main() {
     );
 
     test(
-      'T037B1 — recorder retry after the in-flight Future has '
+      'T037B2 — recorder retry after the in-flight Future has '
       'resolved: a NEW in-flight Future is created (the gate '
-      'is gone, the in-flight coordinator must start fresh)',
+      'is gone, the in-flight coordinator must start fresh) '
+      'and the retry drives a real second recorder.stop against '
+      'the same active session',
       () async {
         final ctx = _buildContext(
           permission: (b) =>
@@ -4688,11 +4706,6 @@ void main() {
             ctx.container.read(recordingPracticeControllerProvider.notifier);
         await controller.startRecording();
         await _pumpEventQueue();
-        final String path = ctx.recorderGateway.lastStartPath!;
-        await File(path).create(recursive: true);
-        await File(path).writeAsString('fake m4a');
-        ctx.recorderGateway.nextStopResult = _stopPath(path);
-        ctx.playbackGateway.nextLoadResult = const Duration(seconds: 2);
         // First exit: stop throws.
         ctx.recorderGateway.nextStopException =
             Exception('synthetic recorder stop failure');
@@ -4700,26 +4713,35 @@ void main() {
             await controller.requestStopForPageExit();
         expect(first, isA<PageExitStopFailure>());
 
-        // Second exit: the in-flight Future has been
-        // cleared (finally block ran). The retry MUST
-        // start a fresh in-flight Future. The recorder
-        // service is already idle (it cleared itself in
-        // its own catch block), so the retry resolves to
-        // skipped(serviceAlreadyTerminal) — letting the
-        // page finally pop.
+        // T037B2 — the in-flight Future has been cleared
+        // (finally block ran). The retry MUST start a
+        // fresh in-flight Future. The recorder service
+        // kept its active session (state stays
+        // `recording`, `_activeTempFile` preserved) so
+        // the retry drives a real second
+        // `recorder.stop()` against the SAME path and
+        // succeeds. This is the
+        // "second-exit-actually-retries" contract.
         ctx.recorderGateway.nextStopException = null;
+        ctx.recorderGateway.nextStopResult = ctx.recorderGateway.lastStartPath;
+        final int stopsBefore = ctx.recorderGateway.stopCallCount;
         final PageExitStopResult second =
             await controller.requestStopForPageExit();
-        expect(second, isA<PageExitStopSkipped>());
-        expect((second as PageExitStopSkipped).reason,
-            PageExitStopSkipReason.serviceAlreadyTerminal);
+        expect(second, isA<PageExitStopSuccess>(),
+            reason: 'T037B2: the retry must start a fresh in-flight '
+                'Future and drive a real second recorder.stop against '
+                'the same active session');
         expect(second.shouldPop, isTrue);
+        expect(ctx.recorderGateway.stopCallCount, stopsBefore + 1,
+            reason: 'T037B2: the retry MUST call recorder.stop exactly '
+                'once more against the same session');
       },
     );
 
     test(
-      'T037B1 — recorder.stop failure does NOT create a duplicate '
-      'Timer (the ticker remains stopped across failure)',
+      'T037B2 — recorder.stop failure restarts the ticker '
+      '(the MM:SS readout honestly reflects "recording not yet '
+      'confirmed stopped") and does NOT create a duplicate Timer',
       () async {
         final ctx = _buildContext(
           permission: (b) =>
@@ -4737,41 +4759,307 @@ void main() {
             await controller.requestStopForPageExit();
         expect(first, isA<PageExitStopFailure>());
 
-        // The ticker was stopped inside the recording
-        // branch's await chain BEFORE the await (so the
-        // MM:SS readout does not advance while the
-        // platform-channel stop is in flight) and again
-        // after the failure (the service says the
-        // recorder is idle). A second `_stopTicker` call
-        // on an already-cancelled timer is a cheap no-op
-        // — the ticker field is null. The important
-        // invariant is that no NEW Timer.periodic was
-        // created (the controller must NOT call
-        // `_startTicker` on the failure path because
-        // that would re-publish elapsedSeconds for a
-        // recording that the service says is over).
-        // We assert this indirectly: after the failure
-        // + retry (which resolves to skipped), the
-        // controller state has isRecording=false and
-        // elapsedSeconds still equals the recorded
-        // duration. If a duplicate Timer were running it
-        // would have advanced elapsedSeconds past the
-        // recorded duration.
+        // T037B2 — on failure the controller restarts the
+        // ticker so the MM:SS readout honestly reflects
+        // the unknown-stop state. The ticker restart
+        // MUST NOT create a duplicate `Timer.periodic`
+        // — `_startTicker` is internally guarded by an
+        // `_stopTicker` call which cancels the existing
+        // ticker before creating a new one. We assert
+        // this indirectly: after the failure, the retry
+        // (which now resolves to success per the new
+        // contract) stops the ticker and the controller
+        // state has `isRecording=false`. If a duplicate
+        // Timer were running it would have advanced
+        // `elapsedSeconds` past the recorded duration.
+        ctx.recorderGateway.nextStopException = null;
+        ctx.recorderGateway.nextStopResult = ctx.recorderGateway.lastStartPath;
         final PageExitStopResult second =
             await controller.requestStopForPageExit();
-        expect(second, isA<PageExitStopSkipped>());
+        expect(second, isA<PageExitStopSuccess>(),
+            reason: 'T037B2: retry must drive a real second '
+                'recorder.stop and succeed');
         final RecordingPracticeState state =
             ctx.container.read(recordingPracticeControllerProvider);
         expect(state.isRecording, isFalse);
-        // elapsedSeconds is reset to recordedDurationSeconds
-        // by the failure handler (so the MM:SS readout
-        // displays the take's final length even though
-        // the take itself failed to materialise).
+        expect(state.hasRecording, isTrue,
+            reason: 'successful retry must populate the take result so '
+                'the user can save it');
+      },
+    );
+
+    // -----------------------------------------------------------------
+    // T037B2 — dedicated controller-level retry semantics
+    //
+    // The previous T037B1 contract was that the
+    // recorder service cleared its session on a
+    // gateway.stop() throw, so the controller's
+    // retry short-circuited to
+    // `skipped(serviceAlreadyTerminal)` — the page
+    // would pop without ever issuing a real second
+    // `recorder.stop()`. T037B2 fixes the SERVICE
+    // contract (the active session is preserved),
+    // and these tests pin the controller-level
+    // consequences:
+    //   * first failure: page retained, takeId
+    //     preserved, `isRecording` stays true, ticker
+    //     restarts, failure message returned;
+    //   * second call: drives a real second
+    //     `recorder.stop()` against the SAME
+    //     active session, succeeds;
+    //   * consecutive failures: every retry still
+    //     drives a real `recorder.stop()`, the page
+    //     is NEVER popped on failure;
+    //   * ticker is restarted (not duplicated) on
+    //     failure so the MM:SS readout honestly
+    //     reflects "recording not yet confirmed
+    //     stopped".
+    // -----------------------------------------------------------------
+
+    test(
+      'T037B2 — first recorder.stop failure: page ownership '
+      'preserved (isRecording STAYS true, takeId preserved, '
+      'failure result with safe recording-failure message)',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        ctx.recorderGateway.nextStopException =
+            Exception('synthetic recorder stop failure at /abs/path/r.m4a');
+
+        final PageExitStopResult result =
+            await controller.requestStopForPageExit();
+        expect(result, isA<PageExitStopFailure>(),
+            reason: 'T037B2: first failure must return failure so '
+                'the page stays mounted for retry');
+        expect(result.shouldPop, isFalse);
+        final PageExitStopFailure failure = result as PageExitStopFailure;
+        expect(failure.message, '停止录音失败，请重试',
+            reason: 'recording-stop failure must use the safe '
+                'recording-failure copy');
+        // Page ownership is preserved across the failure.
+        final RecordingPracticeState state =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(state.isRecording, isTrue,
+            reason: 'T037B2: isRecording MUST stay true after the first '
+                'recorder.stop failure — the service kept its active '
+                'session, the controller mirrors that, a retry will '
+                're-enter the recording branch and re-issue '
+                'recorder.stop() against the same path');
+        expect(state.takeId, isNotNull,
+            reason: 'T037B2: takeId is preserved so the retry call '
+                'sees the recording branch');
+        expect(state.hasRecording, isFalse,
+            reason: 'T037B2: hasRecording stays false — no successful '
+                'take has been produced yet');
+      },
+    );
+
+    test(
+      'T037B2 — second recorder.stop call after a failure: '
+      'drives a real second recorder.stop() against the SAME '
+      'active session and resolves to success',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        // First call: stop throws.
+        ctx.recorderGateway.nextStopException =
+            Exception('synthetic recorder stop failure');
+        final PageExitStopResult first =
+            await controller.requestStopForPageExit();
+        expect(first, isA<PageExitStopFailure>());
+
+        // Second call: the in-flight Future has been
+        // cleared (finally block ran). The service kept
+        // its active session. The retry MUST drive a
+        // real second `recorder.stop()` and succeed.
+        final int stopsBefore = ctx.recorderGateway.stopCallCount;
+        ctx.recorderGateway.nextStopException = null;
+        ctx.recorderGateway.nextStopResult = ctx.recorderGateway.lastStartPath;
+        final PageExitStopResult second =
+            await controller.requestStopForPageExit();
+        expect(second, isA<PageExitStopSuccess>(),
+            reason: 'T037B2: the retry MUST drive a real second '
+                'recorder.stop and resolve to success — the '
+                'previous T037B1 contract short-circuited to '
+                'skipped(serviceAlreadyTerminal) on the second '
+                'call, violating the "second exit actually '
+                'retries" contract');
+        expect(second.shouldPop, isTrue);
+        expect(second.hasUserFacingError, isFalse);
+        expect(ctx.recorderGateway.stopCallCount, stopsBefore + 1,
+            reason: 'T037B2: the retry MUST call recorder.stop exactly '
+                'once more against the same active session');
+        // The successful retry populates the take result.
+        final RecordingPracticeState state =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(state.isRecording, isFalse);
+        expect(state.hasRecording, isTrue);
+        expect(state.recordedTakeResult, isNotNull);
+        expect(state.recordedTakeResult!.resolvedPath,
+            ctx.recorderGateway.lastStartPath,
+            reason: 'T037B2 + T033: resolvedPath is preserved '
+                'verbatim from the recorder gateway');
+      },
+    );
+
+    test(
+      'T037B2 — consecutive recorder.stop failures: every retry '
+      'drives a real recorder.stop() and the page is NEVER popped '
+      'until the retry succeeds',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        // Three consecutive failures.
+        for (int i = 0; i < 3; i++) {
+          ctx.recorderGateway.nextStopException =
+              Exception('synthetic recorder stop failure #$i');
+          final PageExitStopResult r =
+              await controller.requestStopForPageExit();
+          expect(r, isA<PageExitStopFailure>(),
+              reason: 'failure #$i: result must be failure so the '
+                  'page stays mounted for retry');
+          expect(r.shouldPop, isFalse,
+              reason: 'failure #$i: page must NEVER pop until the '
+                  'retry succeeds');
+          final RecordingPracticeState state =
+              ctx.container.read(recordingPracticeControllerProvider);
+          expect(state.isRecording, isTrue,
+              reason: 'failure #$i: isRecording MUST stay true');
+          expect(state.takeId, isNotNull,
+              reason: 'failure #$i: takeId is preserved');
+        }
+        expect(ctx.recorderGateway.stopCallCount, 3,
+            reason: 'T037B2: every retry MUST invoke recorder.stop() — '
+                'the controller MUST NOT short-circuit');
+        // Successful retry.
+        ctx.recorderGateway.nextStopException = null;
+        ctx.recorderGateway.nextStopResult = ctx.recorderGateway.lastStartPath;
+        final PageExitStopResult success =
+            await controller.requestStopForPageExit();
+        expect(success, isA<PageExitStopSuccess>(),
+            reason: 'T037B2: after three failures, the fourth call '
+                '(with the gateway reset to succeed) MUST drive a '
+                'real recorder.stop and succeed');
+        expect(success.shouldPop, isTrue);
+        expect(ctx.recorderGateway.stopCallCount, 4);
+      },
+    );
+
+    test(
+      'T037B2 — ticker restart on failure does NOT create a '
+      'duplicate Timer.periodic (the MM:SS readout honestly '
+      'reflects "recording not yet confirmed stopped")',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        // First failure: controller restarts the ticker.
+        ctx.recorderGateway.nextStopException =
+            Exception('synthetic recorder stop failure');
+        final PageExitStopResult first =
+            await controller.requestStopForPageExit();
+        expect(first, isA<PageExitStopFailure>());
+
+        // Successful retry: the ticker is cancelled
+        // before the second `recorder.stop()` await
+        // (so the MM:SS readout does not advance while
+        // the second platform-channel stop is in
+        // flight), and a successful retry leaves
+        // `isRecording = false` and the ticker
+        // stopped. We assert indirectly that no
+        // duplicate Timer was created: the retry's
+        // success path stops the ticker cleanly and
+        // the resulting `recordedDurationSeconds` is
+        // stable (not advancing from a leaked
+        // duplicate Timer).
+        ctx.recorderGateway.nextStopException = null;
+        ctx.recorderGateway.nextStopResult = ctx.recorderGateway.lastStartPath;
+        final PageExitStopResult second =
+            await controller.requestStopForPageExit();
+        expect(second, isA<PageExitStopSuccess>());
+        final RecordingPracticeState state =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(state.isRecording, isFalse);
+        expect(state.hasRecording, isTrue);
+        // `recordedDurationSeconds` is stable after
+        // the successful stop — if a duplicate Timer
+        // were running, elapsedSeconds would diverge
+        // from recordedDurationSeconds on a later
+        // tick. The MM:SS readout is pinned.
         expect(state.elapsedSeconds, state.recordedDurationSeconds,
-            reason: 'elapsedSeconds MUST stay pinned to '
-                'recordedDurationSeconds after a failed exit — a '
-                'duplicate Timer would have advanced it past the '
-                'recorded duration');
+            reason: 'T037B2: elapsedSeconds MUST equal '
+                'recordedDurationSeconds after the successful stop — '
+                'a duplicate Timer would have advanced elapsedSeconds '
+                'past the recorded duration');
+      },
+    );
+
+    test(
+      'T037B2 — controller does NOT return '
+      'skipped(serviceAlreadyTerminal) as a way to bypass the '
+      'real retry after a recorder.stop failure (the recording '
+      'branch must drive a real second stop, not short-circuit)',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) =>
+              b..nextCheckStatus = MicrophonePermissionStatus.granted,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        ctx.recorderGateway.nextStopException =
+            Exception('synthetic recorder stop failure');
+        final PageExitStopResult first =
+            await controller.requestStopForPageExit();
+        expect(first, isA<PageExitStopFailure>());
+        // The retry must NOT bypass the real stop.
+        ctx.recorderGateway.nextStopException = null;
+        ctx.recorderGateway.nextStopResult = ctx.recorderGateway.lastStartPath;
+        final PageExitStopResult second =
+            await controller.requestStopForPageExit();
+        expect(second, isA<PageExitStopSuccess>(),
+            reason: 'T037B2: the retry MUST resolve to success '
+                'via a real recorder.stop(), NOT to '
+                'skipped(serviceAlreadyTerminal)');
+        expect(second, isNot(isA<PageExitStopSkipped>()),
+            reason: 'T037B2: short-circuiting to '
+                'skipped(serviceAlreadyTerminal) on the retry would '
+                'bypass the real second recorder.stop() and '
+                'silently leave the native recorder running');
       },
     );
   });

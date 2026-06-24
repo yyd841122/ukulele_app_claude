@@ -1585,6 +1585,17 @@ void main() {
         expect(tester.takeException(), isNull,
             reason: 'recorder-stop failure must not produce an unhandled '
                 'async error');
+        // T037B2 — the controller restarted the ticker
+        // on the failure path (the service kept its
+        // active session, so the MM:SS readout must
+        // honestly reflect "recording not yet
+        // confirmed stopped"). Tear the container
+        // down here so the test framework can settle
+        // without complaining about a pending
+        // `Timer.periodic` — the container's
+        // `_onDispose` hook cancels the ticker.
+        container.dispose();
+        await tester.pumpAndSettle();
       },
     );
 
@@ -1772,9 +1783,9 @@ void main() {
     // =======================================================================
 
     testWidgets(
-      'T037B1 — recorder.stop throws then service is idle: '
+      'T037B2 — recorder.stop throws then retry: '
       'first exit surfaces SnackBar + retains page, '
-      'second exit finally pops the page',
+      'second exit re-issues recorder.stop and finally pops the page',
       (WidgetTester tester) async {
         await _useTallSurface(tester);
         final (:rootProvider, :root) = _isolatedRoot();
@@ -1824,17 +1835,20 @@ void main() {
           reason: 'first failed exit must NOT pop the page',
         );
 
-        // Second exit: the recorder service has already
-        // cleared its session internally (state == idle).
-        // The controller's recorder-stop-retry path
-        // short-circuits to `skipped(serviceAlreadyTerminal)`,
-        // which the page treats as a clean pop.
-        // The recorder.stop call count MUST stay at
-        // 0 (the first attempt threw before incrementing
-        // success-side counters; the second attempt does
-        // NOT call recorder.stop because the service is
-        // already terminal).
+        // T037B2 — the recorder service kept its
+        // active session (state stays `recording`,
+        // `_activeTempFile` preserved). The retry
+        // MUST drive a real second `recorder.stop()`
+        // against the SAME path and succeed, and the
+        // page must finally pop. This is the
+        // "second-exit-actually-retries" contract that
+        // the previous T037B1 implementation violated
+        // (it short-circuited to
+        // `skipped(serviceAlreadyTerminal)` on the
+        // second call).
         final int recStopsBefore = ctx.recorderGateway.stopCallCount;
+        ctx.recorderGateway.nextStopException = null;
+        ctx.recorderGateway.nextStopResult = ctx.recorderGateway.lastStartPath;
         await tester.tap(
           find.byKey(const ValueKey<String>('recording-back-button')),
         );
@@ -1845,19 +1859,19 @@ void main() {
 
         expect(
           ctx.recorderGateway.stopCallCount,
-          recStopsBefore,
-          reason: 'T037B1: the retry must NOT call recorder.stop again '
-              '— the service is already idle',
+          recStopsBefore + 1,
+          reason: 'T037B2: the retry MUST call recorder.stop exactly '
+              'once more (against the same active session)',
         );
         expect(
           find.byKey(
               const ValueKey<String>('recording-page-pop-sentinel-home')),
           findsOneWidget,
-          reason: 'T037B1: the second exit must finally pop the page',
+          reason: 'T037B2: the second exit must finally pop the page',
         );
         expect(find.byType(RecordingPage), findsNothing,
-            reason: 'T037B1: RecordingPage must be unmounted after the '
-                'second exit resolves');
+            reason: 'T037B2: RecordingPage must be unmounted after the '
+                'second exit succeeds');
         // No unhandled exception across the failure +
         // retry + pop sequence.
         expect(tester.takeException(), isNull);
@@ -2014,6 +2028,302 @@ void main() {
               const ValueKey<String>('recording-page-pop-sentinel-home')),
           findsOneWidget,
           reason: 'T037B1: the page must be popped exactly once',
+        );
+        expect(find.byType(RecordingPage), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    // -----------------------------------------------------------------
+    // T037B2 — dedicated widget-level retry semantics.
+    //
+    // T037B2 fixes a service-layer flaw exposed by
+    // the previous T037B1 contract: the
+    // RealAudioRecorderService cleared its active
+    // session and flipped state to `idle` on a
+    // `gateway.stop()` throw, which made the
+    // controller's retry short-circuit to
+    // `skipped(serviceAlreadyTerminal)` — the page
+    // would pop without ever issuing a real second
+    // `recorder.stop()`. T037B2 keeps the service's
+    // active session across a stop failure, and
+    // these widget tests pin the consequences:
+    //   * first failed exit: page is retained,
+    //     SnackBar shown, recorder.stop call count
+    //     increases by 1 (NOT skipped);
+    //   * second exit: drives a real second
+    //     recorder.stop against the SAME path, the
+    //     call count strictly increases, the page
+    //     finally pops;
+    //   * consecutive failures: every retry drives
+    //     a real recorder.stop, the page is NEVER
+    //     popped until the retry succeeds;
+    //   * AppBar + Android system back both
+    //     covered.
+    // -----------------------------------------------------------------
+
+    testWidgets(
+      'T037B2 — first recorder.stop failure: page retained, '
+      'recording-failure SnackBar shown, recorder.stop call '
+      'count increased by exactly 1 (no premature skip)',
+      (WidgetTester tester) async {
+        await _useTallSurface(tester);
+        final (:rootProvider, :root) = _isolatedRoot();
+        final AudioFileStorageService storage = AudioFileStorageService(
+          rootDirectoryProvider: rootProvider,
+        );
+        final _PageContext ctx = _PageContext(
+          recorderGateway: FakeAudioRecorderGateway(),
+          playbackGateway: FakeAudioPlaybackGateway(),
+          permissionGateway: FakeMicrophonePermissionGateway()
+            ..nextCheckStatus = MicrophonePermissionStatus.granted,
+          storage: storage,
+        );
+        final ProviderContainer container = await _pumpPageT037B(
+          tester,
+          _FakePracticeRecordRepository(),
+          ctx: ctx,
+        );
+        await enterRecording(tester, ctx, container);
+        final int recStopsBefore = ctx.recorderGateway.stopCallCount;
+        ctx.recorderGateway.nextStopException =
+            Exception('synthetic recorder stop failure at /abs/path/r.m4a');
+
+        await tester.tap(
+          find.byKey(const ValueKey<String>('recording-back-button')),
+        );
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 1));
+        });
+        await tester.pumpAndSettle();
+
+        // T037B2 — page is retained on the first failure.
+        expect(find.byType(RecordingPage), findsOneWidget,
+            reason: 'T037B2: first failure must keep the page mounted');
+        // recording-failure SnackBar is shown.
+        expect(
+          find.byKey(const ValueKey<String>(
+              'recording-page-exit-stop-recording-failure-snackbar')),
+          findsOneWidget,
+        );
+        expect(find.text('停止录音失败，请重试'), findsOneWidget);
+        expect(find.text('停止播放失败，请重试'), findsNothing,
+            reason: 'T037B2: the recording-failure path must NOT use '
+                'the playback-failure copy');
+        // Pop sentinel is NOT visible — the page is still
+        // mounted.
+        expect(
+          find.byKey(
+              const ValueKey<String>('recording-page-pop-sentinel-home')),
+          findsNothing,
+          reason: 'T037B2: first failure must NOT pop the page',
+        );
+        // recorder.stop was called exactly once.
+        expect(
+          ctx.recorderGateway.stopCallCount,
+          recStopsBefore + 1,
+          reason: 'T037B2: the first failed exit MUST call '
+              'recorder.stop exactly once (the contract change is '
+              'that the service preserves the active session for '
+              'the retry, NOT that the first call is skipped)',
+        );
+        // No unhandled exception.
+        expect(tester.takeException(), isNull);
+        // Tear the container down so the test framework
+        // can settle without complaining about the
+        // re-started ticker.
+        container.dispose();
+        await tester.pumpAndSettle();
+      },
+    );
+
+    testWidgets(
+      'T037B2 — second exit after recorder.stop failure: '
+      'recorder.stop call count strictly increases, page finally '
+      'pops (drives a real second stop, not a skip)',
+      (WidgetTester tester) async {
+        await _useTallSurface(tester);
+        final (:rootProvider, :root) = _isolatedRoot();
+        final AudioFileStorageService storage = AudioFileStorageService(
+          rootDirectoryProvider: rootProvider,
+        );
+        final _PageContext ctx = _PageContext(
+          recorderGateway: FakeAudioRecorderGateway(),
+          playbackGateway: FakeAudioPlaybackGateway(),
+          permissionGateway: FakeMicrophonePermissionGateway()
+            ..nextCheckStatus = MicrophonePermissionStatus.granted,
+          storage: storage,
+        );
+        final ProviderContainer container = await _pumpPageT037B(
+          tester,
+          _FakePracticeRecordRepository(),
+          ctx: ctx,
+        );
+        await enterRecording(tester, ctx, container);
+        // First exit: stop throws.
+        ctx.recorderGateway.nextStopException =
+            Exception('synthetic recorder stop failure at /abs/path/r.m4a');
+        await tester.tap(
+          find.byKey(const ValueKey<String>('recording-back-button')),
+        );
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 1));
+        });
+        await tester.pumpAndSettle();
+        expect(find.byType(RecordingPage), findsOneWidget,
+            reason: 'first failure must keep the page mounted');
+        final int recStopsAfterFirst = ctx.recorderGateway.stopCallCount;
+
+        // Second exit: gateway recovers.
+        ctx.recorderGateway.nextStopException = null;
+        ctx.recorderGateway.nextStopResult = ctx.recorderGateway.lastStartPath;
+        await tester.tap(
+          find.byKey(const ValueKey<String>('recording-back-button')),
+        );
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 1));
+        });
+        await tester.pumpAndSettle();
+
+        // recorder.stop call count strictly increases
+        // — the second exit drove a real second call.
+        expect(
+          ctx.recorderGateway.stopCallCount,
+          recStopsAfterFirst + 1,
+          reason: 'T037B2: the second exit MUST drive a real second '
+              'recorder.stop (strictly +1), not a skip',
+        );
+        // Page finally pops.
+        expect(
+          find.byKey(
+              const ValueKey<String>('recording-page-pop-sentinel-home')),
+          findsOneWidget,
+          reason: 'T037B2: the second exit (successful) must pop '
+              'the page',
+        );
+        expect(find.byType(RecordingPage), findsNothing,
+            reason: 'T037B2: RecordingPage must be unmounted after '
+                'the successful second exit');
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'T037B2 — consecutive recorder.stop failures: page stays '
+      'mounted across all failures, recorder.stop call count '
+      'increases for every retry (no premature pop, no unhandled '
+      'exception)',
+      (WidgetTester tester) async {
+        await _useTallSurface(tester);
+        final (:rootProvider, :root) = _isolatedRoot();
+        final AudioFileStorageService storage = AudioFileStorageService(
+          rootDirectoryProvider: rootProvider,
+        );
+        final _PageContext ctx = _PageContext(
+          recorderGateway: FakeAudioRecorderGateway(),
+          playbackGateway: FakeAudioPlaybackGateway(),
+          permissionGateway: FakeMicrophonePermissionGateway()
+            ..nextCheckStatus = MicrophonePermissionStatus.granted,
+          storage: storage,
+        );
+        final ProviderContainer container = await _pumpPageT037B(
+          tester,
+          _FakePracticeRecordRepository(),
+          ctx: ctx,
+        );
+        await enterRecording(tester, ctx, container);
+
+        // Three consecutive failures.
+        for (int i = 0; i < 3; i++) {
+          ctx.recorderGateway.nextStopException =
+              Exception('synthetic recorder stop failure #$i');
+          await tester.tap(
+            find.byKey(const ValueKey<String>('recording-back-button')),
+          );
+          await tester.runAsync(() async {
+            await Future<void>.delayed(const Duration(milliseconds: 1));
+          });
+          await tester.pumpAndSettle();
+          expect(find.byType(RecordingPage), findsOneWidget,
+              reason: 'T037B2: failure #$i must keep the page mounted '
+                  '— the page must NEVER pop until the retry '
+                  'succeeds');
+          expect(
+            ctx.recorderGateway.stopCallCount,
+            i + 1,
+            reason: 'T037B2: failure #$i must drive a real '
+                'recorder.stop (call count = $i + 1)',
+          );
+        }
+        expect(tester.takeException(), isNull,
+            reason: 'T037B2: consecutive failures must not produce '
+                'an unhandled exception');
+        // Tear the container down so the test framework
+        // can settle without complaining about the
+        // re-started ticker.
+        container.dispose();
+        await tester.pumpAndSettle();
+      },
+    );
+
+    testWidgets(
+      'T037B2 — Android system back after a recorder.stop '
+      'failure also drives a real second recorder.stop (not a '
+      'skip), and the page finally pops on the successful retry',
+      (WidgetTester tester) async {
+        await _useTallSurface(tester);
+        final (:rootProvider, :root) = _isolatedRoot();
+        final AudioFileStorageService storage = AudioFileStorageService(
+          rootDirectoryProvider: rootProvider,
+        );
+        final _PageContext ctx = _PageContext(
+          recorderGateway: FakeAudioRecorderGateway(),
+          playbackGateway: FakeAudioPlaybackGateway(),
+          permissionGateway: FakeMicrophonePermissionGateway()
+            ..nextCheckStatus = MicrophonePermissionStatus.granted,
+          storage: storage,
+        );
+        final ProviderContainer container = await _pumpPageT037B(
+          tester,
+          _FakePracticeRecordRepository(),
+          ctx: ctx,
+        );
+        await enterRecording(tester, ctx, container);
+
+        // First exit via Android system back: stop throws.
+        ctx.recorderGateway.nextStopException =
+            Exception('synthetic recorder stop failure at /abs/path/r.m4a');
+        await tester.binding.handlePopRoute();
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 1));
+        });
+        await tester.pumpAndSettle();
+        expect(find.byType(RecordingPage), findsOneWidget,
+            reason: 'first failure must keep the page mounted');
+        final int recStopsAfterFirst = ctx.recorderGateway.stopCallCount;
+
+        // Second exit via Android system back: the
+        // gateway recovers and the retry drives a real
+        // second recorder.stop. The page finally pops.
+        ctx.recorderGateway.nextStopException = null;
+        ctx.recorderGateway.nextStopResult = ctx.recorderGateway.lastStartPath;
+        await tester.binding.handlePopRoute();
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 1));
+        });
+        await tester.pumpAndSettle();
+        expect(
+          ctx.recorderGateway.stopCallCount,
+          recStopsAfterFirst + 1,
+          reason: 'T037B2: the Android system back retry MUST drive '
+              'a real second recorder.stop (strictly +1)',
+        );
+        expect(
+          find.byKey(
+              const ValueKey<String>('recording-page-pop-sentinel-home')),
+          findsOneWidget,
+          reason: 'T037B2: the successful Android system back retry '
+              'must pop the page',
         );
         expect(find.byType(RecordingPage), findsNothing);
         expect(tester.takeException(), isNull);

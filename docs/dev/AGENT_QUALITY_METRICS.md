@@ -1949,3 +1949,31 @@
 | Collaboration Value | **High**（1 个独立 Reviewer 在 Primary 起草后立即识别 4 项 Blocker，**避免设计落入实现后返工**；Reviewer 三大价值：① 拦截"Day 4 内容重叠 → 防止与已发布 v1.1.0 行为冲突"；② 强制"节拍器静态化约束 → 把下扫节奏限制为视觉指引，避免误读为 PRD §6.5 边界突破"；③ 推动"数据模型扩展性 → 避免硬编码 Day 4，支持 Day 3 / 5 / 6 后续切片"；属于"轻量协作拦截设计层塌方"的典型场景） |
 | 可复用经验 | ① 教学 / 内容设计类任务应**先经独立 Reviewer 复审再落盘**，而非"设计完直接写代码"；② Reviewer 重点检查 3 项：**与已发布内容是否冲突 / 是否越界既有 PRD 边界 / 数据模型是否可扩展**，避免设计层塌方；③ 低风险纯设计任务（无代码 / 无依赖 / 无 schema）使用 **Primary + 1 个独立 Reviewer** 即可，与 T040 工具升级任务协作模型一致；④ **不要**给纯设计任务扩展为 Primary + 2+ Reviewer 或引入交叉多 reviewer；⑤ "叠加层 vs 替换"边界是设计审查高频雷区，Reviewer 必须显式追问 |
 | Notes | T041 严格遵守：① 不修改生产代码 / 测试代码 / 依赖 / Android 配置 / Drift schema / `PracticeRecord` 字段 / `schemaVersion` / 节拍器 domain / `RecordingPracticeController` / `RealAudioRecorderService` / `RealAudioPlaybackService` / `PracticeRecordRepository`；② 不 push / 不 Tag / 不 amend / rebase / reset --hard；③ 不开始 T042-T046 任何实现（必须由 GPT 首席架构师出具独立 Prompt 后启动）；④ 4 个 doc 文件均通过 `git diff --check` 验证（CRLF Windows 提示为既有 line-ending 约定，非 Blocker）；详见 `docs/dev/TASK_LEDGER.md` T041 节段 + `tasks/T041_BEGINNER_LEARNING_PHASE_2_SCOPE.md` 全文 |
+
+#### 4.30 T042 Scorecard（T042_LESSON_CONTENT_DESIGN · 仅文档 · 第一节课 `C ↔ Am` 4/4 下扫教学 内容设计）
+
+| 项目 | 内容 |
+| --- | --- |
+| Task ID | `T042_LESSON_CONTENT_DESIGN` |
+| Task Name | 第一节课 `C ↔ Am` 4/4 下扫教学 内容设计（仅文档，不编码） |
+| Status | 通过(待 GPT 复审) |
+| Tests Passed | 720（基线保持；**不**新增 / 修改 / 删除任何测试；**不**运行 build_runner / 构建 APK / AAB / **不**调用 `flutter test`） |
+| Scope Clean | Yes（仅新建 `docs/learning/lesson_c_am_down_4x4.md` + 仅修改 `docs/dev/TASK_LEDGER.md`（追加 T042 行 + §T042 节段）/ `docs/dev/AGENT_QUALITY_METRICS.md`（追加本 §4.30 Scorecard）；总修改文件 = 3 个 doc，0 个 code / test / 依赖 / Android 配置 / Drift schema / Manifest / `app_database.g.dart` / `practice_plan_constants.dart` / SVG 资源） |
+| Command discipline violation | **No**（全程命令均为单条只读命令：`git status --short` / `git log -1 --oneline` / `git rev-parse HEAD` / `git branch --show-current` / `git diff --check` / `git diff --stat` / `Read` / `Write` / `Edit` / `Grep` / `Glob` / `Bash mkdir`；无管道、无重定向、无 `&&`、无分号、无复合命令） |
+| Sensitive Files Checked | N/A（**不**涉及 `key.properties` / keystore / 密码 / 录音文件 / Drift schema / Manifest；T042 为纯教学内容文档任务） |
+| Build Artifacts Tracked | N/A（**未**构建 APK / AAB；**未**生成 SVG 资源（由 T043 独立任务创建）） |
+| Primary Agent | `05-music-domain-expert`（`general-purpose` subagent，agentId `aa2dd7f3b23157177` / 2 次工具调用 / 180.1s / 33,177 tokens）独立起草（基于 T041 §3.2 / §3.3 / §4.1 既有设计 + PRD §6.5 / §9 Day 4 + `practice_plan_constants.dart` Day 4 既定 5 个任务 + Day 3 C / Am 单和弦前置能力） |
+| Review Agent | **1 个独立只读 Product / Beginner UX Reviewer**（`general-purpose` subagent，agentId `afdf7d096cacb95a3`，resumed from transcript） |
+| Reviewer 初次判定 | **Approved**（4 维度全过 + 3 项非阻塞建议 nice-to-have） |
+| 维度 1：零基础可理解性 | 通过（4/4 拍 + 下扫 + BPM 折算 + C / Am 指法 + 姿势 + 错误清单 8 项） |
+| 维度 2：T041 / T042 边界符合性 | 通过（仅叠加 / 无新依赖 / 无新权限 / 无新字段 / 无节奏型切换 / 无鼓点 / 无 AI 评分 / CC0 原创 / SVG 范围受控 9 项） |
+| 维度 3：可实施性 | 通过（70 BPM 已新增过渡 / 8 小节 = 32 拍 ≤ 60 秒录音匹配 / 自评三档量化锚点 / 错误阈值已给） |
+| 维度 4：范围一致性 | 通过（T041 §3.2 六步骤全覆盖 / Day 4 18 分钟预算 ≈9-11 分钟 / 入口仅 1 个 `/chords/c` 顶部） |
+| Reviewer 3 项 nice-to-have | ① 节奏网格 ASCII 表格补充"切换拍 `*` 标记"；② 70 BPM 过渡入口明示为"可选"；③ 录音回放自评增加"分 8 次听完整段"提示——Primary 全部吸收进落盘文档 |
+| Primary 修订 | 全部 3 项 nice-to-have 已落盘：① 第 7.1 / 7.2 节图例加 `*` 符 + "图例"说明行；② 第 5 节标题下方加"70 BPM 为可选过渡"+ Step 1.5 节首段加"本步骤为可选，不强制"；③ 第 10.3 节新增"分 8 次听完整段"提示 |
+| Reviewer 终判 | **Approved**（一次性 Approved，无 Blocker） |
+| Final Approval | 待 GPT 复审 |
+| Primary 8 项主动风险修正 | ① "下扫"动作模糊 → "摇扇子 vs 挥旗子"形象化；② 60→80 BPM 跨度大 → 新增 Step 1.5 可选 70 BPM；③ 中指锚点未突出 → 图示粗体"②AC = 锚点"+ 标题"哪 2 个手指先动（中指不动）"；④ 自评主观无锚点 → 三档量化（28/20-27/<20 拍对齐）；⑤ 录音环境未提示 → 4 条具体指引；⑥ 节拍器边界隐式 → 显式声明"SVG 是叠加层，不是节拍器原生能力"；⑦ 2 拍换和弦理由未说 → 补"为让 Day 4 用户在 1 小节内完成 1 次转换训练"；⑧ 手腕酸痛无停止阈值 → 量化"4 小节（16 拍）后酸 = 立刻停" |
+| Collaboration Value | **High**（1 个独立 Reviewer 一次性 Approved，反向证明 Primary 草稿在 4 维度上已达标；3 项 nice-to-have 全部为"表达层精细化"而非"边界修正"，属于"轻量协作优化表达"场景；Primary 在草稿阶段即主动识别 8 项风险并全部修正，避免 Reviewer 阶段才返工） |
+| 可复用经验 | ① **内容设计任务应在草稿阶段就内置"自我找茬 + 修正"**，避免风险落到 Reviewer 阶段才被发现；② 独立 Reviewer 对"音乐教学内容"的审查应聚焦 **4 维度（零基础可理解性 / PRD 边界 / 可实施性 / 范围一致性）**，避免"边界已合规但表达模糊"的盲区；③ nice-to-have 数量 ≤3 且**全部为表达层优化**时，可判定为 Approved 而非 Blocker；④ "可选过渡步骤"（如本课 70 BPM）必须**显式标为"可选"**，避免用户误以为必须走完整路径；⑤ T041（边界文档）+ T042（内容文档）两级文档闭环模式可推广到后续 T043-T046 实现任务 |
+| Notes | T042 严格遵守：① 不修改生产代码 / 测试代码 / 依赖 / Android 配置（Manifest / Gradle）/ Drift schema / `PracticeRecord` 字段 / `schemaVersion` / 节拍器 domain / `MetronomeSetting` / `MetronomeController` / `RecordingPracticeController` / `RealAudioRecorderService` / `RealAudioPlaybackService` / `PracticeRecordRepository` / `practice_plan_constants.dart`；② 不 push / 不 Tag / 不 amend / rebase / reset --hard；③ 不开始 T043-T046 任何实现（必须由 GPT 首席架构师出具独立 Prompt 后启动）；④ 3 个 doc 文件均通过 `git diff --check` 验证（CRLF Windows 提示为既有 line-ending 约定，非 Blocker）；⑤ SVG 资源 `assets/strum_patterns/down_4x4.svg` 由 T043 独立创建，本任务**仅**描述内容/位置/约束；详见 `docs/dev/TASK_LEDGER.md` §T042 节段 + `docs/learning/lesson_c_am_down_4x4.md` 全文 |

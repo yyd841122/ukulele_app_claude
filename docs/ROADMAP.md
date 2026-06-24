@@ -323,9 +323,9 @@
 
 ## Product V2 路线（T047 后）
 
-> T047 (`T047_PRODUCT_V2_SYSTEM_DESIGN`) 已落盘 `docs/architecture/SDD_V2.md` v0.3（457 行；v0.1 → v0.2 由 3 位 Reviewer Approved with Conditions 修订；v0.2 → v0.3 由 T047A 二元裁决闭环 0 Blocker 修订）。
-> 该 SDD 把 v2 长期对标功能（P1-P6）压缩为 10 个模块边界 + Drift 显式升级 schemaVersion: 2 → 3（P2 引入 `scores`）+ 3 → 4（P4 处理 `practice_records.lessonId`）+ OP-1~OP-5 Spike 候选 + 9 步 mapping + 平台边界声明 + 不锁定算法 + 四类时钟区分 + 5 分钟漂移初始验收目标。
-> **T047 / T047A 不进入 P1-P6 实现**；后续 T048 起按 SDD §10.2 风险缓解与 §3 模块边界逐步落地。
+> T047 (`T047_PRODUCT_V2_SYSTEM_DESIGN`) 已落盘 `docs/architecture/SDD_V2.md` v0.4（v0.1 → v0.2 由 3 位 Reviewer Approved with Conditions 修订；v0.2 → v0.3 由 T047A 二元裁决闭环 0 Blocker 修订；v0.3 → v0.4 由 T047B 二元裁决闭环 0 Blocker 修订）。
+> 该 SDD 把 v2 长期对标功能（P1-P6）压缩为 10 个模块边界 + Drift 显式升级 schemaVersion: 2 → 3（P2 引入 `scores`，**累进式 cumulative `if (from < N)` 链**，覆盖 `from=1, to=3` 跨版本直接升级，**不**用 `else if` 精确分支对）+ 3 → 4（P4 处理 `practice_records.lessonId` 同样累进式追加）+ OP-1~OP-5 Spike 候选 + 9 步 mapping + 平台边界声明 + 不锁定算法 + 四类时钟区分 + 5 分钟漂移初始验收目标。
+> **T047 / T047A / T047B 不进入 P1-P6 实现**；后续 T048 起按 SDD §10.2 风险缓解与 §3 模块边界逐步落地。
 
 ### Product V2 阶段门（SDD §8 + PRD §6 对齐）
 
@@ -344,7 +344,7 @@
 |----------|----------|-----------------|
 | §1.2 平台边界声明 | Android-first / common High-G GCEA 优先；iOS / 平板 / Low-G = Deferred + 前置条件（非永久 Out） | V1-V5 商业化路线不变；iOS 推迟到 P6+ 受合规前置约束 |
 | §3.10 CMS/Account/Sync/Subscription 边界 | 严格 Deferred；P6 前不创建任何联网模块 / 抽象接口 / 占位 Dart 文件 | V5 商业化路线由 P6 阶段独立设计，不在 P1-P5 提前抽象 |
-| §3.8 Drift schemaVersion 策略（**v0.3 修订**） | **P2 引入 `scores` 表时显式升级 `schemaVersion: 2 → 3`**（v0.2 错误地把"不升级 schemaVersion" + `beforeOpen` 静默 CREATE TABLE 写为已选定策略；v0.3 改为走 `MigrationStrategy.onUpgrade` + `@DriftDatabase(tables: [..., Scores])` + 类型化 `Into` 插入）；**P4 处理 `practice_records.lessonId` 关联字段时显式升级 `schemaVersion: 3 → 4`**（两个升级独立编号，**不**冲突） | T013 既有 schemaVersion=2 保持到 P2 启动前；P2 实际启动时第一次升级（v2→v3）；P4 第二次升级（v3→v4）；`app_database.dart` `onUpgrade` 必须扩展 `if / else if` 链 |
+| §3.8 Drift schemaVersion 策略（**v0.4 勘误**） | **P2 引入 `scores` 表时显式升级 `schemaVersion: 2 → 3`**（v0.3 把"不升级 schemaVersion" + `beforeOpen` 静默 CREATE TABLE 写为已选定策略；v0.4 改为走 `MigrationStrategy.onUpgrade` + **累进式（cumulative）`if (from < N)` 链**（每个版本独立 `if` 块，互不互斥，**不**使用 `else if` 精确分支对，必须覆盖 `from=1, to=3` 跨版本直接升级）+ `@DriftDatabase(tables: [..., Scores])` + 类型化 `Into` 插入；`beforeOpen` **不得**用于创建正式业务表）；**P4 处理 `practice_records.lessonId` 关联字段时显式升级 `schemaVersion: 3 → 4`**（按累进式 `if (from < 4)` 追加，两个升级独立编号，**不**冲突） | T013 既有 schemaVersion=2 保持到 P2 启动前；P2 实际启动时第一次升级（v2→v3）；P4 第二次升级（v3→v4）；`app_database.dart` `onUpgrade` 必须**扩展为累进式 `if (from < N)` 链**——**禁止**使用 `else if` 精确分支对（处理 `from=1, to=3` 这种跨版本合法升级会落空） |
 | §3.6 时间基准（**v0.3 修订**） | **四类时钟区分**（会话单调 / PCM 样本计数 / chunk 到达 / 设备采集）；明确不得把 chunk 到达时间伪装成设备采集时间；5 分钟稳态 ≤ 50 ms 改为**初始验收目标**（测量对象 = OnsetEvent ↔ BeatTick 相对漂移，非 wall-clock 绝对漂移，起止基准 = Session start / Session stop）；设备采集时间戳待 T048A Spike 验证 | T048 TDD 时间漂移测试语义明确；不依赖未证实的 record_android 内部单调时钟 |
 | §7.2 A 方案（**v0.3 修订**） | **"首选 Spike 验证候选（非已证明架构）"**（v0.2 误写为"★★★ 推荐 P1 Spike"）；T048A 真机清单 7 项必含（5s/30s/5min 三档断点 + m4a 完整性 + PCM 连续性 + 权限生命周期 + 停止回调归属 + 资源释放 + 设备兼容矩阵）+ ADR 产出强制 | T048A 真机 Spike 必须通过 ADR 才允许成为 P1 正式方案；未通过则回退 C（事后解码）或 D（FFI），**不退回** E |
 | §3.9 LocalProfile streak 字段 | P1-P5 不持有 streak 数据；P5 启动时再走 schema 升级（**注意**：P5 = `schemaVersion: 4 → 5` 或更高，P2 / P4 已占用 v3 / v4 名额） | P5 Personalization 阶段显式触发 streak schema 升级 |

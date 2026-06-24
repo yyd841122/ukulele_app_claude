@@ -1,13 +1,13 @@
 # SDD V2 — Product V2 系统设计（ukulele_app）
 
-> Task ID：`T047_PRODUCT_V2_SYSTEM_DESIGN`
+> Task ID：`T047_PRODUCT_V2_SYSTEM_DESIGN` / `T047A_CORRECT_PRODUCT_V2_SYSTEM_DESIGN` / `T047B_FIX_MULTI_VERSION_DRIFT_MIGRATION_DESIGN`
 > 上游：`docs/PRD_v2.md` v0.3（已批准）
-> 起始 HEAD：`30b786b`
+> 起始 HEAD：`30b786b`（T047） / `14f63ad`（T047A / T047B）
 > 测试基线：744
-> 最后更新：2026-06-24 | 版本：0.3
+> 最后更新：2026-06-25 | 版本：0.4
 > 状态：**设计**（仅文档；不实现任何代码；不修改生产代码 / 测试 / `pubspec.yaml` / Manifest / Drift schema）
 > 是否引入依赖 / 修改 Android 配置：**否**
-> 多 Agent 协作：Primary Agent（主会话）/ Audio Architecture Reviewer `t047a-audio-reviewer`（**Approved**） / Flutter Data Architecture Reviewer `t047a-flutter-data-reviewer`（**Approved**）；Product Alignment 不重复运行（本次未改 PRD 范围）；上一轮 v0.2 Reviewer `a29d26f55a6a993e8` / `af3e5bbcdbc28a57d` / `aaa74dd285a4ed015`（v0.2 Approved with Conditions，0 Blocker；v0.3 修正三项架构问题后重审）
+> 多 Agent 协作：Primary Agent（主会话）/ Audio Architecture Reviewer `t047a-audio-reviewer`（**Approved**） / Flutter Data Architecture Reviewer `t047a-flutter-data-reviewer`（**Approved**）/ T047B Flutter Data Architecture Reviewer `t047b-flutter-data-reviewer`（**Approved**）；Product Alignment 不重复运行（本次未改 PRD 范围）；上一轮 v0.2 Reviewer `a29d26f55a6a993e8` / `af3e5bbcdbc28a57d` / `aaa74dd285a4ed015`（v0.2 Approved with Conditions，0 Blocker；v0.3 修正三项架构问题后重审）
 
 ---
 
@@ -178,7 +178,24 @@
 | 职责 | 练习结果（`Score` / `PracticeRecord`）持久化；P2 复用 T013 既有 Drift schemaVersion=2 + 引入 `scores` 表（**P2 启动时**显式升级 `schemaVersion=2 → 3`，走 `MigrationStrategy.onUpgrade`，**不**通过 `beforeOpen` 静默创建正式业务表） |
 | 输入 | `Score`（lessonId / bpmUsed / accuracy / pass / recordedAt）；可选 `audioFilePath` |
 | 输出 | `Stream<List<Score>>`；查询接口按 lessonId / 日期 |
-| Drift schemaVersion 策略 | **P2 实际引入 `scores` 表时的硬约束**：(a) 引入 `Scores` 走正式 `@DriftDatabase(tables: [..., Scores])` 类型化声明，生成 `*.g.dart` 行类（`ScoreData` / `ScoresCompanion`）；(b) **显式升级 `schemaVersion: 2 → 3`**，在 `MigrationStrategy.onUpgrade` 中 `if (from == 2 && to == 3) { await m.createTable(scores); }`（`createTable` 已包含 `Scores` 类声明的全部 6 列，**不**调用 `m.addColumn`，避免 `duplicate column` 运行时错误）；**`onUpgrade` 必须把现有 `if (from == 1 && to == 2) return;` 扩展为 `if / else if` 链**（1→2 既有 no-op + 2→3 新加 `m.createTable(scores)`），并收窄 `throw StateError` 兜底（仅保留给真正未定义的 `from`）；(c) Repository 走类型化 `Into` 插入，**不**走 `customInsert` raw SQL；(d) `beforeOpen` 只允许执行**与正式 schema 一致**的检查或幂等初始化（如临时索引 / 物化视图），**不得**用于创建未受版本管理的表（不得绕开版本迁移创建正式业务表）。**约束**：`scores` 表列名 `{lesson_id, bpm_used, accuracy, pass, recorded_at, audio_file_path}` 在 P2 / P3 期间**不可改**；P4 处理 `practice_records` 的 `lessonId` 关联字段时使用 `schemaVersion: 3 → 4`（**与 P2 的 2 → 3 区分**，不在 P2 阶段占用 v3 名额）。T048 TDD 验收硬门：(1) 新安装走 `onCreate` 创建 v3 schema；(2) v1.1.0 既有 v2 用户用 `e2e/sqlite/v1_1_0_v2.db` 真实 SQLite 文件 fixture 打开当前 `AppDatabase`，断言 v2 表完整 + `scores` 表被 onUpgrade 创建 + 6 列齐备 + 重复 open 幂等；(3) 迁移失败回滚（强制注入 SQL 异常后事务回退到 v2 状态）；(4) drift_dev `schema_dump.dart` 与运行时 `sqlite_master` 实物一致性人工 check 清单 |
+| Drift schemaVersion 策略 | **P2 实际引入 `scores` 表时的硬约束**：(a) 引入 `Scores` 走正式 `@DriftDatabase(tables: [..., Scores])` 类型化声明，生成 `*.g.dart` 行类（`ScoreData` / `ScoresCompanion`）；(b) **`onUpgrade` 必须采用累进式（cumulative）迁移**，**不得**使用 `else if` 链 / 精确分支对（`from == 1 && to == 2` 等）——因为旧安装可能直接执行 `from = 1, to = 3`（v1.1.0 既有的 v2 用户跳级到 P2 新二进制），必须依次跑过 v1→v2 与 v2→v3 所有未应用迁移；**铁律伪代码**（Dart 6 风格示例；T048 实现时按 drift_dev 生成代码具体化）：```dart
+onUpgrade: (m, from, to) async {
+  // 累进式迁移：每个分支只看 from < targetVersion，互不互斥。
+  if (from < 2) {
+    // 既有 v1 -> v2 no-op（contract bump；不调 m.createAll / m.alterTable）。
+  }
+  if (from < 3) {
+    // v2 -> v3：createTable 已包含 Scores 类声明的全部 6 列
+    //（{lesson_id, bpm_used, accuracy, pass, recorded_at, audio_file_path}），
+    // **不**调用 m.addColumn（避免 duplicate column 运行时错误）。
+    await m.createTable(scores);
+  }
+  // 未来 P4 v3 -> v4 在此追加 if (from < 4) { ... }；
+  // 未来任何 v_n+1 -> v_n+k 都按同一累进规则追加。
+  // **不**对合法的 from/to 抛 StateError；StateError 兜底仅保留给
+  // 真正未定义的 from（如 from < 1 等异常值），由 T048 决定是否保留。
+}
+```**累进式 vs 精确分支对的本质区别**：(i) 精确分支对（`else if`）只能处理 `to - from == 1` 的相邻版本；跨多版本（`from=1, to=3`）会落入兜底被误判为非法升级；(ii) 累进式（`if (from < N)`）按版本号单调累进，跳过的中间版本不会被遗漏；新安装仍由 `onCreate` / `createAll` 创建当前完整 schema（v3），不走 `onUpgrade`；(iii) 当前生产代码 `app_database.dart` 既有的 `if (from == 1 && to == 2) return;` 保留作为 v1→v2 的 no-op 节点；P2 实际启动时把 2→3 作为第二个独立 `if (from < 3)` 块追加（**不**改既有 1→2 分支、不替换为 `else if`）；(c) Repository 走类型化 `Into` 插入，**不**走 `customInsert` raw SQL；(d) `beforeOpen` 只允许执行**与正式 schema 一致**的检查或幂等初始化（如临时索引 / 物化视图），**不得**用于创建未受版本管理的表（不得绕开版本迁移创建正式业务表）。**约束**：`scores` 表列名 `{lesson_id, bpm_used, accuracy, pass, recorded_at, audio_file_path}` 在 P2 / P3 期间**不可改**；P4 处理 `practice_records` 的 `lessonId` 关联字段时使用 `schemaVersion: 3 → 4`（**与 P2 的 2 → 3 区分**，不在 P2 阶段占用 v3 名额），并按累进式 `if (from < 4) { ... }` 追加；未来 P4 的 `v3 → v4`、P5 的 `v4 → v5`（如 streak）、任何 `v_n+1 → v_n+k` 均遵循同一累进规则。T048 TDD 验收硬门（**v0.4 勘误**——覆盖 v1→v3 跨版本直接升级路径）：**(1) 新安装走 `onCreate` 创建 v3 schema**（空数据库 → 当前完整 schema）；**(2) v1 fixture 升级到 v3**（v1.0.0 / schemaVersion=1 真实 SQLite 文件 fixture → schemaVersion=3，断言 v1 表完整 + v1→v2 no-op 已执行 + `scores` 表被 onUpgrade 创建 + 6 列齐备 + v1 旧数据保留）；**(3) v2 fixture 升级到 v3**（`e2e/sqlite/v1_1_0_v2.db` 真实 SQLite 文件 fixture → schemaVersion=3，断言 v2 表完整 + `scores` 表被 onUpgrade 创建 + 6 列齐备 + v2 旧数据保留）；**(4) v3 数据库重复打开**（已迁移到 v3 的数据库连续 open 两次，断言幂等无副作用、`user_version` 仍为 3）；**(5) 验证 `scores` 表全部 6 列、约束、索引与 drift_dev `schema_dump.dart` 一致**（`sqlite_master` 实物 + `pragma table_info(scores)` + generated schema 三方一致性）；**(6) 注入迁移失败后验证事务回滚**（强制 SQL 异常注入到 v2→v3 分支，断言事务回退到 v2 状态、用户数据库不破坏）；**(7) fixture 必须来自对应历史 schema 的真实 SQLite 文件或可信历史数据库快照**，**不得**仅用人工 `PRAGMA user_version = N` 伪造旧版本 fixture（避免在空数据库上贴 `user_version=1` 假装是 v1 既有用户——v1 既有用户必须真有 v1 的三张表数据）；**(8) 每条升级路径均验证旧表与旧数据完整保留**（`(2)(3)(4)(6)` 全覆盖）。 |
 | 数据所有权 | Drift `scores` 表（由 `MigrationStrategy.onUpgrade` 在 P2 启动时创建，schemaVersion=3） |
 | 禁止依赖 | UI / 音频 / 联网；不删除文件（`AudioFileStorageService` 负责） |
 
@@ -255,14 +272,14 @@ flowchart LR
 | 数据 | 表 / 文件 | 升级时机 | 模块所有者 |
 |------|----------|----------|------------|
 | PracticeRecord（T013 schemaVersion=2） | Drift | P4 → v4 | Progress/Review Repository |
-| Score（P2 引入） | Drift `scores` 表（`@DriftDatabase(tables: [..., Scores])` 正式声明；P2 启动时 `schemaVersion: 2 → 3` 显式升级 + `MigrationStrategy.onUpgrade` 走 `m.createTable` + 类型化 `Into` 插入；列 `{lesson_id, bpm_used, accuracy, pass, recorded_at, audio_file_path}` 在 P2 / P3 期间锁定） | P4 升级 v3 → v4 处理 `practice_records` 的 `lessonId` 关联字段 | Progress/Review Repository |
+| Score（P2 引入） | Drift `scores` 表（`@DriftDatabase(tables: [..., Scores])` 正式声明；P2 启动时 `schemaVersion: 2 → 3` 显式升级 + `MigrationStrategy.onUpgrade` 走**累进式（cumulative）** `if (from < 3)` 块 + `m.createTable` + 类型化 `Into` 插入；**不**使用 `else if` 精确分支对（覆盖 `from=1, to=3` 跨版本直接升级）；列 `{lesson_id, bpm_used, accuracy, pass, recorded_at, audio_file_path}` 在 P2 / P3 期间锁定） | P4 升级 v3 → v4 处理 `practice_records` 的 `lessonId` 关联字段（同样以 `if (from < 4)` 累进式追加） | Progress/Review Repository |
 | UserSettings | Drift + SharedPreferences | — | Local Profile |
 | InstallDate | Drift（`user_settings` 子集 / 或独立表，T013.3 既有） | — | Local Profile |
 | 录音文件 m4a | `getApplicationDocumentsDirectory()/recordings/...` | T028 既有 | AudioFileStorageService（T028） |
 | 课程常量 | `core/constants/lesson_constants.dart` | P6 才上 CMS | Lesson Repository |
 | 7 天循环练习计划 | `core/constants/practice_plan_constants.dart` | — | Local Profile / Home |
 
-> **Drift 升级铁律**：P2 在 schemaVersion=2 基础上**新增表**（不破坏既有 P4 升级路径）；P4 再统一迁移到 schemaVersion=3（+ lessonId / accuracyScore / bpmUsed）。
+> **Drift 升级铁律**：(1) P2 在 schemaVersion=2 基础上**新增表**（不破坏既有 P4 升级路径）；P4 再统一迁移到 schemaVersion=4（+ lessonId / accuracyScore / bpmUsed）。(2) **`onUpgrade` 必须采用累进式（cumulative）`if (from < N)` 链，不得使用 `else if` 精确分支对**——精确分支对（`if (from == 2 && to == 3)` 等）只能处理相邻版本，对 `from=1, to=3` 这种合法跨版本升级会落空；旧安装用户从 v1.1.0 直接覆盖安装 P2 新二进制时，`user_version` 会直接从 1 跳到 3，必须依次执行 1→2 与 2→v3 全部未应用迁移。(3) 未来 P4 v3→v4、P5 v4→v5（如 streak）、任何 v_n→v_n+k 均按 `if (from < N+1)` 累进式追加，**不**再用 `else if`。
 
 ---
 
@@ -355,7 +372,7 @@ flowchart LR
 | 反馈延迟 150-300 ms wall-clock | §3.7 Feedback Engine | 由 OP-1 决议与 §3.6 Pipeline 实现路径决定；T048 TDD 必含 wall-clock 延迟测试（在 5 分钟录音稳态下） |
 | UI 与音频处理隔离 | §3.5/3.6/3.7 全部 | Audio Analysis Pipeline / Feedback Engine 跑在独立 `Isolate`（§3.6 `Isolate.spawn` 长驻 + `SendPort` 单向流）；UI 仅订阅 `Stream<FeedbackItem>` |
 | 错误恢复与生命周期 | §3.2 / §3.5 | Session Engine 在 `appPaused` / `appResumed` 强制 stop；Service dispose 走 Riverpod scope 销毁（**不**手动 `ref.read` dispose；T013.4C 删除 dispose + T031C 录音/播放 mutex + T031E 回放 LoopMode 契约已落地）；Lesson Session Engine 的 dispose 必须在 Controller `ref.onDispose` 中显式调用 Audio Capture `cancel()`（若 take 未保存）；Recording 服务由 v1.1.0 T031 契约保护。**OP-1 = A 方案（双 record 实例）通过 T048A ADR 后**，双实例 start/stop 时序契约（§3.5 OP-1 = A 方案扩展契约行：start 顺序先 m4a 再 PCM 流，stop 反序）由 T048A ADR 锁定；§3.5 既有描述作为占位，T048A ADR 是双实例协调契约的单一权威源 |
-| Drift 未来迁移边界 | §3.8 Progress Repository | 当前 schemaVersion 保持 2（v1.1.0 既有）；P2 实际引入 `scores` 表时**显式升级** `schemaVersion: 2 → 3` + 走 `MigrationStrategy.onUpgrade` + `@DriftDatabase(tables: [..., Scores])` 类型化声明；`beforeOpen` **不得**用于创建正式业务表，只允许与正式 schema 一致的检查或幂等初始化；P4 升级 v3 → v4 处理 `practice_records` 的 `lessonId` 关联；§3.8 Drift schemaVersion 策略全文约束 |
+| Drift 未来迁移边界 | §3.8 Progress Repository | 当前 schemaVersion 保持 2（v1.1.0 既有）；P2 实际引入 `scores` 表时**显式升级** `schemaVersion: 2 → 3` + 走 `MigrationStrategy.onUpgrade` + `@DriftDatabase(tables: [..., Scores])` 类型化声明；`onUpgrade` 必须采用**累进式（cumulative）`if (from < N)` 链**（每个版本一个 `if (from < targetVersion)` 块），**不得**使用 `else if` 精确分支对（必须覆盖 `from=1, to=3` 跨版本直接升级）；`beforeOpen` **不得**用于创建正式业务表，只允许与正式 schema 一致的检查或幂等初始化；P4 升级 v3 → v4 处理 `practice_records` 的 `lessonId` 关联，按累进式 `if (from < 4)` 追加；§3.8 Drift schemaVersion 策略全文约束 |
 | P2 业务基线 | §3.7 + §8 | 节奏/起音对齐 **初始基线 ≥ 28/32 拍对齐（hard ≥ 28 / soft ≥ 20）**，PRD §5.6，**仅作 P2 端到端真机演示起点**；on-device 数据后由 P2 关闭门 review 重新协商；**不构成永久产品常量** |
 | 隐私 / 版权 / 本地数据 | 全局 | 录音不上传 / 不分享 / 不导出；App 内必含隐私说明 + 内容声明（v1.1.0 §13.4 沿用） |
 | 未来联网模块不得污染离线核心 | §3.10 边界 | P6 之前不创建任何联网模块 / 抽象接口 / 占位 Dart 文件（v1.1.0 §11 硬约束沿用） |
@@ -400,13 +417,13 @@ flowchart TB
 - 10 个目标模块按"职责 / 输入 / 输出 / 数据所有权 / 禁止依赖"五字段定义。
 - 3 张 Mermaid 数据流图覆盖：课程加载 + 互动闭环 + 持久化。
 - OP-1 候选方案 5 种**以 A = 首选 Spike 验证候选（非已证明架构）**列出；T048A 真机 Spike 通过后才允许成为 P1 正式方案。
-- Drift 升级策略：当前 `schemaVersion` 保持 2；P2 引入 `scores` 表时**显式升级** `schemaVersion: 2 → 3` + `MigrationStrategy.onUpgrade` + 类型化 `@DriftDatabase(tables: [..., Scores])`；`beforeOpen` **不得**用于创建正式业务表。
+- Drift 升级策略：当前 `schemaVersion` 保持 2；P2 引入 `scores` 表时**显式升级** `schemaVersion: 2 → 3` + `MigrationStrategy.onUpgrade` + 类型化 `@DriftDatabase(tables: [..., Scores])`；`onUpgrade` 必须采用**累进式（cumulative）`if (from < N)` 链**（不得使用 `else if` 精确分支对），覆盖 `from=1, to=3` 跨版本直接升级；`beforeOpen` **不得**用于创建正式业务表。
 - 联网 / 第三方 SDK 永久禁区继续生效。
 
 ### 10.2 【自我找茬】（≥ 3 项架构 / 音频 / 范围风险）
 
 1. **A 方案"双 record 实例"语义在 P1 期间被插件升级破坏 + 平台层未证实**：`record` 进入 8.x / 9.x 可能收紧"多实例 + 同一麦克风并发"的 Android 平台层限制；当前 §7.1 / §7.2 仅证 API 层 `start()` 与 `startStream()` 互斥（同一 `AudioRecorder` 实例），**双实例在 Android 平台层是否可同时稳定占用麦克风未证实**。**缓解**：A 方案定位为**首选 Spike 验证候选**而非已证明架构；T048A 真机 Spike 必含 5s / 30s / 5min 三档断点 + m4a 完整性 + PCM 连续性 + 回调归属 + 资源释放 + 设备兼容；T048A 通过才允许成为 P1 正式方案；不通过则回退 C（事后解码）/ D（FFI），**不退回** E。
-2. **P2 引入 `scores` 表与 Drift 正式 schemaVersion 升级的真实张力**：`@DriftDatabase(tables: ...)` 必须显式注册 `Scores` 才能生成类型化访问（`ScoresCompanion` / `Into`）；`schemaVersion` 与表集合一一绑定，运行时 DDL 不进入 schema 验证集合；P2 引入若走 `beforeOpen` 静默 `CREATE TABLE` 会绕过版本迁移导致 P4 升级 v3 时 schema 漂移。**缓解**：P2 实际引入 `scores` 时**显式升级** `schemaVersion: 2 → 3`，走 `MigrationStrategy.onUpgrade` + `m.createTable(scores)` + 类型化 `Into` 插入；`beforeOpen` **不得**用于创建正式业务表，只允许与正式 schema 一致的检查或幂等初始化；T048 TDD 验收硬门 = 新安装 `onCreate` 创建 v3 schema + v2 旧用户 `onUpgrade` v2→v3 迁移 + 重复打开幂等 + 迁移失败回滚 + drift_dev `schema_dump.dart` 与运行时 `sqlite_master` 实物一致性人工 check 清单（§3.8 / §5）。
+2. **P2 引入 `scores` 表与 Drift 正式 schemaVersion 升级的真实张力 + 跨版本直接升级漏执行**：`@DriftDatabase(tables: ...)` 必须显式注册 `Scores` 才能生成类型化访问（`ScoresCompanion` / `Into`）；`schemaVersion` 与表集合一一绑定，运行时 DDL 不进入 schema 验证集合；P2 引入若走 `beforeOpen` 静默 `CREATE TABLE` 会绕过版本迁移导致 P4 升级 v3 时 schema 漂移；**`onUpgrade` 若用 `else if` 精确分支对（`if (from==1 && to==2) ... else if (from==2 && to==3) ...`）只能处理相邻版本**，旧安装直接覆盖安装新二进制时 `from=1, to=3` 落空会触发 `StateError` 兜底（v1.1.0 既有 schemaVersion=1 / 2 用户均可合法跳级到 P2 schemaVersion=3）。**缓解**：P2 实际引入 `scores` 时**显式升级** `schemaVersion: 2 → 3`，走 `MigrationStrategy.onUpgrade` + **累进式（cumulative）`if (from < N)` 链**（每个版本独立 `if` 块，互不互斥，跨版本跳级自动按顺序执行所有未应用迁移）+ `m.createTable(scores)` + 类型化 `Into` 插入；`beforeOpen` **不得**用于创建正式业务表，只允许与正式 schema 一致的检查或幂等初始化；未来 P4 v3→v4、P5 v4→v5（streak）、任何 v_n→v_n+k 均按 `if (from < targetVersion)` 累进式追加，**不**再用 `else if`；T048 TDD 验收硬门 = 新安装 `onCreate` 创建 v3 schema + v1 fixture 升级 v3 + v2 fixture 升级 v3 + v3 数据库重复打开 + 迁移失败回滚 + 旧表/旧数据保留 + drift_dev `schema_dump.dart` 与运行时 `sqlite_master` 实物一致性人工 check 清单（§3.8 / §5 / §8）。
 3. **§3.10 CMS/Account/Sync 边界被误读为"预留抽象"**：v1.1.0 §11 硬约束已禁止 P1-P5 占位 Dart 文件，但 §3.10 文字描述可能被未来 Agent 误解为"可以建抽象接口"。**缓解**：§3.10 显式声明"不在 P1-P5 创建任何 Dart 文件 / 抽象接口 / 依赖"；T048 TDD 任务清单显式包含"不在 P1-P5 创建 auth / sync / cms 抽象类"的反例检查。
 4. **9 步闭环对 Lesson Repository 的依赖可能被误用为"P2 必须扩展 Repository"**：T044 既有 `lessonByIdProvider` 已够 P2 用。**缓解**：§3.1 显式声明"P2 不扩展 Repository；P4 引入原创歌曲课程时再扩"；T048 TDD 任务把"Lesson Repository 改动行数 = 0"作为 TDD 验收点。
 5. **Audio Analysis Pipeline 与 Feedback Engine 的边界在 TDD 时可能模糊**（"Pipeline 是否要直接给 UI 流"）。**缓解**：§6 显式声明"`Audio Analysis → Feedback` 注入 `Stream<OnsetEvent>`；Analysis 内不直接驱动 UI"；T048 TDD 任务包含跨模块 Provider 注入测试。
@@ -422,7 +439,7 @@ flowchart TB
 
 - 采纳 §10.2 全部 12 项风险缓解；
 - 3 位 Reviewer 反馈全部处理（Product Reviewer 9 项 + Flutter Reviewer 10 项 + Audio Reviewer 7 项；按严重程度合并为上述 12 项缓解）；
-- 关键显式化：9 步 mapping 表（§3.2.1）、平台边界声明（§1.2）、Drift `schemaVersion: 2 → 3` 显式升级 + `MigrationStrategy.onUpgrade` + `@DriftDatabase(tables: [..., Scores])` 正式声明（§3.8 / §5）、§3.6 四类时钟区分（会话单调 / PCM 样本 / chunk 到达 / 设备采集待 Spike 验证）、§3.5 A 方案 = 首选 Spike 验证候选（非已证明架构）、§3.7 pass-fail 仅节奏/起音对齐 + Score 字段边界、§3.9 streak 字段禁用、§7.2 A 方案三档断点 + m4a 完整性 + 回调归属真机清单、§7.2 C 方案依赖待验证、§8 P2 关键门 + Day 3/5/6/7 课程仍冻结、§8 dispose 契约精确化；
+- 关键显式化：9 步 mapping 表（§3.2.1）、平台边界声明（§1.2）、Drift `schemaVersion: 2 → 3` 显式升级 + `MigrationStrategy.onUpgrade` 走**累进式（cumulative）`if (from < N)` 链**（覆盖 `from=1, to=3` 跨版本直接升级，**不**使用 `else if` 精确分支对） + `@DriftDatabase(tables: [..., Scores])` 正式声明（§3.8 / §5）、T048 TDD 硬门新增 v1→v3 fixture 升级 + 重复 open 幂等 + 旧表/旧数据保留 + 迁移失败回滚 + `scores` 表 6 列 / 约束 / 索引与 generated schema 一致（§3.8）、§3.6 四类时钟区分（会话单调 / PCM 样本 / chunk 到达 / 设备采集待 Spike 验证）、§3.5 A 方案 = 首选 Spike 验证候选（非已证明架构）、§3.7 pass-fail 仅节奏/起音对齐 + Score 字段边界、§3.9 streak 字段禁用、§7.2 A 方案三档断点 + m4a 完整性 + 回调归属真机清单、§7.2 C 方案依赖待验证、§8 P2 关键门 + Day 3/5/6/7 课程仍冻结、§8 dispose 契约精确化、§5 Drift 升级铁律明确累进式不可用 `else if`；
 - 3 张 Mermaid 数据流图 + 1 张模块依赖图全部 ≤ 5 节点横向；§9 模块依赖图显式 `FE --> LSE` 反向边；
 - 本 SDD 总行数 ≤ 500（v0.2 ≈ 470 行）；
 - 不锁定 OP-1~OP-5 算法；不写实现代码；不修改生产代码 / 测试 / pubspec / Manifest / Drift。
@@ -437,6 +454,7 @@ flowchart TB
 | 0.1 | 2026-06-24 | T047 初稿：v1.1.0 模块 KEEP/ADJUST/REFACTOR/RETIRE 处置 + 10 模块边界 + 3 数据流 + OP-1 候选方案 + 系统约束 + 三步反思 |
 | 0.2 | 2026-06-24 | T047 修订：采纳 3 位 Reviewer 反馈（Product 9 项 + Flutter 10 项 + Audio 7 项），新增 §1.2 平台边界声明 + §3.2.1 9 步 mapping + §3.5 OP-1=A 方案扩展契约 + §3.6 时间基准/Isolate 通信介质 + §3.7 pass-fail 硬约束/Score 字段边界 + §3.8 Drift `beforeOpen` 策略 + §3.9 streak 禁用 + §7.2 Android 平台层风险/C 方案依赖待验证 + §8 P2 关键门+Day 3/5/6/7 课程仍冻结/dispose 契约精确化；§9 模块依赖图显式 `FE --> LSE` 反向边；§10.2 风险项 7 → 12 |
 | 0.3 | 2026-06-24 | T047A 修正：① §3.6 时间基准从"record_android 单调时钟帧序号"改为**四类时钟区分**（会话单调 / PCM 样本计数 / chunk 到达 / 设备采集待 Spike 验证），明确不得把 chunk 到达时间伪装成设备采集时间；5 分钟稳态 ≤ 50 ms 改为**初始验收目标**（测量对象 = OnsetEvent ↔ BeatTick 相对漂移，非 wall-clock 绝对漂移，起止基准 = Session start / Session stop）；② §7.2 A 方案从"★★★ 推荐 P1 Spike"改为**"首选 Spike 验证候选（非已证明架构）"**；§3.5 OP-1 = A 方案扩展契约 + §7.4 Spike 失败回退同步；T048A 真机清单补 m4a 完整性 / PCM 连续性 / 权限生命周期 / 停止回调归属 / 资源释放 / 设备兼容矩阵；T048A 必须产出 ADR 才允许成为 P1 正式方案；③ §3.8 / §5 / §8 / §10.1 / §10.2 #2 / §10.3 从"beforeOpen 静默 CREATE TABLE"改为**显式升级 schemaVersion: 2 → 3 + MigrationStrategy.onUpgrade + @DriftDatabase(tables: [..., Scores]) + 类型化 Into 插入**；beforeOpen 不得用于创建正式业务表，只允许与正式 schema 一致的检查或幂等初始化；T048 TDD 验收硬门从"beforeOpen 幂等测试"改为"新安装 onCreate + v2→v3 onUpgrade + 重复打开幂等 + 迁移失败回滚 + drift_dev schema_dump.dart 与运行时 sqlite_master 实物一致性人工 check 清单" |
+| 0.4 | 2026-06-25 | T047B 修正：① §3.8(b) 从"onUpgrade 用 `if / else if` 精确分支对（`if (from == 1 && to == 2) return;` + `else if (from == 2 && to == 3) { createTable(scores); }`）"改为**累进式（cumulative）`if (from < N)` 链**（每个版本独立 `if (from < targetVersion)` 块，互不互斥，跨版本跳级自动按顺序执行所有未应用迁移），明确覆盖 `from=1, to=3` 跨版本直接升级路径（v1.1.0 既有 schemaVersion=1 / 2 用户均可合法跳级到 P2 schemaVersion=3）；P2 实际启动时把 2→3 作为第二个独立 `if (from < 3)` 块追加（**不**改既有 1→2 分支、**不**替换为 `else if`），不再要求 `StateError` 兜底覆盖合法 `from/to`；② §3.8 T048 TDD 验收硬门从"新安装 + v2→v3 + 重复 open + 迁移失败回滚"扩展为 8 项（**新增** v1 fixture 升级 v3 + 验证 `scores` 表 6 列 / 约束 / 索引与 drift_dev generated schema 一致 + **明确** fixture 必须来自对应历史 schema 的真实 SQLite 文件或可信历史数据库快照，**不得**仅用人工 `PRAGMA user_version = N` 伪造旧版本 fixture）；③ §5 Drift 升级铁律（footer）从"P4 再统一迁移到 schemaVersion=3"修正为"schemaVersion=4"（与 §3.8 / §3.9 编号对齐；P2 = 2→3 引入 scores，P4 = 3→4 处理 `practice_records.lessonId`） + 显式化累进式不可用 `else if` 铁律 + 未来 v_n→v_n+k 通用规则；④ §8 / §10.1 / §10.2 #2 / §10.3 同步显式"累进式 + 不得用 `else if`" + 跨版本升级覆盖；⑤ T047B Flutter Data Architecture Reviewer 二元裁决 **Approved**（0 Blocker） |
 
 ---
 

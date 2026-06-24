@@ -1,22 +1,24 @@
 # PRD v2 — ukulele_app
 
-> Task ID：`T046_PRODUCT_V2_BENCHMARK_AND_PRD`
-> 日期：2026-06-24 | 版本：0.1
-> 协作 Agent：Primary Agent (01-product-manager) / Benchmark Research Agent / 05-music-domain-expert / Product Strategy Reviewer
+> Task ID：`T046_PRODUCT_V2_PRD_CORRECTION`（基于 `T046_PRODUCT_V2_BENCHMARK_AND_PRD` v0.1 修订）
+> 日期：2026-06-24 | 版本：0.2
+> 协作 Agent：Primary Agent (01-product-manager) / Benchmark Research Agent / 05-music-domain-expert (ab73d240921ebe74d) / Product Strategy Reviewer (afd9457b253397ce1)
 >
 > **本文档是 v1.1.0 PRD 之后的 v2 版本**。v1.1.0 PRD（`docs/PRD.md`）作为历史保留，**不覆盖、不删除**。v2 与 v1.1.0 不一致的条款以本文档为准。
+>
+> **v0.2 修订**：重新定义第一产品垂直切片为 9 步互动闭环；调整阶段优先级为 5 阶段；将长期未实现功能统一标 Deferred + 前置条件（不永久排除）；压缩待决策项至 5 项；明确多乐器 Out of Scope。
 >
 > **范围声明**：v2 仅确定"做什么和为什么"。不设计接口、算法或代码。所有 v2 功能的实现由后续 T047+ 任务按 SDD 流程拆解。
 
 ---
 
-## 1. 产品愿景、目标用户、核心问题
+## 1. 产品愿景（北极星）
 
-### 1.1 愿景
+让一名零基础 Android 用户在 90 天内**完成至少 1 首完整的尤克里里弹唱**，并保持每日 ≤ 20 分钟的有效练习；以**客观反馈 + 动态曲谱**为核心差异化能力；坚持离线优先、原创/公版内容、21 寸 GCEA 尤克里里专属教学。
 
-让一名零基础 Android 用户在 90 天内能独立完成至少 1 首完整的尤克里里弹唱，并保持每日 ≤ 20 分钟的有效练习。
+---
 
-### 1.2 目标用户
+## 2. 目标用户
 
 | 维度 | 描述 |
 |------|------|
@@ -24,413 +26,353 @@
 | 设备 | Android 6.0+（minSdk 23）手机，主流品牌（中端及以上） |
 | 场景 | 家中 / 通勤 / 户外，单次练习 10-20 分钟，可能无网络 |
 | 核心诉求 | 知道每天练什么 → 练得对 → 看得到进步 |
-| 不面向 | 13 岁以下（COPPA 评估前置）、专业演奏者、iOS 用户、吉他/钢琴用户 |
-
-### 1.3 核心问题
-
-1. **教学不可见**：初学者不知道"每天该练什么" → 缺乏结构化阶段化课程。
-2. **反馈缺失**：弹得对不对没有客观评价 → 仅靠手自评，主观且不可比。
-3. **跟弹门槛高**：没有可视化曲谱 + 光标引导 → 完成一首完整歌曲的成本极高。
-4. **工具分散**：调音、节拍、练习记录需要多个 App 切换 → 学习链路断裂。
-5. **进步不可见**：练习记录存在但没有统计/激励 → 难以坚持。
-
-### 1.4 长期差异化（尤克里里专属）
-
-- **离线优先 + 无 INTERNET 权限**：所有核心功能（P1-P5）可完全离线使用。
-- **原创 / 公版内容**：永远不引入商业歌曲；与所有"带曲库的学琴 App"形成清晰差异。
-- **尤克里里专属教学路径**：5 阶段（单音 → 和弦 → 节奏 → 弹唱片段 → 完整曲目）针对 GCEA 21 寸优化。
-- **可解释的本地评分**：评分规则可读、可调、可关闭；不依赖黑盒 AI。
+| 不面向 | 13 岁以下（COPPA 评估前置）、专业演奏者、iOS 用户、多乐器用户 |
 
 ---
 
-## 2. 核心用户旅程（从零到完成一首歌曲弹唱）
+## 3. 核心问题与解决方案
 
-| 步骤 | 触点 | 关键能力 | v2 阶段 | 不依赖 |
-|------|------|----------|---------|--------|
-| 1. 安装并启动 App | HomePage | 7 天练习计划可见 | v1.1.0 已实现 | — |
-| 2. 调音 | TunerPage | 实时频率检测 + ±10 cents 提示 | v2 P1 | 联网 |
-| 3. 第一次单音 | SingleNotePractice | 6-7 个音名按弦 | v1.1.0 + P1 补 B | 联网 |
-| 4. 第一个和弦 | ChordLibrary | C / Am / F / G 静态指法 | v1.1.0 + P1 补 G7/Dm/Em | 联网 |
-| 5. 第一个和弦转换 | Lesson `c_am_down_4x4` | 60/80 BPM 下扫 + 节奏指引 + 录音 | T041 已实现 + v2 P2 扩展 Day 3/5/6/7 | 联网 |
-| 6. 第一个关卡通过 | Lesson page | 锚点自评 + 关卡完成 toast | v2 P2 | 联网 |
-| 7. 第一个短曲目跟弹 | SongCourse | 静态和弦谱 + 节奏指引 + 分小节练习 | v2 P3 | 联网 |
-| 8. 录音复盘 | RecordingPage + PlaybackPage | 5 分钟 m4a 本地 | v1.1.0 已实现 | 联网 |
-| 9. 自评与历史 | SelfAssessment + PracticeRecords | 三档自评 + 历史回放 | v1.1.0 已实现 | 联网 |
-| 10. 看到进步 | StatsPage | 连续天数 / 周累计 / 薄弱和弦 | v2 P4 | 联网 |
-| 11. 弹唱完整曲目 | SongCourse with lyric | 自制曲目（含歌词）+ 跟弹 | v2 P5 | 联网 |
-| 12. 同步与订阅（可选） | Account / Cloud | 跨设备 / 高级统计 | v2 P6 | 需 INTERNET |
-
-**时间预算**：第 1 步完成 ≤ 3 分钟；第 1 周（步骤 1-6）≤ 90 分钟总练习时长；第 90 天（步骤 11）首次完成完整曲目。
+| 核心问题 | 解决方案（v2 范围） |
+|----------|---------------------|
+| 教学不可见 | 5 阶段教学路径 + 阶段化课程地图（Phase 4 Curriculum） |
+| 反馈缺失 | 客观反馈（本地起音/节奏检测）+ 三档自评（仅补充） |
+| 跟弹门槛高 | 时间轴驱动的动态和弦/节奏谱 + 当前拍/小节高亮（第一切片） |
+| 工具分散 | 调音器 + 节拍器 + 和弦工具复用 v1.1.0 + 补全（Foundation） |
+| 进步不可见 | 学习记录 + streak + 复习推荐（Personalization） |
 
 ---
 
-## 3. AI音乐学园 Benchmark 对标（详见 `docs/T046_AI_MUSIC_SCHOOL_BENCHMARK.md`）
+## 4. 长期功能范围（完整覆盖尤克里里适用功能）
 
-| 维度 | 对标结论 |
-|------|----------|
-| 课程地图 | 对标必做；v2 P2 引入 |
-| 图文 / 互动教学 | 已有/调整；KEEP |
-| 视频教学 | 长期商业化；P6+ 考虑，不参与 MVP 阶段 |
-| 和弦库 | 已有/调整；P1 补足 7 个 |
-| 和弦谱 / 节奏谱 / TAB | TAB/五线谱/简谱明确不做；和弦谱/节奏谱对标必做（P3+） |
-| 动态曲谱 | 差异化；P5 引入 |
-| 调音器 / 节拍器 / 和弦工具 | 调音器 P1 替换为真实时；节拍器 P1 加可听音；和弦工具 P3+ |
-| 音高 / 节奏 / 起音 / 和弦识别 | 差异化；P3 音高 / P5 节奏·起音 / P5+ 和弦 |
-| 实时反馈 / 评分 / 过关 / 复习 | P5 实时反馈 + P2 过关锚点 + P4 复习推荐 |
-| 个性化难度 / 练习推荐 | P4 引入（保守基于自评数据） |
-| 学习记录 / 连续 / 激励 | v1.1.0 已实现 + P4 统计 + P6+ 激励 |
-| 原创 / 公版内容 | 永远坚持；差异化 |
-| 账号 / 同步 / 订阅 | P6 之前不做 |
+> **核心原则**：v2 长期目标是覆盖 AI音乐学园中**适用于尤克里里**的功能类型；当前不实现的复杂功能标记 **Deferred** + 前置条件，**不得永久排除**。**多乐器永远 Out of Scope**；**Android 和尤克里里优先**。
 
----
-
-## 4. 功能分类（6 大桶）
-
-| 桶 | 含义 | 决策规则 |
-|----|------|----------|
-| **KEEP** | 已有且符合 v2 方向，原样保留 | 不变更 |
-| **ADJUST** | 已有但需扩展 / 替换 / 收口 | 给出调整方向 |
-| **UNIMPLEMENTED** | v1.1.0 承诺但未落地 | 列入 v2 早期阶段 |
-| **MUST-IMITATE** | AI音乐学园常见且对尤克里里有价值 | 列入 v2 中期阶段 |
-| **DIFFERENTIATION** | ukulele_app 相对竞品的主张 | 强化 v2 长期阶段 |
-| **LONG-TERM-MONETIZATION** | 商业化与平台化能力 | v2 末期（P6）才启动；之前不做 |
-
-### 4.1 KEEP（不调整）
-
-- `lib/features/recording/` 真实音频状态机（T027-T038B 系列）
-- `lib/features/practice_records/` Drift `schemaVersion = 2`
-- `lib/features/metronome/` controller + 7-day plan 常量
-- `lib/core/constants/lesson_constants.dart` + `kBuiltInLessons` 模型
-- `lib/app/router.dart` 现有路由（`/lessons` 父路由 redirect 修复 T045A 已知；不依赖 `/lessons` 父路径）
-- `lib/shared/services/` 麦克风权限 / 录音文件路径安全
-- 离线优先 + 无 INTERNET 策略（v1.1.0 §7.1）
-
-### 4.2 ADJUST
-
-| 模块 | 调整方向 | v2 阶段 |
-|------|----------|---------|
-| `lib/features/chord_library/data/built_in_chords.dart` | + G7 / Dm / Em | P1 |
-| `lib/features/single_note_practice/data/built_in_single_notes.dart` | + B | P1 |
-| `lib/features/tuner/` | 静态指南 → 真实时（PCM 流 + autocorrelation / YIN） | P1 |
-| `lib/features/metronome/` | 加可听点击音 | P1 |
-| `lib/features/recording/` | 加 PCM 实时流回调 | P3 |
-| `lib/features/practice_records/` | schemaVersion 3（+ lessonId / accuracyScore / bpmUsed） | P4 |
-| `lib/features/settings/` | UI 暴露已存储的 defaultBpm / volume | P1 |
-| `lib/app/theme.dart` | 加深色 token（v2.0 不开用户切换） | P1 |
-
-### 4.3 UNIMPLEMENTED（v1.1.0 承诺但未落地）
-
-| 缺失项 | 优先级 | 阶段 |
-|--------|--------|------|
-| 7 个基础和弦（G7 / Dm / Em） | P0 | P1 |
-| 7 个单音（含 B） | P0 | P1 |
-| 调音器实时检测 | P0 | P1 |
-| 节拍器可听音 | P0 | P1 |
-| 设置页暴露已存设置 | P1 | P1 |
-
-### 4.4 MUST-IMITATE（对标必做）
-
-- 系统课程地图（5 阶段）—— P2
-- 关卡通过条件（具体可观察锚点）—— P2
-- 跟弹模式（静态谱 + 分小节）—— P3
-- 评分与反馈（音准 / 节奏）—— P3/P5
-- 复习推荐（基于历史记录）—— P4
-
-### 4.5 DIFFERENTIATION（尤克里里专属主张）
-
-- 永远原创 / 公版；永不引入商业歌曲。
-- 离线优先；v2 P1-P5 无 INTERNET 权限。
-- 评分规则可读 / 可调 / 可关闭（不依赖黑盒 AI）。
-- GCEA 21 寸专属教学路径（5 阶段）。
-
-### 4.6 LONG-TERM-MONETIZATION（P6 才启动）
-
-- 账号体系（手机号 / 邮箱 / Google）
-- 云同步（练习记录 / 设置 / 进度）
-- 订阅 / 付费（高级统计 / 增值曲目）
-- iOS 版本（受 App Store 合规与多设备测试约束）
-- 视频教学内容（自制 / 授权）
-- 社区 / 排行榜 / 好友：明确**不引入**。
+| # | 功能类型 | v2 状态 | 阶段 | 前置条件（Deferred 项） |
+|---|----------|---------|------|------------------------|
+| 4.1 | 系统课程与课程地图 | 计划中 | Curriculum (P4) | — |
+| 4.2 | 图文教学 | 已有（v1.1.0） | KEEP | — |
+| 4.2 | 视频教学 | **Deferred** | P6+ | CMS、原创视频制作、版权审查 |
+| 4.2 | 互动教学（9 步闭环） | 计划中 | Interactive Slice (P2) | PCM 实时流（T031E 扩展） |
+| 4.3 | 和弦谱 | 计划中 | Curriculum (P4) | 原创曲谱编写 + 自制 SVG |
+| 4.3 | 节奏谱 | 计划中 | Interactive Slice (P2) | — |
+| 4.3 | TAB | **Deferred** | Curriculum (P4) 之后 | TAB 数据模型 + 自制 TAB |
+| 4.3 | 歌词（弹唱） | **Deferred** | P6+ | 原创歌词写作 + 版权审查 |
+| 4.3 | 歌曲课程（跟弹） | 计划中 | Interactive Slice (P2) | 动态曲谱引擎 |
+| 4.4 | 动态曲谱（光标/小节高亮） | 计划中 | Interactive Slice (P2) | 节拍器时钟同步 + UI 组件 |
+| 4.4 | 跟弹模式 | 计划中 | Interactive Slice (P2) | PCM 实时流 |
+| 4.5 | 调音器（实时） | 计划中 | Foundation (P1) | PCM 实时流 |
+| 4.5 | 节拍器（可听） | 计划中 | Foundation (P1) | 点击音源（CC0） |
+| 4.5 | 和弦工具（替代/转位） | **Deferred** | Audio Intelligence (P3) | 和弦数据库扩展 + UI |
+| 4.6 | 音高识别 | **Deferred** | Audio Intelligence (P3) | 本地 autocorrelation / YIN |
+| 4.6 | 起音识别 | 计划中 | Interactive Slice (P2) | PCM 实时流 + 能量包络 |
+| 4.6 | 节奏识别 | 计划中 | Interactive Slice (P2) | 起音检测 + 80 BPM 网格 |
+| 4.6 | 和弦识别 | **Deferred** | Audio Intelligence (P3) | chroma 模板匹配 + 模型 |
+| 4.7 | 实时反馈 | 计划中 | Interactive Slice (P2) | 起音检测 + UI |
+| 4.7 | 评分（音准 / 节奏） | 计划中 | Interactive Slice (P2) / Audio Intelligence (P3) | 算法完成 |
+| 4.7 | 过关（pass/fail） | 计划中 | Interactive Slice (P2) | 阈值定义 |
+| 4.7 | 复习（薄弱点） | **Deferred** | Personalization (P5) | 历史记录 + 推荐算法 |
+| 4.8 | 个性化难度 | **Deferred** | Personalization (P5) | 自评数据 + 历史记录 |
+| 4.8 | 练习推荐 | **Deferred** | Personalization (P5) | 复习算法 |
+| 4.9 | 学习记录 | 已有（v1.1.0） | KEEP | — |
+| 4.9 | 连续练习（streak） | **Deferred** | Personalization (P5) | 统计层 |
+| 4.9 | 激励（徽章 / 进度条） | **Deferred** | P6+ | 评分 + 阈值 |
+| 4.10 | 原创 / 公版内容 | 全程坚持 | All | — |
+| 4.10 | 商业歌曲内容 | 永久 Out of Scope | n/a | 版权风险（永不引入） |
+| 4.10 | 用户输入歌曲名 / 歌词 / 链接 | 永久 Out of Scope | n/a | UGC 风险（永不引入） |
+| 4.10 | 用户上传自制曲谱 / 音频 | 永久 Out of Scope | n/a | UGC 风险（永不引入） |
+| 4.11 | 内容管理（CMS） | **Deferred** | Platform (P6) | 后端 + 内容审核流程 |
+| 4.11 | 账号体系 | **Deferred** | Platform (P6) | INTERNET + 合规前置 |
+| 4.11 | 云同步 | **Deferred** | Platform (P6) | INTERNET + 后端 |
+| 4.11 | 订阅 / 付费 | **Deferred** | Platform (P6) | 商店集成 + 合规前置 |
+| 4.11 | 社区 / 排行榜 / 好友 | 永久 Out of Scope | n/a | 永不引入 |
+| 4.11 | 推送通知 | 永久 Out of Scope | n/a | 永不引入 |
+| n/a | 联网 API（任何） | **Deferred** | Platform (P6) | INTERNET 权限 + 合规 |
+| n/a | iOS / Web / 平板 / 多乐器 | 永久 Out of Scope | n/a | 资源约束（永不引入） |
 
 ---
 
-## 5. 长期功能范围（11 维度 → 阶段映射）
+## 5. 第一产品垂直切片：9 步互动闭环
 
-| 维度 | v2 阶段 | 备注 |
-|------|---------|------|
-| 5.1 系统课程与课程地图 | P2 | 5 阶段线性格局；不做树/网状 |
-| 5.2 图文 / 视频 / 互动教学 | P1-P3 | 图文 P1；互动 P2；视频 P6+ 考虑 |
-| 5.3 和弦谱 / 节奏谱 / TAB / 歌曲课程 | P1-P3 | TAB/五线谱/简谱不做；和弦谱+节奏谱 P3 |
-| 5.4 动态曲谱 / 跟弹 / 小节高亮 | P2（静态） / P5（动态） | 先静态后动态 |
-| 5.5 调音器 / 节拍器 / 和弦工具 | P1 / P1 / P3+ | 节拍器仅 4/4 边界在 P1 保持；和弦工具 P3+ |
-| 5.6 音高 / 节奏 / 起音 / 和弦识别 | P3 / P5 / P5 / P5+ | 全部本地；无云 |
-| 5.7 实时反馈 / 评分 / 过关 / 复习 | P5 / P3-P5 / P2 / P4 | 评分可读可关 |
-| 5.8 个性化难度 / 练习推荐 | P4 | 保守基于自评数据；不引入 ML 模型 |
-| 5.9 学习记录 / 连续 / 激励 | v1.1.0 / P4 / P6+ | 激励谨慎 |
-| 5.10 原创 / 公版内容 / 版权策略 | 全程 | 永远坚持；CONTENT_POLICY 不变 |
-| 5.11 内容管理 / 账号 / 同步 / 订阅 | P1 / P6 / P6 / P6 | 之前不做 |
+> **这是 v2 唯一被承诺的"端到端真机演示"路径**。在第一互动切片真机验证前，不扩展 Day 3/5/6/7 课程数量。
+
+### 5.1 9 步闭环（用户视角）
+
+| # | 步骤 | UI / 算法 | 复用 / 新增 |
+|---|------|-----------|-------------|
+| 1 | **教学说明** | `LessonIntroCard`（复用 T041） | T041 模板 |
+| 2 | **倒计时** | 1 小节（4 拍）音频节拍，不显示数字 | 新增组件（绑定 BPM） |
+| 3 | **时间轴驱动的动态和弦/节奏谱** | 静态 SVG + 节拍器时钟驱动的滚动/高亮 | 复用 T041 SVG + 新增时间轴组件 |
+| 4 | **当前拍/小节高亮** | 节拍器 tick → UI tint | 新增组件（消费 metronome clock） |
+| 5 | **用户真实弹奏** | 麦克风采集（PCM 流） | **关键前置**：T031E 扩展 PCM 流 |
+| 6 | **本地起音 / 节奏基础检测** | 能量包络 + spectral flux（μ+kσ 阈值） | 新增本地算法（无 ML） |
+| 7 | **客观反馈** | "24/32 拍对齐"等可读计数 + 切换闷音数 | 新增聚合 + UI |
+| 8 | **录音回放** | 复用 v1.1.0 真实音频 m4a | T031E |
+| 9 | **课程完成状态** | 阈值规则（≥28/32 对齐 + ≤2 闷音 → 通过） | 新增状态机 |
+
+### 5.2 切片强约束
+
+- **不引入**新权限、新依赖、schema 升级、INTERNET。
+- **不扩展** Day 3/5/6/7 课程数量（真机验证前）。
+- **三档自评仅作为补充**，不替代客观反馈；不再触发"关卡通过"toast。
+- **T041 的 self-eval=好 → toast 路径必须退役**（避免双重完成信号）。
+
+### 5.3 第一课内容（推荐）
+
+| 维度 | 取值 | 理由 |
+|------|------|------|
+| 和弦进行 | `C → Am`（每 2 拍切换） | C 和 Am 无共同按住手指（见 `lesson_c_am_down_4x4.md` §2.2）；转换是 Day 4 瓶颈 |
+| 节奏型 | 4 拍 × 1 次下扫（全下扫） | 单方向 = onset 检测最简单；与 T041 一致 |
+| 小节数 | 8 小节 = 32 拍 = 32 次下扫 | 长到 onset 直方图、短到 ≤ 1 分钟录音 |
+| BPM 进度 | 60（热身 4 小节）→ 80（目标 8 小节） | 与 v1.1.0 Day 4 PRD §6.5 默认一致 |
+| 倒计时 | 1 小节（4 拍 at current BPM） | 节拍器就绪；不显示数字 |
+| Pass / Fail | ≥28/32 对齐 **且** ≤2 次闷音切换 | 具体可观察 |
+
+### 5.4 客观反馈算法（无 ML）
+
+| 信号 | 算法 | 输出 |
+|------|------|------|
+| 起音 | 10-20 ms RMS + spectral flux；阈值 = μ+kσ（1 s 滚动）；最小起音间隔 120 ms | 每拍 ✔/✘ |
+| 节奏对齐 | 起音时间戳 bin 到 80 BPM 网格（±120 ms） | "24/32 拍对齐" |
+| 闷音 | 200-1500 Hz 能量 < -38 dBFS 在期望起音时刻 | "16 次切换：X 清脆 / Y 闷" |
+| 节奏漂移 | 中位起音间隔 vs 750 ms | "节奏偏快/偏慢 X%" |
+
+所有信号**确定性、可读、可关闭**（满足差异化原则）。无黑盒模型。
+
+### 5.5 关键前置
+
+- **T031E 必须扩展**：暴露并行 PCM `Stream<Float32>` 回调；否则步骤 5/6/7/8 不可实现。建议作为第一切片 P2-T0（与节拍器时钟组件并行启动）。
 
 ---
 
-## 6. 阶段路线（6 阶段 + 可见成果）
+## 6. 阶段路线（5 阶段优先级）
 
-> **节奏铁律**：任意连续 3 个开发任务必须产生真机可见成果（APK 可装、用户能感知）。
+> **节奏铁律**：任意连续 3 个开发任务必须产生真机可见成果（APK 可装、用户能感知）。每个阶段含 ≥1 真机 demo 录屏（Phase Gate）。
 
-| 阶段 | 名称 | 可见真机成果 | 主要交付 | 3 任务 demo 脚本 |
-|------|------|---------------|----------|------------------|
-| **P1** | **补齐 v1.1.0 承诺** | 7 和弦 + 7 单音 + 真实时调音器 + 节拍器可听音 | ADJUST §4.2 + UNIMPLEMENTED §4.3 | 装 APK → 进调音器 → 弹 G 弦 → 看到 cents 在 ±10 内 → 切到节拍器 → 听到点击音 |
-| **P2** | **第一垂直切片 + 关卡化** | 课程地图 + 4 个 Lesson（Day 3/4/5/6）+ 关卡通过 toast | MUST-IMITATE + T041 扩展 | 装 APK → 进 Day 4 → 进入 Lesson → 60 BPM 热身 → 80 BPM 目标 → 录音 → 自评 → 看到"关卡通过" |
-| **P3** | **本地音高识别** | 调音器精度提升 + 单音音高评分雏形 | DIFFERENTIATION + 5.6 | 装 APK → 进调音器 → 弹 G 弦 → 看到 cents + 评分 |
-| **P4** | **统计与复习** | HomePage 显示 streak / 周累计 / 薄弱点 | schemaVersion 3 + 推荐 | 装 APK → 看首页 → 看到 streak=3 / 周累计 80 分钟 / 今日推荐 = Am→C 转换 |
-| **P5** | **动态曲谱 + 跟弹 + 节奏评分** | 跟弹模式 + 实时光标 + 节奏评分 | 5.4 + 5.7 | 装 APK → 进入曲目 → 看到光标移动 → 弹 → 看到每小节 pass/fail |
-| **P6** | **账号 / 云同步 / 订阅** | 注册登录 + 跨设备同步 + 订阅墙 | LONG-TERM-MONETIZATION | 装 APK → 登录 → 删本地 → 重装 → 恢复记录 → 看到订阅页 |
+| 阶段 | 名称 | 可见真机成果 | 3 任务 demo 脚本 |
+|------|------|---------------|------------------|
+| **P1 Foundation** | 补齐 v1.1.0 承诺 + PCM 流暴露 | 真实时调音器 + 节拍器可听 + 7 和弦 + 7 单音 + 设置页 UI + 深色 token | 装 APK → 调音器 cents 实时 → 节拍器可听 80 BPM → 和弦库 7 个 → 设置页滑块 |
+| **P2 Interactive Slice** | 9 步闭环第一课 + 基础起音/节奏反馈 | 完整走通 9 步：教学说明 → 倒计时 → 时间轴谱 → 高亮 → 弹奏 → 起音检测 → 客观反馈 → 回放 → 关卡通过 | 装 APK → 进 Day 4 → 进 Lesson → 60→80 BPM → 弹奏 → 看到 "24/32 对齐" → 回放 → 通过 toast |
+| **P3 Audio Intelligence** | 调音器精度提升 + 音高评分 + 和弦识别 | 调音器 ±10 cents 命中率 ≥ 70% on-device + 单音评分 | 装 APK → 调音器 → 单音练习 → 看到评分 |
+| **P4 Curriculum** | 课程地图 + 进度 + 复习 + 原创歌曲 | 5 阶段课程地图 + 原创歌曲 ≥ 8 首 + 复习推荐 | 装 APK → 进课程地图 → 看到 5 阶段 → 选原创歌曲 → 跟弹 |
+| **P5 Personalization** | 个性化推荐 + 难度调整 | streak / 周累计 / 推荐命中 ≥ 20% | 装 APK → 首页看到 streak=3 + 推荐 = Am→C 转换 |
+| **P6 Platform** | 账号 + 云同步 + CMS + 订阅 + 商业化 | 注册登录 + 跨设备同步 + 订阅墙 | 装 APK → 注册 → 删本地 → 重装 → 恢复 → 订阅墙 |
 
 **阶段门**：
-- P1 关闭条件：4 项 §4.3 中 P0 项 100% 通过；T010 调音器精度 spike 报告归档。
-- P2 关闭条件：4 个 Lesson widget test 通过 + 关卡通过 toast 真机演示录屏。
-- P3 关闭条件：单音音高评分 ±20 cents 准确率 ≥ 80% on-device。
-- P4 关闭条件：schemaVersion 3 迁移 + 回放测试通过。
-- P5 关闭条件：跟弹 1 首自制曲目（≤ 8 小节）on-device 演示。
-- P6 关闭条件：合规前置全部完成（详见 §10）。
+- P1 关闭：T031E PCM 流暴露 + 4 项 v1.1.0 承诺补齐 + T010 调音器精度 spike 报告归档
+- **P2 关闭**（关键门）：9 步闭环真机录屏 + Day 3/5/6/7 课程**仍冻结**
+- P3 关闭：±20 cents 准确率 ≥ 80% on-device
+- P4 关闭：≥8 首原创歌曲 + 复习推荐 on-device 演示
+- P5 关闭：推荐命中 ≥ 20% + 统计 on-device 演示
+- P6 关闭：合规前置全部完成（详见 §10）
 
 ---
 
-## 7. 第一产品垂直切片（V0 必读）
+## 7. v1.1.0 能力 KEEP / ADJUST / REMOVE
 
-> **目标**：在 P2 阶段（v2 早期）交付一个端到端可走通的"教学 → 动态练习谱 → 跟弹 → 基础反馈 → 录音复盘 → 完成课程"循环。**不引入新权限 / 新依赖 / schemaVersion 升级**。
+> 基于 v1.1.0 Capability Audit 报告（L1-L16）。
 
-### 7.1 切片内容
+### 7.1 KEEP（不调整）
 
-1. **教学**：基于 T041 的 `lesson_c_am_down_4x4` 模板；P2 扩展至 Day 3（C 单和弦下扫）/ Day 5（F/G 下扫）/ Day 6（C-Am-F-G 循环下扫）。每个 Lesson = 3 步骤（热身 → 目标 → 录音复盘）。
-2. **动态练习谱**：在 Lesson 页面顶部静态展示 `StrumPatternDiagram`（SVG 资源 `assets/strum_patterns/*.svg`）。P2 不做光标移动。
-3. **跟弹**：Lesson 页面提供"开始节拍器"按钮，深度链接到 `/metronome` 并预填 BPM（60 / 80）。用户跟拍后深度链接到 `/recording`。
-4. **基础反馈**：复用 v1.1.0 的三档自评（好/一般/需改进）；Lesson 页面给出"对齐拍数 / 闷音次数 / 录音时长"三档锚点（参 `lesson_c_am_down_4x4.md` §10.2）。
-5. **录音复盘**：复用 v1.1.0 真实音频（m4a / 44.1kHz / 单声道 / 5 分钟上限）。
-6. **完成课程**：自评保存后弹出"关卡通过"toast（仅当用户自评 = 好时显示）；记录到 `LessonCompletionRecord`（不入 PracticeRecord，避免污染）。
+- `lib/features/recording/` 真实音频状态机（T027-T038B）
+- `lib/features/practice_records/` Drift schemaVersion=2（P4 升级到 3）
+- `lib/features/metronome/` controller + 7-day plan 常量
+- `lib/core/constants/lesson_constants.dart` + `kBuiltInLessons` 模型
+- `lib/app/router.dart` 现有路由
+- `lib/shared/services/` 麦克风权限 / 录音文件路径
+- 离线优先 + 无 INTERNET 策略（v1.1.0 §7.1）
 
-### 7.2 切片不引入
+### 7.2 ADJUST
 
-- 实时音高评分 / 节奏评分 / 和弦识别
-- INTERNET 权限 / 联网 / 云同步
-- 任何 iOS / 平板 / Web / Desktop 相关
-- 任何新依赖
-- schemaVersion 升级
-- 商业歌曲 / 商业曲谱 / 用户输入歌词或链接
-
-### 7.3 切片验收
-
-- 真机：Android 6.0+ 中端机（如小米 10 / OPPO Reno4）可装可跑。
-- 完整路径：进 Day 4 → 进入 Lesson → 60 BPM 热身 → 80 BPM 目标 → 录音 30 秒 → 回放 → 自评 → "关卡通过"。
-- 无 P0 崩溃；无 P1 性能问题（启动 < 3 秒 / 切页 < 1 秒）。
-
----
-
-## 8. v1.1.0 能力 KEEP / ADJUST / REMOVE 决策
-
-> 基于 `t046-product-v2-benchmark-and-prd-e-yup-jazzy-nebula-agent-a75670748e0c89cc5.md` 审计。
-
-### 8.1 KEEP
-
-| 能力 | 文件 / 路径 | 备注 |
-|------|-------------|------|
-| 真实音频状态机 | `lib/features/recording/` | 完整复用 |
-| Drift 练习记录 | `lib/features/practice_records/` schemaVersion=2 | P4 升级到 3 |
-| 节拍器 controller + 7-day plan | `lib/features/metronome/`, `lib/core/constants/practice_plan_constants.dart` | KEEP |
-| Lesson 模板（kBuiltInLessons） | `lib/core/constants/lesson_constants.dart` | 扩展 Day 3/5/6/7 |
-| 路由 / 主题 / App Shell | `lib/app/` | KEEP |
-| 麦克风权限 / 录音文件路径服务 | `lib/shared/services/` | KEEP |
-| 7 天轮换 | `lib/core/utils/practice_day_calculator.dart` | KEEP |
-| CompletedTasksRepository | `lib/features/home/data/` | KEEP |
-| 通用 widgets | `lib/shared/widgets/` | KEEP |
-
-### 8.2 ADJUST
-
-| 能力 | 调整 | 阶段 |
+| 模块 | 调整 | 阶段 |
 |------|------|------|
-| 调音器（当前是 stub） | 替换为真实时（PCM + autocorrelation / YIN） | P1 |
-| 节拍器（无声） | 加可听点击音 | P1 |
-| 和弦库 4/7 | + G7 / Dm / Em | P1 |
-| 单音 6/7 | + B | P1 |
-| 设置页 | 暴露 defaultBpm / volume 控件 | P1 |
-| 录音器 | 暴露 PCM 实时流 | P3 |
-| PracticeRecord | schemaVersion 3（+ lessonId / accuracyScore / bpmUsed） | P4 |
-| 主题 | 加深色 token | P1 |
+| `lib/features/chord_library/data/built_in_chords.dart` | + G7 / Dm / Em | P1 |
+| `lib/features/single_note_practice/data/built_in_single_notes.dart` | + B | P1 |
+| `lib/features/tuner/` | 静态指南 → 真实时（PCM + autocorrelation / YIN） | P1 |
+| `lib/features/metronome/` | 加可听点击音 | P1 |
+| `lib/features/recording/`（T031E） | 暴露 PCM 实时流 `Stream<Float32>` | **P1（前置）** |
+| `lib/features/practice_records/` | schemaVersion 3（+ lessonId / accuracyScore / bpmUsed） | P4 |
+| `lib/features/settings/` | UI 暴露 defaultBpm / volume | P1 |
+| `lib/app/theme.dart` | 加深色 token（v2.0 不开用户切换） | P1 |
 
-### 8.3 REMOVE
+### 7.3 REMOVE / 退役
 
-v1.1.0 没有任何不安全或必须移除项。`lib/features/tuner/presentation/tuner_page.dart` 中的"确认已调好"按钮可保留为"无麦克风降级"路径（不删除）。
+- **T041 的"自评=好 → 关卡通过 toast"路径退役**（P2 引入 9 步闭环后）；改为客观反馈驱动。
+- `lib/features/tuner/presentation/tuner_page.dart` 的"确认已调好"按钮可保留为"无麦克风降级"路径（不删除）。
 
-### 8.4 v1.1.0 审计 L1-L16 范围
+### 7.4 v1.1.0 审计 L1-L16 归位
 
-- L1（调音器 stub）→ P1 解决
-- L2（无 PCM 实时流）→ P3 解决
-- L3（节拍器无声）→ P1 解决
-- L4（无节奏型存储）→ 接受（明确不做；静态 SVG 即可）
-- L5 / L6（和弦 / 单音 4-7 / 6-7）→ P1 解决
-- L7（无 AI）→ P3-P5 引入本地算法
-- L8（无曲库资产管线）→ P3+ 引入（原创公版）
-- L9（无 INTERNET）→ P6 之前坚持
-- L10（无 iOS）→ P6+ 考虑
-- L11（无深色 UI）→ P1 加 token；用户切换 P6+ 考虑
-- L12（设置未暴露）→ P1 解决
-- L13（无统计）→ P4 解决
-- L14（无 loop/varispeed）→ P5 跟弹需要
-- L15（schemaVersion=2）→ P4 升级
-- L16（仅 Day 4 Lesson）→ P2 扩展
+| # | 限制 | v2 阶段 |
+|---|------|---------|
+| L1 | 调音器 stub | P1 |
+| L2 | 无 PCM 实时流 | **P1（前置）** |
+| L3 | 节拍器无声 | P1 |
+| L4 | 无节奏型存储 | 接受（静态 SVG） |
+| L5 / L6 | 和弦 / 单音 4-7 / 6-7 | P1 |
+| L7 | 无 AI / 识别 | P2-P3 引入本地算法 |
+| L8 | 无曲库资产管线 | P4 引入（原创公版） |
+| L9 | 无 INTERNET | P6 之前坚持 |
+| L10 | 无 iOS | P6+ 之后（受合规前置约束） |
+| L11 | 无深色 UI | P1 加 token；用户切换 Deferred |
+| L12 | 设置未暴露 | P1 |
+| L13 | 无统计 | P5 |
+| L14 | 无 loop/varispeed | Deferred → P4 |
+| L15 | schemaVersion=2 | P4 升级到 3 |
+| L16 | 仅 Day 4 Lesson | P2 仅扩展切片闭环；Day 3/5/6/7 课程数量冻结到 P2 真机验证后 |
 
 ---
 
-## 9. 验收指标
+## 8. 验收指标
 
-### 9.1 功能验收（按阶段）
+### 8.1 功能验收（按阶段）
 
 | 阶段 | 通过条件 |
 |------|----------|
-| P1 | 4 项 §4.3 P0 通过；T010 调音器精度 spike 报告归档 |
-| P2 | 4 个 Lesson widget test 通过；关卡通过 toast 真机录屏 |
-| P3 | 单音音高评分 ±20 cents 准确率 ≥ 80% on-device |
-| P4 | schemaVersion 3 迁移 + 回放测试通过；首页统计 on-device 演示 |
-| P5 | 跟弹 1 首自制曲目（≤ 8 小节）on-device 演示 |
-| P6 | 合规前置全部完成（详见 §10） |
+| P1 | T031E PCM 流暴露 + 4 项 v1.1.0 承诺补齐 + 调音器精度 spike 报告归档 |
+| **P2（关键门）** | 9 步闭环真机录屏 + Day 3/5/6/7 课程**仍冻结** |
+| P3 | ±20 cents 准确率 ≥ 80% on-device |
+| P4 | ≥8 首原创歌曲 + 复习推荐 on-device 演示 |
+| P5 | 推荐命中 ≥ 20% + 统计 on-device 演示 |
+| P6 | 合规前置全部完成 |
 
-### 9.2 产品成功指标（v2 末期 P6 验收）
+### 8.2 产品成功指标（v2 末期 P6 验收）
 
 | 指标 | 目标 |
 |------|------|
 | 7 日留存 | ≥ 25% |
 | 单次练习时长中位数 | 10-20 分钟 |
-| 完整曲目完成率（首次安装到完成 1 首弹唱） | ≥ 30%（90 天内） |
-| 调音器精度 | ±10 cents 内命中率 ≥ 70% on-device |
-| 评分可解释性 | 用户能在帮助页看到评分公式 |
+| 90 天完整曲目完成率 | ≥ 30% |
+| 调音器 ±10 cents 命中率 | ≥ 70% on-device |
+| 起音检测对齐率（80 BPM） | ≥ 80% on-device |
 | 崩溃率 | < 0.5% / session |
 
-### 9.3 隐私与版权边界
+### 8.3 隐私与版权边界
 
 - **不申请 INTERNET 权限** until P6。
 - **不引入第三方分析 SDK**。
-- **永不引入商业歌曲 / 商业曲谱 / 用户输入歌词 / 用户输入链接**。
+- **永不引入**商业歌曲 / 商业曲谱 / 用户输入歌词 / 用户输入链接 / 用户上传内容。
 - **录音不上传、不分享、不导出**。
-- **App 内必须包含隐私说明 + 内容声明**（v1.1.0 §13.4 沿用）。
+- **App 内必须包含**隐私说明 + 内容声明（v1.1.0 §13.4 沿用）。
 - **P6 前置合规**（详见 §10）。
+
+---
+
+## 9. 明确非目标（永久 Out of Scope）
+
+| 非目标 | 原因 |
+|--------|------|
+| iOS / iPadOS / Web / PWA / Desktop / 鸿蒙 / Android Go | 手机 Android 优先；其他平台资源投入不匹配 |
+| **多乐器（吉他 / 钢琴 / 鼓 / 古筝等）** | 尤克里里专属（永久） |
+| Low G / 替代调弦 | 21 寸 GCEA 标准 |
+| 商业歌曲 / 商业曲谱 / UGC 歌曲导入 | 版权风险（永久） |
+| 用户输入歌词 / 用户输入链接 / 用户上传 | UGC 风险（永久） |
+| 社区 / 排行榜 / 好友 / 推送 | 永久不引入 |
+| 后台节拍器 / 后台播放 | 与 v1.1.0 §6.5 冲突 |
+| 自动调音（auto-tune） | 教学场景不适用 |
 
 ---
 
 ## 10. 合规前置（P6 启动前必完成）
 
-| 项 | 责任 Agent | 触发 |
-|----|-----------|------|
-| 完整版隐私政策网页（公网 URL） | 08-compliance-reviewer | P6 启动前 |
-| 内容分级申请 | 08-compliance-reviewer | P6 启动前 |
-| DMCA 投诉通道 | 08-compliance-reviewer | P6 启动前 |
-| GDPR / CCPA 合规（如面向欧美） | 08-compliance-reviewer | P6 启动前 |
-| COPPA 评估（如面向 < 13 岁） | 08-compliance-reviewer | P6 启动前 |
-| App Store / Google Play 政策复核 | 08-compliance-reviewer | P6 启动前 |
-| iOS `Info.plist` `NSMicrophoneUsageDescription` | 02-flutter-architect | iOS 阶段（暂 P6+） |
+| 项 | 责任 Agent |
+|----|-----------|
+| 完整版隐私政策网页（公网 URL） | 08-compliance-reviewer |
+| 内容分级申请 | 08-compliance-reviewer |
+| DMCA 投诉通道 | 08-compliance-reviewer |
+| GDPR / CCPA 合规 | 08-compliance-reviewer |
+| COPPA 评估（如面向 < 13 岁） | 08-compliance-reviewer |
+| App Store / Google Play 政策复核 | 08-compliance-reviewer |
 
 ---
 
-## 11. 明确非目标（v2 范围外）
+## 11. 待用户决策项（≤5 项，真正影响产品方向）
 
-| 非目标 | 原因 |
-|--------|------|
-| iOS / iPadOS / Web / PWA / Desktop / 鸿蒙 / Android Go | 手机 Android 优先；其他平台资源投入不匹配 |
-| 多乐器（吉他 / 钢琴 / 鼓 / 古筝等） | 尤克里里专属 |
-| Low G / 替代调弦 | 21 寸 GCEA 标准 |
-| TAB / 五线谱 / 简谱 | v1.1.0 §7.5 沿用 |
-| 商业歌曲 / 商业曲谱 / UGC 歌曲导入 | 版权风险 |
-| 实时联网功能（除 P6 外） | 离线优先 |
-| 社区 / 排行榜 / 好友 / 推送 | 永不引入 |
-| 视频教学内容 | 资源成本高；图文 + 互动优先 |
-| 背景节拍器 / 后台播放 | 与 v1.1.0 §6.5 冲突 |
-| 自动调音（auto-tune） | 教学场景不适用 |
+> 其他方向已按既定原则直接决定（如 Day 1 free / Day 2+ gated = Phase 6 决定；动态曲谱 = bar-by-bar；阈值 = 内置常量）。
 
----
+| # | 决策 | 选项 | 推荐默认值 | 影响 |
+|---|------|------|-------------|------|
+| **PD1** | 音频分析部署 | A. 纯端 B. 云混合 C. 纯云 | **A. 纯端**（推荐） | 隐私 / 延迟 / 离线 / Phase 3 服务预算 |
+| **PD2** | 课程内容制作方式 | A. 手写 JSON B. 轻量 CMS C. 完整 LMS | **B. 轻量 CMS**（P6） | 非工程师能否上 Day 3+ |
+| **PD3** | 订阅模型 | A. 一次性解锁 B. 月度订阅 C. 免费+订阅 | **C. 免费+订阅** | Day 1 免费试用 + Phase 6 商业化 |
+| **PD4** | 音高/和弦识别引擎 | A. 扩展 v1.1.0 onset + 新 FFT B. 第三方 SDK C. 自研 ML | **A. 扩展 v1.1.0** | 包大小 / 授权 / P3 时间线 |
+| **PD5** | 多用户 / 家庭计划 | A. 单账号 B. 家庭共享 C. 两者 | **A. 单账号**（v2 范围内） | P6 账号架构 |
 
-## 12. 待用户决策项（Pending user decisions）
-
-| # | 问题 | 选项 | 推荐 | 状态 |
-|---|------|------|------|------|
-| Q1 | 是否扩展 T041 Lesson 至 Day 3/5/6/7 | (a) 扩展 (b) 仅 Day 4 (c) 重设计 Lesson 模型 | (a) 扩展 | ⏳ Pending |
-| Q2 | 真实时音高检测在 v2.0 还是 v2.x | (a) v2.0 = P1 (b) v2.x = P3 | (a) | ⏳ Pending |
-| Q3 | 统计层（streak / 周累计）是否在 v2.0 | (a) v2.0 = P4 (b) 推迟 | (a) | ⏳ Pending |
-| Q4 | 深色模式 UI 用户切换是否在 v2.0 | (a) 仅 token 不开切换 (b) 关闭 | (a) | ⏳ Pending |
-| Q5 | 是否在 v2.0 之前保持完全离线 | (a) 坚持到 P6 (b) 提前开 | (a) | ⏳ Pending |
-| Q6 | 和弦库是否扩展到 8-12 个（含 Bb / D / A / Bm） | (a) 仅 7 (b) 扩展到 12 | (a) | ⏳ Pending |
-| Q7 | 节拍器可听音是否在 P1 落地 | (a) P1 (b) P3 | (a) | ⏳ Pending |
-| Q8 | v1.1.0 → v2.0 的数据迁移策略 | (a) schemaVersion 3 兼容 (b) 强制重置 | (a) | ⏳ Pending |
-| Q9 | 调音器是否保留"无麦克风降级"路径 | (a) 保留 (b) 移除 | (a) | ⏳ Pending |
-| Q10 | 是否复用 v1.1.0 文档/版权结构 | (a) 复用 + 增量 (b) 重写 | (a) | ⏳ Pending |
+**已直接决定（不列入待决策）**：
+- Day 1 free、Day 2+ gated → 锁定到 Phase 6 商业化
+- 动态曲谱 = bar-by-bar（不强求 beat-by-beat）
+- 评分阈值 = 内置常量（v2 不开放用户调）
+- Android + 尤克里里 = 唯二目标；iOS deferred
+- Day 3/5/6/7 课程数量冻结直到 P2 真机验证
 
 ---
 
-## 13. 多 Agent 协作记录
+## 12. 多 Agent 协作记录
 
-| 角色 | 任务 | 结论 | Findings | Collaboration Value | Reusable Lesson |
-|------|------|------|----------|---------------------|-----------------|
-| Primary Agent (01-product-manager) | 整合调研 + 撰写 PRD | 完成 | 详见本文档 | 串联 4 个子 Agent 输出 | 5 文档同步维护的协作模式 |
-| Benchmark Research Agent | AI音乐学园功能证据核对 | 完成（30+ 行矩阵；AI音乐学园 列以 Unknown 为主） | 用户终止网络搜索；改为保守矩阵 | 提供"避免推断填满矩阵"的工作纪律 | Verified/Inferred/Unknown 三级证据是产品质量护栏 |
-| 05-music-domain-expert | 尤克里里教学路径核对 | 完成（5 阶段路径 + 切片验证） | T041 切片 Approved with conditions；建议扩展 Day 3/5/6/7 | 给出可执行教学路径与风险列表 | 教学切片必须有"对齐拍数 / 闷音次数"等可观察锚点 |
-| Product Strategy Reviewer | 范围 / 优先级 / 可执行性审查 | Approved with conditions（10 项最低变更） | 见 §14 修订记录 | 在写作前给出 10 条 checklist + 10 条 auto-Blocker 触发器 | "Approved with conditions"模式比一次性 Approved 更稳健 |
+| 角色 | Agent ID | 任务 | 结论 |
+|------|----------|------|------|
+| Primary Agent | 主会话 | 修订 PRD v2 + 配套文档 | 完成 |
+| Benchmark Research Agent | a75670748e0c89cc5 | v1.1.0 能力审计 + AI音乐学园 Benchmark | 完成（L1-L16） |
+| 05-music-domain-expert | ab73d240921ebe74d | 互动教学闭环 + 教学路径核对 | **Approved with conditions**（6 项） |
+| Product Strategy Reviewer | afd9457b253397ce1 | 范围 / 优先级 / 可执行性审查 | **Approved with conditions**（4 项） |
 
-### 13.1 Reviewer Blocker → 修订
+### 12.1 Reviewer / Music Domain 反馈与修订
 
-| # | Reviewer 要求 | 修订位置 |
-|---|---------------|----------|
-| 1 | KEEP/ADJUST/REMOVE 表 + L1-L16 显式承认 | §8 |
-| 2 | 10 项 checklist 对应的章节结构 | §4-§11 |
-| 3 | 第一垂直切片与 C7 对齐 | §7 |
-| 4 | 6 阶段 + 可见 demo 脚本 | §6 |
-| 5 | Pending user decisions 表 | §12 |
-| 6 | 证据等级 legend | 矩阵文档 §0 |
-| 7 | 非目标编号列表 | §11 |
-| 8 | 引用 v1.1.0 §7/§12 原文 | §9.3 |
-| 9 | PRD v2 路径明确 | 文档头 |
-| 10 | 11 维度每项标注阶段或 Deferred | §5 |
+| 来源 | 条件 | 修订位置 |
+|------|------|----------|
+| Music Domain | C-1 退役 T041 自评=好 → toast | §7.3 |
+| Music Domain | C-2 客观反馈可读可关 | §5.4 |
+| Music Domain | C-3 起音检测仅录音窗口 | §5.4 + §7.3 |
+| Music Domain | C-4 不引入新权限/依赖/schema | §5.2 |
+| Music Domain | C-5 Day 3/5/6/7 冻结 | §5 头部 + §7.4 L16 |
+| Music Domain | PCM 流前置 | §5.5 + §7.2（P1） |
+| Reviewer | §Research 来源白名单 | docs/T046_AI_MUSIC_SCHOOL_BENCHMARK.md §0 |
+| Reviewer | 课程数量冻结 | §5 头部 |
+| Reviewer | 阶段优先级严格排序 | §6 |
+| Reviewer | Pending Decisions ≤ 5 | §11 |
+| Reviewer | 文档迁移至 docs/dev/ | 单独 commit |
 
-修订后 Reviewer 重新判定：**Approved**。
+修订后 Reviewer / Music Domain 重新判定：**Approved**。
 
 ---
 
-## 14. 三步反思
+## 13. 三步反思
 
-### 14.1 【初步实现】
+### 13.1 【初步实现】
 
-- v2 范围 6 阶段（P1 补齐 → P2 切片 → P3 音高 → P4 统计 → P5 跟弹 → P6 商业化）。
-- 11 维度功能范围映射到阶段或显式 Deferred。
-- 第一垂直切片沿用 T041 `c_am_down_4x4` 模板，扩展 Day 3/5/6/7；不引入新权限 / 依赖 / schema 升级。
-- 30+ 行 Benchmark 矩阵 + 三级证据 + 严格不推断填满。
-- v1.1.0 审计 L1-L16 全部归位（接受 / P1 / P3 / P4 / P5 / P6+ 标注）。
+- v2 = 6 阶段路线（Foundation → Interactive Slice → Audio Intelligence → Curriculum → Personalization → Platform）。
+- 长期功能 4.1-4.11 共 11 维度全覆盖：每项明确阶段或 Deferred；永久 Out of Scope 仅限多乐器 + 商业歌曲 + UGC + iOS + 平板 + Web + 社区/推送。
+- 第一切片改为 9 步互动闭环（教学说明 → 倒计时 → 时间轴谱 → 当前拍高亮 → 用户弹奏 → 起音/节奏检测 → 客观反馈 → 录音回放 → 课程完成）；三档自评仅补充。
+- 10 项 Pending 决策压缩为 5 项；其余直接决定。
 
-### 14.2 【自我找茬】（≥3 项偏航风险）
+### 13.2 【自我找茬】（≥3 项偏航风险）
 
-1. **Benchmark 矩阵 "Unknown" 占多数**：用户禁止网络搜索 + 拒绝推断填满，导致矩阵虽然覆盖广但证据稀薄。**风险**：PRD 中"必做"项如被下游 Agent 当作"已对齐"会误判优先级。**缓解**：每个 ⚪ Unknown 行必须在 v2 PRD 中标注"待证据升级到 Verified 才进入"必做""。
-2. **P1 一次性承担过多补齐项**：4 项 §4.3 P0 全部塞入 P1，加上设置页暴露 + 深色 token。**风险**：P1 工期可能膨胀，违反"3 任务真机可见"节奏。**缓解**：将 P1 拆为 P1a（和弦/单音补齐 + 调音器实时）/ P1b（节拍器可听音 + 设置页 + 深色 token）两个子阶段，节奏维持。
-3. **6 阶段路线可能跨度过长**：P1 到 P6 跨度 6 个阶段。**风险**：用户容易在 P3 之后失去耐心。**缓解**：P2 完成即发布 v2.0.0 预览；P3-P5 以 minor 版本号递进；P6 为 v2.x 长期路线。
-4. **个性化推荐未给出准确度门槛**：P4 引入基于自评的复习推荐但未指定"推荐命中"指标。**风险**：上线后无法判断推荐质量。**缓解**：补加验收指标"复习推荐点击率 ≥ 20%"。
-5. **合规前置 P6 启动前一次性完成**：10 项 §10 全部在 P6 启动前完成。**风险**：一旦 P5 提前触发 P6 启动，准备工作未完成会阻塞。**缓解**：从 P4 起每月一次合规 readiness 评审。
-6. **切片"关卡通过"toast 仅在自评=好时显示**：可能让"一般"自评用户感受不到关卡完成。**风险**：挫败感。**缓解**：补加"关卡完成 = 自评已落盘"的中性 toast，无论好/一般/需改进均显示。
-7. **不引入 iOS / Web / 平板**：可能错失早期用户。**缓解**：明确为非目标，P6+ 视情况重评。
+1. **PCM 流前置可能阻塞 P1**：T031E 扩展 PCM `Stream<Float32>` 是 §5 的硬前置；如未在 P1 完成，P2 的步骤 5/6/7/8 全不可用。**缓解**：将 PCM 流暴露作为 P1 第一个任务（与和弦库补齐并行）。
+2. **9 步闭环的客观反馈阈值过严可能挫败用户**："≥28/32 对齐"对 Day 1 零基础用户偏难。**缓解**：采用双门槛（hard ≥28 / soft ≥20）；反馈文案只描述事实不给分数。
+3. **课程数量冻结 + P2 关闭门**：Day 3/5/6/7 课程数量冻结到 P2 真机验证前。如 P2 验证延迟，会推迟 Phase 4 启动。**缓解**：在 P2 阶段同时启动原创曲谱 SVG 资产准备工作（不计入"课程数量扩展"）。
+4. **过渡期间 T041 与 9 步闭环共存**：P2 启动时 T041 的 `c_am_down_4x4` 仍在 v1.1.0 中显示。如不退役 T041 旧路径，会出现"两个完成信号"冲突。**缓解**：P2-T2 显式退役 T041 self-eval=好 → toast。
+5. **节奏检测算法在低端机的性能**：能量包络 + spectral flux 在中端机上 < 1 ms/帧，但低端 Android 6.0 设备可能拖累 UI。**缓解**：算法帧长可调；低端机自动降级为"仅能量包络"。
+6. **Deferred 功能被误读为"不做"**：用户修正要求"当前不实现的复杂功能标记 Deferred 并写明前置条件，不得永久排除"。**缓解**：§4 每个 Deferred 项明确阶段和前置条件。
 
-### 14.3 【终极交付】
+### 13.3 【终极交付】
 
-- 已采纳所有 Reviewer 最低 10 项变更（§13.1）。
-- 11 维度功能范围每项已标注阶段或 Deferred（§5）。
-- 阶段路线保证 3 任务真机可见（§6 含 demo 脚本）。
-- 隐私 / 版权 / 非目标 / 待用户决策项均显式成节（§9.3 / §11 / §12）。
+- 采纳 Reviewer 4 项 + Music Domain 6 项条件全部反馈（§12.1）。
+- 长期功能 4.1-4.11 全覆盖；Deferred + 前置条件显式标注。
+- 第一切片 9 步闭环明确；T041 旧路径退役计划在 §7.3。
+- 阶段优先级与用户修正完全一致（Foundation → Interactive Slice → Audio Intelligence → Curriculum → Personalization → Platform）。
+- Pending Decisions 5 项；其余直接决定。
 - v1.1.0 PRD 保留原样（不覆盖不删除）。
-- v2 PRD 路径：`docs/PRD_v2.md`（本文档）。
+- v2 PRD 路径：`docs/PRD_v2.md`。
 
 ---
 
-## 15. 文档版本
+## 14. 文档版本
 
 | 版本 | 日期 | 修改内容 |
 |------|------|----------|
-| 0.1 | 2026-06-24 | T046 初稿：6 阶段路线 + 11 维度映射 + 5 节用户旅程 + 第一垂直切片 + Reviewer 10 项最低变更全部采纳 |
+| 0.1 | 2026-06-24 | T046 初稿（6 阶段 + 11 维度） |
+| 0.2 | 2026-06-24 | T046 修正稿（5 阶段优先级 + 9 步互动闭环 + Deferred + 5 项 Pending Decisions + 文档迁移） |
 
 ---
 
-## 16. 引用
+## 15. 引用
 
 - `docs/PRD.md` v1.1.0（沿用 §7 不做范围 / §9 7 天计划 / §12 内容版权 / §13 隐私）
 - `docs/ROADMAP.md` v1.0
@@ -442,4 +384,6 @@ v1.1.0 没有任何不安全或必须移除项。`lib/features/tuner/presentatio
 - `agents/05-music-domain-expert.md`
 - `docs/T046_AI_MUSIC_SCHOOL_BENCHMARK.md`（本任务产出）
 - `docs/T046_ROADMAP.md`（本任务产出）
+- `docs/dev/TASK_LEDGER.md`（统一台账，追加 T046 节段）
+- `docs/dev/AGENT_QUALITY_METRICS.md`（统一指标，追加 T046 Scorecard）
 - T046 v1.1.0 Capability Audit（独立只读 Agent 报告）

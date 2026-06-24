@@ -408,3 +408,38 @@
 - **推送**：在用户当前指令明确授权后执行 `git push origin master`（普通 fast-forward，本地领先 8 / 落后 0 → push 后 0 / 0）；**未** force / **未** Tag / **未** amend / rebase / reset / **未** `flutter install` / **未**卸载 / **未**清数据。
 
 **未**修改：除 `lib/app/router.dart` 外的任何生产代码 / 任何路由或课程功能 / 既有 740 项测试 / Manifest / Gradle / Drift schema / 依赖 / 版本号 / 既有 doc 主体（仅追加 T045A 节段）/ Release 产物 / `agents/*.md` / Day 1-7 任何任务 / 完成状态 / 数据库持久化 / 节拍器 / 录音 controller / **未** Tag / **未** amend / rebase / reset / **未** force push。
+
+## T046 - 产品 v2 PRD 与 Benchmark（设计阶段 · 不编码）
+
+**任务目标**：以 AI音乐学园 为功能借鉴对象（仅取适用于尤克里里的功能类型），制定 ukulele_app 的 PRD v2；产出 Benchmark 矩阵、更新 ROADMAP、记录到统一台账与指标。**不**修改 v1.1.0 PRD / **不**编码 / **不**运行 flutter test / **不** push / **不** Tag / **不** amend / rebase / reset。
+
+**任务结构**：
+- T046_PRODUCT_V2_BENCHMARK_AND_PRD：v0.1 初稿（PRD_v2 / Benchmark / ROADMAP / 2 个 T046 专用记录）；commit `59962a2`（`docs: define product v2 requirements`）。Reviewer 与 Music Domain 因 T041 历史协作模式复用，未独立启动。
+- **T046_PRODUCT_V2_PRD_CORRECTION**（本次修订）：v0.2 修正稿——重新定义第一产品垂直切片为 9 步互动闭环（教学说明 → 倒计时 → 时间轴谱 → 当前拍高亮 → 用户弹奏 → 起音/节奏检测 → 客观反馈 → 录音回放 → 课程完成）；阶段优先级改为 5 阶段（Foundation → Interactive Slice → Audio Intelligence → Curriculum → Personalization → Platform）；长期未实现功能统一标 Deferred + 前置条件；10 项 Pending 决策压缩为 5 项；T041 旧 self-eval=好 → toast 路径退役；Day 3/5/6/7 课程数量冻结到 P2 真机验证前。T031E PCM 实时流暴露作为 P2 硬前置。
+
+**协作模型**：Primary Agent + 1 个独立 Product Strategy Reviewer（`afd9457b253397ce1`，只读）+ 1 个独立 05-music-domain-expert（`ab73d240921ebe74d`，只读）。Benchmark Research Agent 仅做 v1.1.0 能力审计（`a75670748e0c89cc5`），因用户两次收紧 AI音乐学园 网络搜索，矩阵保留 ⚪ Unknown 为主的保守证据等级。
+
+**交付物**：
+1. `docs/PRD_v2.md`（v0.2，~ 7.5k 字，11 维度长期功能 + 9 步闭环 + 5 阶段路线 + 5 项 Pending Decisions）
+2. `docs/T046_AI_MUSIC_SCHOOL_BENCHMARK.md`（v0.2，~ 5.0k 字，40+ 行矩阵；来源白名单收紧为 AI音乐学园 官方 App Store / 官网 / 官方帮助与隐私页 + 最多 2 个二级来源）
+3. `docs/T046_ROADMAP.md`（v0.2，~ 3.5k 字，5 阶段路线 + T031E PCM 流硬前置 + Day 课程数量冻结）
+4. `docs/dev/TASK_LEDGER.md`（本节段）
+5. `docs/dev/AGENT_QUALITY_METRICS.md`（追加 T046 Scorecard）
+
+**修复记录**：
+- v0.1 → v0.2 阶段同步删除两份 T046 专用记录文件（`docs/T046_TASK_LEDGER.md` + `docs/T046_AGENT_QUALITY_METRICS.md`），按用户修正要求迁移到统一文件 `docs/dev/TASK_LEDGER.md` + `docs/dev/AGENT_QUALITY_METRICS.md`。Git 历史保留原 v0.1 提交 `59962a2`，可回溯。
+
+**Reviewer 协作（v0.2 复审）**：
+- **Product Strategy Reviewer**（`afd9457b253397ce1`，独立只读）：**Approved with conditions**（4 项最低变更全部采纳）。详见 `docs/dev/AGENT_QUALITY_METRICS.md` §T046 Scorecard。
+- **05-music-domain-expert**（`ab73d240921ebe74d`，独立只读）：**Approved with conditions**（6 项条件全部采纳）。详见 `docs/dev/AGENT_QUALITY_METRICS.md` §T046 Scorecard。
+
+**测试基线**：本次任务**不**修改 `lib/` / `test/` / `pubspec.yaml` / Drift schema / Manifest / Gradle，测试基线保持 744 项不变。
+
+**GPT 复审**：**待复审**——T046 经 GPT 复审批准前，**不**启动 T047 SDD。
+
+**启动检查**：HEAD=b2983fa；clean；origin/master 同步 ✓。
+
+**遗留说明 / 下游任务**：
+- T047_PRODUCT_V2_SDD（**不**在本任务内启动；T046 GPT 复审通过后启动）：将 PRD v2 拆解为 SDD；至少包含 PCM 流暴露任务（T031E 扩展）、9 步闭环组件拆分、5 阶段路线对应的 SDD 子任务。
+- Day 3/5/6/7 课程数量**冻结**到 P2 真机验证前。
+- T041 旧 self-eval=好 → 关卡通过 toast 路径在 P2-T3 显式退役（不再共存）。

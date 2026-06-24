@@ -2099,3 +2099,83 @@
 | Collaboration Value | **Medium**（Primary 自检 4 项 + 1 个独立 Router Reviewer 只读复审；协作模型"Primary 修复 + Primary 端到端回归测试 + 1 个独立只读复审"对"路由 FIX + 真实路由 e2e"型任务适配；自检风险 `uri.path` vs `matchedLocation` 通过实际打印 `state.uri / state.matchedLocation / state.fullPath` 在测试中实证，避免凭直觉选错判别字段） |
 | 可复用经验 | ① **go_router 17.x 父级 redirect 对子路由生效**：测试 fix 时**必须**实证（用 `print` 临时打印 `state.uri / state.matchedLocation / state.fullPath`）而不是凭文档假设；本次发现 `state.fullPath` 在父级 redirect 中是子路由的完整路径 `/lessons/:lessonId` 而非父级自身 `/lessons`，故 `fullPath` 不能作判别字段；`matchedLocation` 在父级 redirect 中对子路由访问也返回 `/lessons`，同样不可区分；唯一可靠字段是 `state.uri.path`；② **真实 `appRouter` e2e 必须避开数据库耦合**：`MaterialApp.router(routerConfig: appRouter)` 直接驱动优于 `UkuleleApp` 全栈 mount，可选 `initialLocation` 跳过 HomePage 的 Drift 读取；切勿在 e2e 测试里让 HomePage 参与 `pumpAndSettle`；③ **`appRouter` 全局单例 + 跨测试污染**：`setUp` 必须 `appRouter.go('/')` 重置；`go_router.routerDelegate.currentConfiguration.uri.path` 在 `push` 后异步更新，断言 widget tree 同步挂载比断言 URL 字符串更稳；④ **既有 spy 测试与 e2e 测试职责不重复**：spy（本地 `GoRouter` 模拟）覆盖 unit-level 隔离（不污染 metronome / recording 状态），e2e（生产 `appRouter`）覆盖路由集成（不丢 redirect / 不挂错 builder）；两者并存，不互相替代；⑤ **数据保留口径必须如实记录**：T045 早期 `flutter install` 已卸载旧版清空数据，T045A 范围**不**得声称"数据保留 PASS"，验收表第 6 项保持 **N/A**，由用户手动确认 |
 | Notes | 详见 `docs/dev/TASK_LEDGER.md` T045A 节段 + `docs/qa/T045_LESSON_ANDROID_ACCEPTANCE.md` T045A 修复交付记录；T045A 真机收口（2026-06-24）由用户在原设备 `adb install -r build/app/outputs/flutter-apk/app-debug.apk` 覆盖安装后手动确认全部 4 项行为 PASS；在用户当前指令明确授权后执行 `git push origin master`（普通 fast-forward，本地领先 8 / 落后 0 → push 后 0 / 0）同步至 origin；**未** force / **未** Tag / **未** amend / rebase / reset / **未** `flutter install` / **未**卸载 / **未**清数据 / **未**撤权限；**未**修改除 `lib/app/router.dart` 外的任何生产代码 / **未**修改任何路由或课程功能 / **未**修改既有 740 项测试 |
+
+## §T046 — 产品 v2 PRD Scorecard
+
+**任务**：T046_PRODUCT_V2_PRD_CORRECTION（基于 T046_PRODUCT_V2_BENCHMARK_AND_PRD v0.1 修订）。
+
+### 协作证据
+
+| 角色 | Agent ID | 启动方式 | 结论 |
+|------|----------|----------|------|
+| Primary Agent | 主会话 | — | 完成 v0.1 + v0.2 两轮修订 |
+| Product Strategy Reviewer | `afd9457b253397ce1` | 真实启动（独立只读） | **Approved with conditions**（4 项全部采纳） |
+| 05-music-domain-expert | `ab73d240921ebe74d` | 真实启动（独立只读） | **Approved with conditions**（6 项全部采纳） |
+| Benchmark Research Agent | `a75670748e0c89cc5` | 真实启动（仅 v1.1.0 能力审计；AI音乐学园 网络搜索被用户两次收紧） | 完成 L1-L16 + 30+ 行矩阵 |
+
+### Reviewer 4 项最低变更
+
+| # | 条件 | 修订位置 |
+|---|------|----------|
+| 1 | 来源白名单：仅 AI音乐学园 官方 App Store / 官网 / 官方帮助与隐私页 + ≤2 二级来源；不扩大到无关平台 | `docs/T046_AI_MUSIC_SCHOOL_BENCHMARK.md` §0.2 |
+| 2 | 课程数量冻结到 P2 真机验证前 | `docs/PRD_v2.md` §5 + `docs/T046_ROADMAP.md` §2 + §8 |
+| 3 | 5 阶段优先级严格排序（Foundation → Interactive Slice → Audio Intelligence → Curriculum → Personalization → Platform） | `docs/PRD_v2.md` §6 + `docs/T046_ROADMAP.md` §0 |
+| 4 | Pending Decisions ≤ 5 项 | `docs/PRD_v2.md` §11（PD1-PD5） |
+
+### 05-music-domain-expert 6 项条件
+
+| # | 条件 | 修订位置 |
+|---|------|----------|
+| C-1 | T041 的"自评=好 → 关卡通过 toast"路径退役 | `docs/PRD_v2.md` §7.3 |
+| C-2 | 客观反馈可读可关（"24/32 拍对齐"等可读计数） | `docs/PRD_v2.md` §5.4 |
+| C-3 | 起音检测仅在用户录音窗口运行 | `docs/PRD_v2.md` §5.4 + §7.3 |
+| C-4 | 切片不引入新权限/依赖/schema 升级 | `docs/PRD_v2.md` §5.2 |
+| C-5 | Day 3/5/6/7 课程数量冻结 | `docs/PRD_v2.md` §5 + `docs/T046_ROADMAP.md` §2 |
+| C-6 | T031E PCM 实时流作为 P2 硬前置 | `docs/PRD_v2.md` §5.5 + §7.2 + `docs/T046_ROADMAP.md` §1 |
+
+### 关键决策与差异
+
+| 维度 | v0.1 | v0.2（修正） |
+|------|------|--------------|
+| 阶段路线 | 6 阶段（P1-P6） | **5 阶段优先级**（Foundation → Interactive Slice → Audio Intelligence → Curriculum → Personalization → Platform） |
+| 第一切片 | T041 静态叠加 + 录音回放 | **9 步互动闭环**（教学说明 → 倒计时 → 时间轴谱 → 高亮 → 弹奏 → 起音/节奏检测 → 客观反馈 → 回放 → 课程完成） |
+| 三档自评 | 关卡通过触发器之一 | **仅作为补充**，不替代客观反馈 |
+| Pending Decisions | 10 项 | **5 项**（PD1 音频分析部署 / PD2 CMS / PD3 订阅模型 / PD4 识别引擎 / PD5 多用户） |
+| Deferred 项 | 部分排除 | **统一标 Deferred + 前置条件**（不永久排除） |
+| T031E PCM 流 | 未明确 | **P1 硬前置** |
+| Day 3/5/6/7 课程 | P2 扩展 4 个 Lesson | **冻结**到 P2 真机验证前 |
+| 文档归档 | 2 个 T046 专用文件 | **迁移到 docs/dev/TASK_LEDGER.md + docs/dev/AGENT_QUALITY_METRICS.md**，旧 T046 副本删除 |
+
+### 范围守卫（不通过验收的反例）
+
+| 反例 | 是否发生 |
+|------|----------|
+| 覆盖或删除 v1.1.0 PRD | ❌ 未发生 |
+| 修改 lib/ test/ android/ 任何代码 | ❌ 未发生 |
+| 引入商业歌曲 / 商业曲谱 / UGC 入口 | ❌ 未发生 |
+| 申请 INTERNET 权限 | ❌ 未发生 |
+| 引入第三方分析 SDK | ❌ 未发生 |
+| 引入 iOS / Web / 平板相关代码 | ❌ 未发生 |
+| 引入多乐器相关代码 | ❌ 未发生 |
+| push 分支 / tag / amend / rebase / reset | ❌ 未发生 |
+| 运行 flutter test / build | ❌ 未发生 |
+| 扩大 AI音乐学园 网络搜索 | ❌ 未发生（用户两次收紧） |
+
+### Less-is-more 守卫
+
+| 指标 | 数值 |
+|------|------|
+| 启动的真实 Agent 数 | 3（Primary / Reviewer / Music Domain）；Benchmark Research 已 v0.1 启动并产出审计报告 |
+| 新增文档数 | 3（PRD_v2 v0.2 + Benchmark v0.2 + ROADMAP v0.2 修订） + 2 个统一文件追加节段 |
+| 删除文档数 | 2（`docs/T046_TASK_LEDGER.md` + `docs/T046_AGENT_QUALITY_METRICS.md`，Git 历史保留 v0.1 commit `59962a2`） |
+| 修改 lib/ test/ android/ 文件数 | 0 |
+
+### 下一任务
+
+| 任务 | 触发条件 |
+|------|----------|
+| T047_PRODUCT_V2_SDD | **T046 经 GPT 复审批准后**；本任务不启动 |
+
+### Notes
+
+详见 `docs/dev/TASK_LEDGER.md` T046 节段；v0.1 提交 `59962a2`（`docs: define product v2 requirements`）；v0.2 提交 `<pending>`（`docs: realign product v2 interactive learning scope`）；测试基线 744 保持不变；**未** push / **未** Tag / **未** amend / rebase / reset；**未**修改除 docs/PRD_v2.md + docs/T046_AI_MUSIC_SCHOOL_BENCHMARK.md + docs/T046_ROADMAP.md 外的任何文件；旧 T046 专用文件删除但 Git 历史保留。

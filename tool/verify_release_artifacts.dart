@@ -1,9 +1,16 @@
 // Copyright (c) 2026 ukulele_app contributors.
 //
-// T022_RELEASE_ARTIFACT_AUTOMATED_VERIFICATION
+// T040_RELEASE_VERIFIER_V110_ALIGNMENT
 //
 // Purpose:
-//   Statically verify the Release APK / AAB artifacts produced by T021.
+//   Statically verify the Release APK / AAB artifacts produced for the
+//   v1.1.0 real-audio MVP. The expected version is derived from
+//   `pubspec.yaml` at run time (so the script does not drift), the
+//   `RECORD_AUDIO` permission is REQUIRED (real-audio MVP), the
+//   `INTERNET` permission MUST NOT be declared, and the APK / AAB
+//   existence, Release signature, and Debug-vs-Release certificate
+//   comparison are still verified.
+//
 //   The script never reads `android/key.properties`, never prints keystore
 //   passwords, the alias, the keystore content, or the user's home
 //   directory, and never modifies the artifacts.
@@ -37,18 +44,89 @@ final List<String> _log = <String>[];
 /// ---------------------------------------------------------------------------
 
 const String _releaseApkRel = 'build/app/outputs/flutter-apk/app-release.apk';
-const String _releaseAabRel = 'build/app/outputs/bundle/release/app-release.aab';
+const String _releaseAabRel =
+    'build/app/outputs/bundle/release/app-release.aab';
 const String _debugApkRel = 'build/app/outputs/flutter-apk/app-debug.apk';
 
 const String _expectedApplicationId = 'com.yupi.ukulele';
-const String _expectedVersionName = '1.0.0';
-const String _expectedVersionCode = '2';
 
-/// Names of Android runtime permissions that MUST NOT be declared.
+/// Names of Android runtime permissions that MUST NOT be declared for the
+/// real-audio MVP. `INTERNET` is still forbidden (offline-only contract);
+/// `RECORD_AUDIO` is REQUIRED by `permission_handler` for real recording
+/// and must therefore be present (validated separately).
 const List<String> _forbiddenPermissions = <String>[
-  'android.permission.RECORD_AUDIO',
   'android.permission.INTERNET',
 ];
+
+/// Permissions that MUST be declared in the Manifest for the v1.1.0
+/// real-audio MVP. Failing to declare `RECORD_AUDIO` means the manifest
+/// has silently regressed and the verifier must fail.
+const List<String> _requiredPermissions = <String>[
+  'android.permission.RECORD_AUDIO',
+];
+
+const String _pubspecRel = 'pubspec.yaml';
+
+/// Expected application version, parsed at run time from `pubspec.yaml`
+/// (`version: <name>+<code>`). The verifier never hard-codes versionName
+/// / versionCode so that v1.1.x → v1.2.x bumps do not silently rot the
+/// script.
+class _ExpectedVersion {
+  _ExpectedVersion({required this.name, required this.code});
+  final String name;
+  final String code;
+}
+
+/// Parses a single line of the form `version: 1.2.3+4` from the supplied
+/// [pubspecContents]. Exposed (as a free function rather than buried in
+/// `main`) so that unit tests can pin the parser without invoking the
+/// full verification script.
+///
+/// Returns `null` when the line cannot be located or is malformed — the
+/// caller is responsible for treating `null` as a fatal configuration
+/// error (a hard-coded fallback would silently mask misconfiguration).
+// ignore: library_private_types_in_public_api
+_ExpectedVersion? parseExpectedVersion(String pubspecContents) {
+  final RegExp re = RegExp(r'^\s*version:\s*(\S+)\s*$', multiLine: true);
+  final RegExpMatch? m = re.firstMatch(pubspecContents);
+  if (m == null) return null;
+  final String raw = m.group(1) ?? '';
+  // Strip surrounding quotes (single or double) that some pubspec
+  // formats use for the version literal.
+  String trimmed = raw.trim();
+  if ((trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+      (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+    trimmed = trimmed.substring(1, trimmed.length - 1);
+  }
+  final List<String> parts = trimmed.split('+');
+  if (parts.length != 2) return null;
+  final String name = parts[0].trim();
+  final String code = parts[1].trim();
+  if (name.isEmpty || code.isEmpty) return null;
+  // versionName must look like semver-ish: digits separated by dots.
+  if (!RegExp(r'^\d+(\.\d+)*$').hasMatch(name)) return null;
+  // versionCode must be a positive integer.
+  if (!RegExp(r'^\d+$').hasMatch(code)) return null;
+  return _ExpectedVersion(name: name, code: code);
+}
+
+/// Loads the expected version from `pubspec.yaml` on disk. Throws a
+/// [_FailFast] (which `main` translates to exit code 2) when the file
+/// is missing or malformed.
+_ExpectedVersion _loadExpectedVersion() {
+  final File f = File(_pubspecRel);
+  if (!f.existsSync()) {
+    throw _FailFast('Required file missing: $_pubspecRel');
+  }
+  final String contents = f.readAsStringSync();
+  final _ExpectedVersion? v = parseExpectedVersion(contents);
+  if (v == null) {
+    throw _FailFast(
+      'Could not parse `version: <name>+<code>` from $_pubspecRel',
+    );
+  }
+  return v;
+}
 
 void main(List<String> args) async {
   try {
@@ -67,11 +145,18 @@ void main(List<String> args) async {
     final _ApkSignature apkSignature = _verifyApkSignature(apkFile, tools);
     final _AabSignature aabSignature = _verifyAabSignature(aabFile, tools);
 
+    final _ExpectedVersion expectedVersion = _loadExpectedVersion();
+    _emit(
+        'PUBSPEC',
+        'expected versionName=${expectedVersion.name} '
+            'versionCode=${expectedVersion.code}');
+
     final _PackageIdentity pkg = _parsePackageIdentity(apkFile, tools);
-    _assertPackageIdentity(pkg);
+    _assertPackageIdentity(pkg, expectedVersion);
 
     final List<String> permissions = _parsePermissions(apkFile, tools);
     _assertForbiddenPermissions(permissions);
+    _assertRequiredPermissions(permissions);
 
     _DebugComparison? debugComparison =
         _compareDebugCertificate(apkFile, tools);
@@ -252,8 +337,10 @@ class DigestSink {
       w[i] &= 0xffffffff;
     }
     for (int i = 16; i < 64; i++) {
-      final int s0 = _rotr(w[i - 15], 7) ^ _rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
-      final int s1 = _rotr(w[i - 2], 17) ^ _rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+      final int s0 =
+          _rotr(w[i - 15], 7) ^ _rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+      final int s1 =
+          _rotr(w[i - 2], 17) ^ _rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
       w[i] = (w[i - 16] + s0 + w[i - 7] + s1) & 0xffffffff;
     }
 
@@ -296,17 +383,70 @@ class DigestSink {
     // First 32 bits of the fractional parts of the cube roots of the first
     // 64 primes.
     const List<int> K = <int>[
-      0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
-      0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-      0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
-      0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-      0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
-      0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
-      0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-      0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-      0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
-      0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-      0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+      0x428a2f98,
+      0x71374491,
+      0xb5c0fbcf,
+      0xe9b5dba5,
+      0x3956c25b,
+      0x59f111f1,
+      0x923f82a4,
+      0xab1c5ed5,
+      0xd807aa98,
+      0x12835b01,
+      0x243185be,
+      0x550c7dc3,
+      0x72be5d74,
+      0x80deb1fe,
+      0x9bdc06a7,
+      0xc19bf174,
+      0xe49b69c1,
+      0xefbe4786,
+      0x0fc19dc6,
+      0x240ca1cc,
+      0x2de92c6f,
+      0x4a7484aa,
+      0x5cb0a9dc,
+      0x76f988da,
+      0x983e5152,
+      0xa831c66d,
+      0xb00327c8,
+      0xbf597fc7,
+      0xc6e00bf3,
+      0xd5a79147,
+      0x06ca6351,
+      0x14292967,
+      0x27b70a85,
+      0x2e1b2138,
+      0x4d2c6dfc,
+      0x53380d13,
+      0x650a7354,
+      0x766a0abb,
+      0x81c2c92e,
+      0x92722c85,
+      0xa2bfe8a1,
+      0xa81a664b,
+      0xc24b8b70,
+      0xc76c51a3,
+      0xd192e819,
+      0xd6990624,
+      0xf40e3585,
+      0x106aa070,
+      0x19a4c116,
+      0x1e376c08,
+      0x2748774c,
+      0x34b0bcb5,
+      0x391c0cb3,
+      0x4ed8aa4a,
+      0x5b9cca4f,
+      0x682e6ff3,
+      0x748f82ee,
+      0x78a5636f,
+      0x84c87814,
+      0x8cc70208,
+      0x90befffa,
+      0xa4506ceb,
+      0xbef9a3f7,
+      0xc67178f2,
     ];
     return K[i];
   }
@@ -345,7 +485,8 @@ SdkTools _resolveSdkTools() {
   String? buildToolsDir;
 
   if (sdkRoot != null && sdkRoot.isNotEmpty) {
-    final Directory d = Directory('$sdkRoot${Platform.pathSeparator}build-tools');
+    final Directory d =
+        Directory('$sdkRoot${Platform.pathSeparator}build-tools');
     if (d.existsSync()) {
       buildToolsDir = _newestSubdir(d);
     }
@@ -368,31 +509,31 @@ SdkTools _resolveSdkTools() {
   final String apksigner = '$buildToolsDir${Platform.pathSeparator}apksigner'
       '${Platform.isWindows ? '.bat' : ''}';
   final String jarsigner = _resolveOnPath('jarsigner', explicit: <String>[
-        if (Platform.isWindows) ...<String>[
-          r'D:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\jarsigner.exe',
-          r'C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\jarsigner.exe',
-          r'D:\Program Files\Eclipse Adoptium\jdk-25.0.2.10-hotspot\bin\jarsigner.exe',
-          r'C:\Program Files\Eclipse Adoptium\jdk-25.0.2.10-hotspot\bin\jarsigner.exe',
-          r'C:\Program Files (x86)\Common Files\Oracle\Java\javapath\jarsigner.exe',
-          r'C:\Program Files\Java\jdk-17\bin\jarsigner.exe',
-          r'C:\Program Files\Java\jdk-21\bin\jarsigner.exe',
-        ] else ...<String>[
-          '/usr/bin/jarsigner',
-        ],
-      ]);
+    if (Platform.isWindows) ...<String>[
+      r'D:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\jarsigner.exe',
+      r'C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\jarsigner.exe',
+      r'D:\Program Files\Eclipse Adoptium\jdk-25.0.2.10-hotspot\bin\jarsigner.exe',
+      r'C:\Program Files\Eclipse Adoptium\jdk-25.0.2.10-hotspot\bin\jarsigner.exe',
+      r'C:\Program Files (x86)\Common Files\Oracle\Java\javapath\jarsigner.exe',
+      r'C:\Program Files\Java\jdk-17\bin\jarsigner.exe',
+      r'C:\Program Files\Java\jdk-21\bin\jarsigner.exe',
+    ] else ...<String>[
+      '/usr/bin/jarsigner',
+    ],
+  ]);
   final String keytool = _resolveOnPath('keytool', explicit: <String>[
-        if (Platform.isWindows) ...<String>[
-          r'D:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\keytool.exe',
-          r'C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\keytool.exe',
-          r'D:\Program Files\Eclipse Adoptium\jdk-25.0.2.10-hotspot\bin\keytool.exe',
-          r'C:\Program Files\Eclipse Adoptium\jdk-25.0.2.10-hotspot\bin\keytool.exe',
-          r'C:\Program Files (x86)\Common Files\Oracle\Java\javapath\keytool.exe',
-          r'C:\Program Files\Java\jdk-17\bin\keytool.exe',
-          r'C:\Program Files\Java\jdk-21\bin\keytool.exe',
-        ] else ...<String>[
-          '/usr/bin/keytool',
-        ],
-      ]);
+    if (Platform.isWindows) ...<String>[
+      r'D:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\keytool.exe',
+      r'C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\keytool.exe',
+      r'D:\Program Files\Eclipse Adoptium\jdk-25.0.2.10-hotspot\bin\keytool.exe',
+      r'C:\Program Files\Eclipse Adoptium\jdk-25.0.2.10-hotspot\bin\keytool.exe',
+      r'C:\Program Files (x86)\Common Files\Oracle\Java\javapath\keytool.exe',
+      r'C:\Program Files\Java\jdk-17\bin\keytool.exe',
+      r'C:\Program Files\Java\jdk-21\bin\keytool.exe',
+    ] else ...<String>[
+      '/usr/bin/keytool',
+    ],
+  ]);
 
   if (!File(aapt).existsSync()) {
     throw _FailFast('Required tool not found: $aapt');
@@ -430,8 +571,8 @@ String? _newestSubdir(Directory parent) {
       .listSync()
       .whereType<Directory>()
       .toList()
-      ..sort((Directory a, Directory b) =>
-          a.path.compareTo(b.path)); // lexical also gives monotonic order
+    ..sort((Directory a, Directory b) =>
+        a.path.compareTo(b.path)); // lexical also gives monotonic order
   if (entries.isEmpty) return null;
   return entries.last.path;
 }
@@ -461,7 +602,8 @@ String? _probeCommonSdkPaths() {
   return null;
 }
 
-String _resolveOnPath(String executable, {List<String> explicit = const <String>[]}) {
+String _resolveOnPath(String executable,
+    {List<String> explicit = const <String>[]}) {
   final String suffix = Platform.isWindows ? '.exe' : '';
   // Try explicit well-known locations first; PATH-based discovery is
   // unreliable when the script is launched from a non-native shell.
@@ -472,10 +614,8 @@ String _resolveOnPath(String executable, {List<String> explicit = const <String>
   // Dart on Windows is normally `;`, but some shells (e.g. git-bash) may
   // pass through a `:`-separated PATH, so accept both.
   final String pathEnv = Platform.environment['PATH'] ?? '';
-  final List<String> dirs = pathEnv
-      .split(RegExp(r'[;:]'))
-      .where((String s) => s.isNotEmpty)
-      .toList();
+  final List<String> dirs =
+      pathEnv.split(RegExp(r'[;:]')).where((String s) => s.isNotEmpty).toList();
   for (final String dir in dirs) {
     if (dir.isEmpty) continue;
     final String candidate =
@@ -520,9 +660,10 @@ _ApkSignature _verifyApkSignature(File apkFile, SdkTools tools) {
   final String? sha = _extractCertificateSha256(stdout);
 
   final bool verified = exitCode == 0;
-  _emit('APKSIGN',
+  _emit(
+      'APKSIGN',
       'apksigner verify exit=$exitCode schemes=${schemes.join(",")} '
-      'certSha256=${sha ?? "<not found>"}');
+          'certSha256=${sha ?? "<not found>"}');
 
   if (!verified) {
     _fail('apksigner verify reported a non-zero exit code for '
@@ -546,8 +687,7 @@ _ApkSignature _verifyApkSignature(File apkFile, SdkTools tools) {
 
 List<String> _extractSignatureSchemes(String apksignerOutput) {
   final List<String> schemes = <String>[];
-  final RegExp re = RegExp(r'^Verifies(?:[\s]+)?\((.*)\)\s*$',
-      multiLine: true);
+  final RegExp re = RegExp(r'^Verifies(?:[\s]+)?\((.*)\)\s*$', multiLine: true);
   for (final RegExpMatch m in re.allMatches(apksignerOutput)) {
     final String inner = m.group(1) ?? '';
     schemes.add(inner.trim());
@@ -555,8 +695,7 @@ List<String> _extractSignatureSchemes(String apksignerOutput) {
   if (schemes.isEmpty) {
     // Fallback: apksigner sometimes prints lines like
     //   "Verified using v2 scheme (APK Signature Scheme v2): true"
-    final RegExp re2 = RegExp(r'APK Signature Scheme v\d+',
-        multiLine: true);
+    final RegExp re2 = RegExp(r'APK Signature Scheme v\d+', multiLine: true);
     for (final RegExpMatch m in re2.allMatches(apksignerOutput)) {
       final String s = m.group(0) ?? '';
       if (!schemes.contains(s)) schemes.add(s);
@@ -600,8 +739,7 @@ _AabSignature _verifyAabSignature(File aabFile, SdkTools tools) {
   final String stdout = r.stdout.toString();
   final String stderr = r.stderr.toString();
   final int exitCode = r.exitCode;
-  _emit('JARSIGN',
-      'jarsigner -verify exit=$exitCode (AAB)');
+  _emit('JARSIGN', 'jarsigner -verify exit=$exitCode (AAB)');
 
   if (exitCode != 0) {
     _fail('jarsigner -verify reported a non-zero exit code for '
@@ -646,10 +784,10 @@ _PackageIdentity _parsePackageIdentity(File apkFile, SdkTools tools) {
   String? vName;
   String? vCode;
 
-  final RegExp pkgRe =
-      RegExp(r"^package:\s*name='([^']+)'\s*versionCode='([^']+)'\s*"
-          r"versionName='([^']+)'",
-          multiLine: true);
+  final RegExp pkgRe = RegExp(
+      r"^package:\s*name='([^']+)'\s*versionCode='([^']+)'\s*"
+      r"versionName='([^']+)'",
+      multiLine: true);
   final RegExpMatch? m = pkgRe.firstMatch(out);
   if (m != null) {
     appId = m.group(1);
@@ -661,8 +799,10 @@ _PackageIdentity _parsePackageIdentity(File apkFile, SdkTools tools) {
   // in some versions. We do not require them — only applicationId /
   // versionName / versionCode are mandatory.
 
-  _emit('AAPT', "applicationId=$appId versionName=$vName "
-      "versionCode=$vCode");
+  _emit(
+      'AAPT',
+      "applicationId=$appId versionName=$vName "
+          "versionCode=$vCode");
 
   return _PackageIdentity(
     applicationId: appId,
@@ -671,7 +811,10 @@ _PackageIdentity _parsePackageIdentity(File apkFile, SdkTools tools) {
   );
 }
 
-void _assertPackageIdentity(_PackageIdentity pkg) {
+void _assertPackageIdentity(
+  _PackageIdentity pkg,
+  _ExpectedVersion expected,
+) {
   if (pkg.applicationId == null) {
     _fail('aapt dump badging did not report an applicationId');
   } else if (pkg.applicationId != _expectedApplicationId) {
@@ -681,16 +824,16 @@ void _assertPackageIdentity(_PackageIdentity pkg) {
 
   if (pkg.versionName == null) {
     _fail('aapt dump badging did not report a versionName');
-  } else if (pkg.versionName != _expectedVersionName) {
+  } else if (pkg.versionName != expected.name) {
     _fail('versionName mismatch: expected '
-        '$_expectedVersionName, got ${pkg.versionName}');
+        '${expected.name}, got ${pkg.versionName}');
   }
 
   if (pkg.versionCode == null) {
     _fail('aapt dump badging did not report a versionCode');
-  } else if (pkg.versionCode != _expectedVersionCode) {
+  } else if (pkg.versionCode != expected.code) {
     _fail('versionCode mismatch: expected '
-        '$_expectedVersionCode, got ${pkg.versionCode}');
+        '${expected.code}, got ${pkg.versionCode}');
   }
 }
 
@@ -704,14 +847,15 @@ List<String> _parsePermissions(File apkFile, SdkTools tools) {
     <String>['dump', 'permissions', apkFile.path],
   );
   if (r.exitCode != 0) {
-    _emit('AAPT.perm',
+    _emit(
+        'AAPT.perm',
         'aapt dump permissions returned exit=${r.exitCode}; treating as '
-        'no permissions reported (this is the expected state for MVP).');
+            'no permissions reported (this is the expected state for MVP).');
     return <String>[];
   }
   final List<String> perms = <String>[];
-  final RegExp re = RegExp(r"^uses-permission:\s*name='([^']+)'",
-      multiLine: true);
+  final RegExp re =
+      RegExp(r"^uses-permission:\s*name='([^']+)'", multiLine: true);
   for (final RegExpMatch m in re.allMatches(r.stdout.toString())) {
     perms.add(m.group(1) ?? '');
   }
@@ -725,6 +869,14 @@ void _assertForbiddenPermissions(List<String> perms) {
     }
   }
   _emit('PERMS', 'declared=${perms.join(",")}');
+}
+
+void _assertRequiredPermissions(List<String> perms) {
+  for (final String required in _requiredPermissions) {
+    if (!perms.contains(required)) {
+      _fail('Required permission missing from Manifest: $required');
+    }
+  }
 }
 
 /// ---------------------------------------------------------------------------
@@ -756,8 +908,8 @@ _DebugComparison? _compareDebugCertificate(File apkFile, SdkTools tools) {
 
   final String? debugSha = _extractCertificateSha256(
       _apksignerVerifyPrintCerts(debugApk.path, tools));
-  final String? releaseSha =
-      _extractCertificateSha256(_apksignerVerifyPrintCerts(apkFile.path, tools));
+  final String? releaseSha = _extractCertificateSha256(
+      _apksignerVerifyPrintCerts(apkFile.path, tools));
 
   if (debugSha == null || releaseSha == null) {
     _fail('Could not extract certificate SHA-256 for Debug-vs-Release '
@@ -774,9 +926,10 @@ _DebugComparison? _compareDebugCertificate(File apkFile, SdkTools tools) {
     _fail('Release and Debug APK certificates are identical '
         '($releaseSha). The Release APK MUST NOT reuse the debug key.');
   } else {
-    _emit('DEBUG',
+    _emit(
+        'DEBUG',
         'Release cert sha256=$releaseSha, Debug cert sha256=$debugSha, '
-        'differ=true');
+            'differ=true');
   }
 
   return _DebugComparison(
@@ -837,8 +990,7 @@ void _emitSummary({
       'APK_SIGNATURE_SCHEMES=${apkSignature.signatureSchemes.join(",")}');
   stdout.writeln(
       'RELEASE_CERTIFICATE_SHA256=${apkSignature.certificateSha256 ?? ""}');
-  stdout.writeln(
-      'AAB_JARSIGNER_VERIFY_EXIT_CODE=${aabSignature.exitCode}');
+  stdout.writeln('AAB_JARSIGNER_VERIFY_EXIT_CODE=${aabSignature.exitCode}');
   stdout.writeln('');
   stdout.writeln('## Debug Comparison');
   if (debugComparison == null) {

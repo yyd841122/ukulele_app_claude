@@ -443,3 +443,20 @@
 - T047_PRODUCT_V2_SDD（**不**在本任务内启动；T046 GPT 复审通过后启动）：将 PRD v2 拆解为 SDD；至少包含 PCM 流暴露任务（T031E 扩展）、9 步闭环组件拆分、5 阶段路线对应的 SDD 子任务。
 - Day 3/5/6/7 课程数量**冻结**到 P2 真机验证前。
 - T041 旧 self-eval=好 → 关卡通过 toast 路径在 P2-T3 显式退役（不再共存）。
+
+### T046 v0.3 — 产品 v2 最终范围与音频假设修正（FINAL_CORRECTION）
+
+**任务目标**：消除 PRD 产品范围与音频能力假设矛盾；**不**启动 T047 SDD。
+
+**5 项关键修正**：
+1. 平台：Android-first（初期），不永久 Android-only；iOS 改为 Deferred（P6+）+ 跨平台选型 + 合规前置；平板改为 Deferred；Low-G 改为 Deferred（P3+）；多乐器与用户端 Web 仍永久 Out，**管理端 Web（CMS）保留 Deferred 不删**。
+2. **算法降级**：PRD 删除所有算法名称（energy envelope / spectral flux / FFT / autocorrelation / YIN / chroma / RMS / dBFS / Hz 频带 / μ+kσ / 固定阈值），仅描述产品能力（本地起音 / 节奏对齐 / 哑音观察 / 延迟 / 准确度 / 误检率 / 可关闭）。
+3. **删除 "T031E 已暴露 PCM 流"** 错误表述，改为 **PRD §5.5 + §11 OP-1 SDD 开放问题**（5 种方案比较 + m4a 录音必须保留 + 算法不预设）。
+4. **P2 客观过关依据仅节奏/起音对齐**；哑音切换降级为非阻断观察；音色/音高/和弦留到 P3 Audio Intelligence。
+5. **"28/32 对齐"标记为初始真机校准基线**，**不**写为永久产品常量。
+
+**5 项默认决策统一**：PD1 纯端本地分析 / PD2 P1-P4 in-repo + CMS 推迟到 Platform / PD3 免费核心 + 后期订阅 / PD4 SDD 可行性分析决定 / PD5 前期单本地档案。
+
+**协作**：Primary + Product Strategy Reviewer `a3941933d7f44ae19`（Blocker → 8 项修订 → Approved）+ Audio Architecture Reviewer `aeee42779a5458716`（Blocker → 16 处算法 + 18 处 PCM 流 → 全部修订 → Approved）。v0.2 已采纳的 05-music-domain-expert `ab73d240921ebe74d` 结论沿用。
+
+**GPT 复审**：**待复审**——T046 最终批准前**不**启动 T047 SDD。

@@ -2179,3 +2179,22 @@
 ### Notes
 
 详见 `docs/dev/TASK_LEDGER.md` T046 节段；v0.1 提交 `59962a2`（`docs: define product v2 requirements`）；v0.2 提交 `<pending>`（`docs: realign product v2 interactive learning scope`）；测试基线 744 保持不变；**未** push / **未** Tag / **未** amend / rebase / reset；**未**修改除 docs/PRD_v2.md + docs/T046_AI_MUSIC_SCHOOL_BENCHMARK.md + docs/T046_ROADMAP.md 外的任何文件；旧 T046 专用文件删除但 Git 历史保留。
+
+## §T046 v0.3 — Scorecard（FINAL_CORRECTION）
+
+| 维度 | v0.3 状态 |
+|------|----------|
+| 平台范围 | Android-first（初期）；common High-G GCEA（不限定 21 寸）；iOS / 平板 / Low-G = Deferred + 前置条件；多乐器 / 用户端 Web = 永久 Out；管理端 Web（CMS）保留 Deferred 不删 |
+| 算法锁定 | **全部移除**（spectral flux / energy envelope / RMS / dBFS / μ+kσ / autocorrelation / YIN / chroma / FFT / Hz 频带 / 固定阈值）；PRD 仅描述产品能力；算法留给 SDD/TDD |
+| PCM 流表述 | **删除 "T031E 已暴露 PCM 流"**（18 处全部移除）；改为 PRD §5.5 + §11 OP-1 SDD 开放问题（5 种方案 + m4a 保留 + 算法不预设） |
+| P2 客观过关依据 | **仅节奏/起音对齐**；哑音切换 = 非阻断观察；音色/音高/和弦 → P3 |
+| "28/32 对齐" | **初始真机校准基线**，非永久常量；on-device 数据后重新协商 |
+| 5 项默认决策 | PD1 纯端 / PD2 P1-P4 in-repo + CMS 推迟到 Platform / PD3 免费+订阅 / PD4 SDD 决定 / PD5 单本地 |
+| Reviewer 1 | Product Strategy Reviewer `a3941933d7f44ae19` — **Blocker → 8 项全部修订 → Approved** |
+| Reviewer 2 | Audio Architecture Reviewer `aeee42779a5458716` — **Blocker → 16 处算法 + 18 处 PCM 流全部修订 → Approved** |
+
+**Commit**：`docs: correct product v2 scope and audio assumptions`（v0.3，pending）；v0.1 `59962a2`；v0.2 `6a231a4`。
+
+**测试基线**：744 保持不变；**未** push / **未** Tag / **未** amend / rebase / reset；**未**修改除 docs/PRD_v2.md + docs/T046_AI_MUSIC_SCHOOL_BENCHMARK.md + docs/T046_ROADMAP.md + docs/dev/TASK_LEDGER.md + docs/dev/AGENT_QUALITY_METRICS.md 外的任何文件。
+
+**GPT 复审**：**待复审**——T046 最终批准前**不**启动 T047 SDD。

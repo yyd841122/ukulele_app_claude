@@ -398,3 +398,28 @@
   - **Step 3 终极交付** — Version = `1.1.0+3`, Tag = `v1.1.0` (annotated, message = `Real audio MVP release v1.1.0`), Commit message = `chore: release v1.1.0` (含 `pubspec.yaml` + 3 个 doc = 4 文件), Push = 原子 fast-forward `git push origin master v1.1.0`, Reviewer 数量 = 2 (Release/Git Reviewer + Compliance Reviewer)。
 - **T039 详细文档**: `docs/qa/REAL_AUDIO_MVP_V110_RELEASE_CHECKPOINT.md` (新建) + `docs/dev/TASK_LEDGER.md` T039 行 (追加) + `docs/dev/TECH_DEBT.md` TD-021 段 (本段, 追加) = 3 个 doc 文件 + `pubspec.yaml` 版本号 bump = 4 文件。
 - **下一任务**: T039 push 成功后, 建议 T040+ 方向: ① T022 verifier 升级至 v1.1.0 基线 (移除硬编码 1.0.0+2 与 `RECORD_AUDIO` forbidden); ② `.gitignore` 追加 `*.apk` + `*.aab` 显式模式作为防御纵深 (T038C Reviewer 提示); ③ KGP → Built-in Kotlin 迁移 (T038C flutter build 警告); ④ iOS TestFlight 闭环 (TD-003); ⑤ 国产 ROM 兼容性补测 (TD-013, 小米 / OPPO / vivo / 三星)。
+
+## TD-022: T040 T022 Release 验证器 v1.1.0 升级闭环说明（T022 verifier 过期问题 Resolved）
+
+- **问题**：T022 阶段的 Release 验证器（`tool/verify_release_artifacts.dart`，由 commit `4b5b386` 落地）与 v1.0.0 真实音频模拟基线硬编码耦合：① `_expectedVersionName = '1.0.0'` / `_expectedVersionCode = '2'` 直接写死版本号；② `_forbiddenPermissions` 包含 `android.permission.RECORD_AUDIO`（v1.0.0 时代为禁项）。当 v1.1.0 真实音频 MVP 发布（`pubspec.yaml` `version: 1.1.0+3` + Manifest 声明 `RECORD_AUDIO`）后，T022 验证器对 v1.1.0 APK / AAB 必然报 3 项 "FAIL"（versionName 1.0.0→1.1.0 / versionCode 2→3 / `RECORD_AUDIO` forbidden）—— 这是 **v1.1.0 相对 v1.0.0 的预期差异**，T039 显式记录为"3 项 FAIL 均为预期差异、不构成 Blocker"，但 T039 **不**升级 verifier（越界，留待 T040+）。
+- **影响**：T022 验证器对 v1.1.0 APK / AAB 不再可用；T022 verifier 升级是 v1.1.0 发布后必做的"工具同步"任务；T039 任务定位**不**触动 verifier（T039 是 v1.1.0 版本号 bump + tag + push 的发布执行任务，verifier 升级属独立任务）；如 verifier 长期不升级，每次 v1.x.y 版本号 bump 都需要手工判断"FAIL 是否是版本 bump 预期差异"，增加误判风险。
+- **优先级**：中（不阻塞 v1.1.0 发布 / 验收 / 真机 / 商店；T039 已显式记录 verifier FAIL 为预期差异；T040 已升级 verifier，问题已闭环）。
+- **建议处理阶段**：T040 `T040_ALIGN_RELEASE_VERIFIER_WITH_V110`。
+- **状态**：**Resolved**（T040 已完成）。
+- **T040 解决内容（闭环）**：
+  1. **版本号从 `pubspec.yaml` 实时读取**（**不**再硬编码）：新增 `_ExpectedVersion` 值类型 + `parseExpectedVersion(String pubspecContents)` 顶层函数（暴露作 testable 表面，接收 pubspec 字符串内容，返回 `_ExpectedVersion?`） + `_loadExpectedVersion()` 私有辅助（从磁盘 `pubspec.yaml` 读 → 调 `parseExpectedVersion` → 失败抛 `_FailFast` 翻译为 exit code 2）；`_assertPackageIdentity` 签名改为 `(_PackageIdentity pkg, _ExpectedVersion expected)`，对比 `pkg.versionName == expected.name` / `pkg.versionCode == expected.code`。
+  2. **`RECORD_AUDIO` 从 forbidden 移至 required**：`_forbiddenPermissions` 仅剩 `android.permission.INTERNET`；新增 `_requiredPermissions = ['android.permission.RECORD_AUDIO']` + `_assertRequiredPermissions(perms)` 函数（任一必需权限缺席即 fail）；`main()` 流程中先 `assertForbiddenPermissions` 后 `assertRequiredPermissions`。
+  3. **APK/AAB 存在性、Release 签名、Debug/Release 证书差异** 三项既有检查**完全保留**（不破坏 T022 既有契约）：`_verifyApkSignature` / `_verifyAabSignature` / `_compareDebugCertificate` 三函数**未**改动。
+  4. **9 项 `parseExpectedVersion` 单元测试**（`test/tool/verify_release_artifacts_test.dart`，**新建**）：① v1.1.0+3 精确解析；② 真实 pubspec 形状 + leading whitespace；③ 单引号字面量；④ 双引号字面量；⑤ 缺 version 行返回 null；⑥ 非数字 build code 返回 null；⑦ 字母 version name 返回 null；⑧ 缺 `+` 分隔符返回 null；⑨ v1.0.0+2 严格不等于 v1.1.0+3（**不**允许旧版本静默通过）。
+  5. **header 注释升级**：T022 → `T040_RELEASE_VERIFIER_V110_ALIGNMENT`。
+- **T040 验证结果**：
+  - 验证器对 v1.1.0 APK / AAB 输出 **`VERIFY_OK: all required checks passed.`**（APK 61064006B / AAB 60586365B，`versionName=1.1.0` / `versionCode=3`，签名 v2/v3/v4，INTERNET 缺席，RECORD_AUDIO 已声明，Release/Debug 证书不同）。
+  - `flutter test test/tool/verify_release_artifacts_test.dart` → `+9: All tests passed!`。
+  - `flutter analyze` → `No issues found!`。
+  - `flutter test` 全量 → `+720: All tests passed!`（基线 711 + 新增 9 = 720，0 回归）。
+  - `git diff --check` → **PASS**（仅 Windows CRLF 提示，**不**是 Blocker）。
+- **T040 多 Agent 协作**：Primary（实施者，落地代码 + 测试）+ 1 独立 readonly Reviewer Agent（`a94f59ff0ddd72332`，7 项核对 → **Approved** + 0 Blocker）；遵循 "less is more" 协作模型，**不**引入交叉多 reviewer；详见 `docs/dev/TASK_LEDGER.md` T040 节段 + `docs/dev/AGENT_QUALITY_METRICS.md` §4.28 T040 Scorecard。
+- **T040 范围限制**：① **不**改生产代码；② **不**改依赖；③ **不**改 Manifest / Gradle；④ **不**改 schema / `app_database.g.dart`；⑤ **不**改版本号 / 签名配置 / `key.properties` / `.gitignore` / keystore；⑥ **不**重建 Release 产物（既有 v1.1.0 APK / AAB 在 `build/` 内已存在）；⑦ **不**运行全量 720 项测试 / `flutter build` 二次（仅 commit 收口时**不**二次运行）；⑧ **不** push / **不** tag / **不** amend / rebase / reset --hard。
+- **未**修改生产代码 / 测试代码（除本任务唯一新增 `test/tool/verify_release_artifacts_test.dart`）/ 依赖 / Android 配置 / Drift schema / `app_database.g.dart` / `PracticeRecord` 域模型 / Repository / DAO / `audioFilePath` 字段 / `RealAudioRecorderService` / `RealAudioPlaybackService` / `AudioFileStorageService` / `MicrophonePermissionService` / Manifest / 隐私政策 / `key.properties` / `.gitignore` / keystore / 构建产物 / 既有 T006-T039 任何台账条目 / 既有 TD-001 ~ TD-021 任何条目。
+- **T040 详细文档**：`docs/dev/TASK_LEDGER.md` T040 节段（**仅**追加） + `docs/dev/AGENT_QUALITY_METRICS.md` §4.28 T040 Scorecard（**仅**追加） + `docs/dev/TECH_DEBT.md` TD-022 本闭环说明段（**仅**追加） = 3 个 doc 文件 + `tool/verify_release_artifacts.dart` + `test/tool/verify_release_artifacts_test.dart` = **5 个文件**（2 代码 + 3 doc）。
+- **下一任务**（按 brief）：T041+（建议方向：① T022 verifier 增量场景覆盖 —— Release 证书与 Debug 证书"matched" 失败路径 / AAB jarsigner exit != 0 失败路径 / `parseExpectedVersion` 解析失败 → `_FailFast` exit 2 路径；② `.gitignore` 追加 `*.apk` + `*.aab` 显式模式（T038C Reviewer 提示）；③ KGP → Built-in Kotlin 迁移；④ iOS TestFlight 闭环（TD-003）；⑤ 国产 ROM 兼容性补测（TD-013 小米 / OPPO / vivo / 三星）；⑥ 23 个 Dart 格式漂移延后独立处理）。

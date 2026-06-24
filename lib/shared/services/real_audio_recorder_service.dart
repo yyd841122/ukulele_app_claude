@@ -6,13 +6,23 @@
 ///   时的 best-effort 文件清理；
 /// - 状态机严格按 `REAL_AUDIO_MVP_SDD.md` §8 设计：`idle` /
 ///   `recording` / `stopping` / `cancelling` / `disposed`；
-/// - 防止并发 start 与非法状态转换；stop / cancel / dispose 异常后
-///   状态恢复到 `idle` 或 `disposed`；
+/// - 防止并发 start 与非法状态转换；
+/// - stop / cancel / dispose 异常处理遵循各自语义（T037B2 修复后）：
+///   - `stop` 抛错 → 状态从 `stopping` 回退到 `recording`（**不**进
+///     `idle`），**保留**活跃会话（takeId / temp file / paths）让调用方
+///     可基于同一路径重试 [stop]；native 录音是否真的停止由 plugin /
+///     platform channel 决定，service 不得伪装成"已停止"；
+///   - `cancel` 抛错 → best-effort 清理 temp 文件（删除失败**不**抛错），
+///     状态恢复 `idle`；
+///   - `dispose` 抛错 → 状态保持 `disposed`，**不**抛错（non-cooperative
+///     safety net）；
 /// - dispose 必须幂等；dispose 后任何调用抛
 ///   `InvalidRecorderStateException`；
 /// - **不**调用 `MicrophonePermissionGateway`（避免隐式权限请求）；
 /// - **不**保存 `PracticeRecord`（不引入 `recordId` / Drift schema）；
 /// - **不**触发播放；**不**实现 seek / pause / resume（MVP 不需要）。
+/// - `cancel` 与 `stop` 语义不同：`stop` 保留 take 文件供 save / retry；
+///   `cancel` 清理 temp 文件（不期望继续使用 take）。
 ///
 /// Recorder Configuration（与 `REAL_AUDIO_MVP_SDD.md` §4.3 +
 /// `REAL_AUDIO_DEPENDENCY_SPIKE.md` §3.1 一致）：

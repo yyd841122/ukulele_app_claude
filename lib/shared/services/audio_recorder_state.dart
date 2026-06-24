@@ -14,7 +14,11 @@ library;
 /// 真实录音服务状态枚举。
 ///
 /// - [idle]         : 无活跃录音会话；可调用 [RealAudioRecorderService.start]；
-/// - [recording]    : 录音中；可调用 stop / cancel；
+/// - [recording]    : 录音 session 处于 service 所有权下；可调用 stop /
+///                    cancel（**不**仅指"用户正在录音"，也覆盖 `stop`
+///                    抛错后回退的"录音未确认停止"状态 —— T037B2 修复
+///                    后，service 在 stop 抛错时不再清空 active session，
+///                    状态回退到此值让调用方可以重试 [stop]）；
 /// - [stopping]     : stop 进行中（等待 gateway 返回）；
 /// - [cancelling]   : cancel 进行中（等待 gateway 返回 + 文件清理）；
 /// - [disposed]     : 终态；任何调用抛 `InvalidRecorderStateException`。
@@ -35,7 +39,10 @@ enum AudioRecorderState {
 /// - [requestedPath]  : 录音前请求的目标文件绝对路径；
 /// - [resolvedPath]   : 录音后 gateway 实际写入的文件绝对路径；
 ///                      与 [requestedPath] 应一致（当前 `record`
-///                      实现就是按请求路径写入）；
+///                      实现就是按请求路径写入）；service 对该值
+///                      做 **verbatim** 透传（**不**做规范化 / 重格式化
+///                      / 重新计算），retry 成功时仍按 gateway 返回的
+///                      原字符串赋值（T037B2）；
 /// - [format]         : 输出容器格式字符串（`m4a`）；
 /// - [sampleRate]     : 实际采样率（Hz）；
 /// - [bitRate]        : 实际码率（bps）；

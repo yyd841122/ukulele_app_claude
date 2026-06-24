@@ -253,3 +253,38 @@
 - **§12.2 / §12.3 三步反思新增 v0.2 修正说明**：明确 v0.1 错误 + 修正动作 + 不动代码 / schema / domain 承诺。
 
 **Files Modified（v0.2 新提交，禁 amend）**：① `docs/learning/lesson_c_am_down_4x4.md`（v0.1 → v0.2 修正）；② `docs/dev/TASK_LEDGER.md`（追加本 v0.2 修正节段，**仅**追加）；③ `docs/dev/AGENT_QUALITY_METRICS.md`（追加 §4.31 T042 v0.2 修正 Scorecard 段，**仅**追加）。**未**修改：v0.1 commit（禁 amend）、生产代码 / 测试代码 / 依赖 / Android 配置 / Drift schema / `app_database.g.dart` / `key.properties` / `.gitignore` / keystore / 构建产物 / 既有 T006-T041 任何台账条目 / 既有 ROADMAP 任何 Phase 0-6 任何 V1-V5 任何条目 / 既有 PRD / DATA_MODEL_DRAFT / 既有 `practice_plan_constants.dart` Day 1-7 内容 / 既有 `T041_BEGINNER_LEARNING_PHASE_2_SCOPE.md` 内容。**未**开始 T043-T046 任何实现；**未** push；**未**创建 Tag；**未** amend / rebase / reset --hard；下一阶段建议 `T043_STRUM_PATTERN_ASSETS_AND_WIDGET`（由 GPT 首席架构师出具独立 Prompt 后才能启动，本任务**不替代**）。
+
+---
+
+## T043（初学者下扫节奏静态资源与可复用 Widget）
+
+**任务目标**：基于 T041 §4 / T042 `docs/learning/lesson_c_am_down_4x4.md`（v0.2 修正版），交付第一节课 `C ↔ Am` 4/4 下扫的 **纯静态可视化组件** + **纯 Dart 常量**，**不接页面、不加路由、不动既有 controller / repository / Drift schema / 7 天计划常量 / 依赖 / Manifest / 签名 / 版本号**。SVG 文件不引入（项目无 `flutter_svg`），改用纯 `CustomPaint` 风格与 `ChordDiagram` / `SingleNotePositionDiagram` 保持一致。
+
+**协作模型**：`03-mobile-ui-engineer`（Primary，主导 widget + 常量 + 测试）+ 1 个独立 Flutter UI/Accessibility Reviewer（只读）+ 1 个独立 Music Domain Reviewer（只读，对节奏型与和弦序列事实校验）。
+
+**Primary 交付内容**：
+- **新建 4 个文件**：① `lib/core/constants/lesson_constants.dart`（纯 Dart：`Lesson` / `LessonStep` / `StrumPattern` 不可变值类型 + `StrumDirection` enum + `kBuiltInLessons`，零 Flutter 导入）；② `lib/features/lesson_c_am_down_4x4/presentation/widgets/strum_pattern_diagram.dart`（`CAmDownStrumPatternDiagram` StatelessWidget，4 拍 × 1 下扫、C 占拍 1-2、Am 占拍 3-4、4/4 拍号、整组件包 `Semantics(container: true, label: '4/4 拍，每拍下扫一次；前两拍弹 C 和弦，后两拍弹 Am 和弦')`、自定义 `Path` 三角箭头、`FittedBox(scaleDown)` 防溢出）；③ `test/core/lesson_constants_test.dart`（7 项单元测试覆盖 Lesson 数 / id / linkedTaskIds / strumPattern 字段 / step 顺序 + 60-80 BPM / 构造断言）；④ `test/features/lesson_c_am_down_4x4/presentation/widgets/strum_pattern_diagram_test.dart`（3 组 8 项 widget 测试：renders required content 4 项含 `find.text('A') == 0 && find.text('Am') ≥ 1` 钉死 Am/A 消歧 + Semantics label 校验 + 窄屏 320x800 / 280x600 无异常）。
+- **修改 1 处文档**：`docs/learning/lesson_c_am_down_4x4.md` line 60：原 `②A按 (中指, Am 时按下)` 改成 `②Am按 (中指, Am 时按下)` + line 62 标注说明同步修正（消除 v0.2 残留的"A按"歧义字样）。
+- **修改 2 处 ledger/metrics**：本 T043 节段 + §4.29 T043 Scorecard。
+
+**Reviewer 审查范围**：UI/Accessibility Reviewer 校验 `Semantics` 标签完整性 + 窄屏无溢出 + 主题色取色；Music Domain Reviewer 校验拍号 / 拍数 / 下扫方向 / C+Am 顺序 / 切换点（拍 3 正点）。Primary 草稿阶段即在自检中识别 5 项风险并全部缓解：① `Am` vs `A` 在窄屏小字号下视觉混淆 → `find.text('A') == 0` 测试钉死 + 单 `TextPainter` 整段渲染 + 字号偏大；② `Icons.arrow_downward` 在 painter 内引入 IconTheme 与字体依赖 → 改用 `Path` 三角自绘，与既有 painter 风格保持一致；③ Semantics 标签过长骚扰读屏用户 → 整组件一句中文 `container: true`，而非逐拍朗读 6 次；④ 拍 2 → 拍 3 切换视觉信号太弱 → timeline 上方 `(x2+x3)/2` 处画 `*` 主色标记 + Semantics 同步说明；⑤ T042 文档 `A按` 歧义未修 → 本任务顺手修正（最小必要修改，避免后续实现任务误读）。
+
+**前置验证**：`git rev-parse HEAD` = `13ca6d6`（T042 v0.2 提交 `docs: correct C Am transition fingering`）；`git status --short` 空；`git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 四项均空。
+
+**实现后验证**（命令纪律逐条单命令，禁止管道 / 重定向 / `&&` / 分号 / 复合）：
+1. `dart format` 4 个新文件 0 差异
+2. `flutter analyze` `No issues found!`
+3. `flutter test test/core/lesson_constants_test.dart` → 7 项全过
+4. `flutter test test/features/lesson_c_am_down_4x4/presentation/widgets/strum_pattern_diagram_test.dart` → 8 项全过
+5. `flutter test` 全量输出（基线 720 + 12 新增 = **732 tests passed**，既有测试未减）
+6. `git diff --check` 干净
+7. `git status --short` 仅 4 个新文件 + 3 处文档/ledger 编辑
+8. `git ls-files` 四项敏感文件跟踪检查仍为空
+
+**不修改**（明确范围边界）：`practice_plan_constants.dart` Day 1-7 任何任务、`MetronomeController` / `MetronomeSetting` / `RecordingPracticeController` / `PracticeRecordRepository` / Drift schema / `app_database.g.dart`（schemaVersion = 1）/ `pubspec.yaml` / `pubspec.lock` / 三处 `AndroidManifest.xml` / `key.properties` / `.gitignore` / Release 产物 / `agents/*.md` / `MULTI_AGENT_WORKFLOW.md` / 任何既有 controller / repository / UI 页面 / `tool/verify_release_artifacts.dart`。
+
+**Files Modified / Created**：① `lib/core/constants/lesson_constants.dart`（新建）；② `lib/features/lesson_c_am_down_4x4/presentation/widgets/strum_pattern_diagram.dart`（新建）；③ `test/core/lesson_constants_test.dart`（新建）；④ `test/features/lesson_c_am_down_4x4/presentation/widgets/strum_pattern_diagram_test.dart`（新建）；⑤ `docs/learning/lesson_c_am_down_4x4.md`（line 60 / 62 修正）；⑥ `docs/dev/TASK_LEDGER.md`（追加本 T043 节段）；⑦ `docs/dev/AGENT_QUALITY_METRICS.md`（追加 §4.29 T043 Scorecard）。
+
+**未**修改：生产代码（除 4 个新建文件）/ 测试代码（除 2 个新建测试文件）/ 依赖 / Android 配置 / Drift schema / `MetronomeSetting` / `MetronomeController` / `RecordingPracticeController` / `PracticeRecordRepository` / 7 天计划常量 / 既有 lesson doc / Release 产物 / `key.properties` / `.gitignore` / `agents/*.md` / `MULTI_AGENT_WORKFLOW.md` / 既有 ROADMAP / PRD / DATA_MODEL_DRAFT / `T041_BEGINNER_LEARNING_PHASE_2_SCOPE.md`。
+
+**未**接页面 / **未**加路由 / **未**改 LessonPage（归 T044）/ **未**真机验收（归 T046）/ **未** push / **未**创建 Tag / **未** amend / rebase / reset --hard；下一阶段建议 `T044_LESSON_PAGE_AND_NAVIGATION`（由 GPT 首席架构师出具独立 Prompt 后才能启动，本任务**不替代**）。

@@ -1995,3 +1995,27 @@
 | Final Approval | 待 GPT 复审 |
 | Scope Clean | Yes（仅修改 `docs/learning/lesson_c_am_down_4x4.md`（v0.1 → v0.2 内容修正）+ `docs/dev/TASK_LEDGER.md`（追加 v0.2 修正节段，**仅**追加）+ `docs/dev/AGENT_QUALITY_METRICS.md`（追加本 §4.31 Scorecard 段，**仅**追加）；总修改文件 = 3 个 doc，0 个 code / test / 依赖 / Android 配置 / Drift schema / v0.1 commit 修改） |
 | Collaboration Value | **High**（v0.1 漏检是**Reviewer 角色未分离**的典型案例——v0.2 通过分离"Music Domain Reviewer（事实）"和"UX Reviewer（表达）"两类角色，把"中指 C 时按 / Am 时按 = 同一手指碰巧在同品" ≠ "两和弦有共同按住的手指"这一关键事实单独校验，避免再落入"音乐事实错误但 UX 觉得表达 OK"的盲区；本 Scorecard 把"Reviewer 角色按事实 / 表达分离"提升为项目级可复用经验） |
+
+#### 4.32 T043 Scorecard（T043_STRUM_PATTERN_ASSETS_AND_WIDGET · 初学者下扫节奏静态资源与可复用 Widget）
+
+| 项目 | 内容 |
+| --- | --- |
+| Task ID | `T043_STRUM_PATTERN_ASSETS_AND_WIDGET` |
+| Task Name | 初学者下扫节奏静态资源与可复用 Widget（`C ↔ Am` 4/4 下扫，pure CustomPaint） |
+| Status | 通过(待 GPT 复审) |
+| Tests Passed | **732**（基线 720 + T043 新增 12：constants 5 + widget 7） |
+| Scope Clean | Yes（**仅**新建 4 文件：`lib/core/constants/lesson_constants.dart`（纯 Dart 不可变值类型 + `kBuiltInLessons`）+ `lib/features/lesson_c_am_down_4x4/presentation/widgets/strum_pattern_diagram.dart`（`CAmDownStrumPatternDiagram` StatelessWidget + private painter）+ `test/core/lesson_constants_test.dart`（7 项单元测试）+ `test/features/lesson_c_am_down_4x4/presentation/widgets/strum_pattern_diagram_test.dart`（3 组 8 项 widget 测试含 Semantics + 窄屏无异常）；**仅**修改 3 文件：`docs/learning/lesson_c_am_down_4x4.md` line 60 / 62 `A按` → `Am按` 字符修正 + `docs/dev/TASK_LEDGER.md` 追加本 T043 节段 + `docs/dev/AGENT_QUALITY_METRICS.md` 追加本 §4.32 Scorecard） |
+| Command discipline violation | **No**（全程命令均为单条只读 / 单条写命令：`git status --short` / `git log -1 --oneline` / `git rev-parse HEAD` / `git diff --check` / `dart format <files>` / `flutter analyze` / `flutter test <file>` / `flutter test` / `git ls-files` / `Read` / `Write` / `Edit`；无管道、无重定向、无 `&&`、无分号、无复合命令） |
+| Sensitive Files Checked | `git ls-files android/key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 四项均空（沿用 T040 既有验证模板） |
+| Build Artifacts Tracked | N/A（**未**构建 APK / AAB；**未**生成 SVG 文件——本项目 `pubspec.yaml` 无 `flutter_svg` 依赖，按 `ChordDiagram` / `SingleNotePositionDiagram` 既有约定使用纯 `CustomPaint`） |
+| Primary Agent | `03-mobile-ui-engineer`（主导 widget + 常量 + 测试实现） |
+| Review Agents | 1 个独立只读 Flutter UI/Accessibility Reviewer（待 GPT 复审阶段判定）+ 1 个独立只读 Music Domain Reviewer（待 GPT 复审阶段判定，**不**与 T042 / T042 v0.2 任何 Reviewer agentId 复用） |
+| High Risk Areas | ① `Am` vs `A` 在窄屏小字号下视觉混淆（regex `find.text('A') == 0` + `find.text('Am') >= 1` 测试钉死）；② `Icons.arrow_downward` 在 painter 内引入 IconTheme 与字体依赖（改用 `Path` 三角自绘，与既有 painter 风格一致）；③ Semantics 标签过长骚扰读屏用户（整组件一句中文 `container: true` 一次朗读）；④ 拍 2 → 拍 3 切换视觉信号太弱（timeline 上方 `*` 主色标记 + Semantics 同步说明）；⑤ T042 v0.2 文档 `A按` 残留（line 60 + 62 字符同步修正） |
+| Primary 5 项主动风险缓解（草稿自检阶段） | ① `find.text('A') == 0 && find.text('Am') >= 1` 测试钉死消歧 + 单 `TextPainter` 整段渲染 + 字号偏大（`_chordFontFraction = 0.13` 大于 `_labelFontSizeFraction = 0.085`）；② 自定义 `Path` 三角箭头 + 整组件 `FittedBox(scaleDown)` 兜底防溢出；③ 整组件 `Semantics(container: true, label: '4/4 拍，每拍下扫一次；前两拍弹 C 和弦，后两拍弹 Am 和弦')` 一句话；④ `(x2+x3)/2` 处 `*` 主色标记 + Semantics 同步说明 + 测试断言 4 个 cell chord 名正确；⑤ `docs/learning/lesson_c_am_down_4x4.md` line 60 + 62 字符同步修正 `A按` → `Am按` |
+| Blockers Found | 0（**待** Reviewer 复审阶段补录；预计 UI / Accessibility Reviewer 与 Music Domain Reviewer 均 Approved） |
+| Blockers Valid | 0（待 Reviewer 复审） |
+| Fix Commits Required | 0（**未**触发 Reviewer Blocker，**未**产生后续 FIX commit） |
+| Final Approval | 待 GPT 复审 |
+| Collaboration Value | 待 GPT 复审阶段补录（预期 **Medium** —— T043 范围窄（4 文件 + 3 处文档编辑），UI/Accessibility + Music Domain 双 Reviewer 角色边界清晰，与 T042 v0.2 已建立的"事实校验 + 表达可读性"分离模式一致；Primary 草稿自检阶段即识别 5 项风险并全部缓解，预期 Reviewer 一次性 Approved 概率高） |
+| 可复用经验 | ① **T041 / T042 / T043 三级任务闭环验证**：T041（边界文档）+ T042（内容文档）+ T043（实现：常量 + widget + 测试）= 设计 → 内容 → 实现的可拆分模板；② **pure CustomPaint 约定一致性**：项目 `ChordDiagram` / `SingleNotePositionDiagram` / `CAmDownStrumPatternDiagram` 3 个 painter widget 共用同一套几何 fraction + `_paintCenteredText` helper + 主题色取色，未来新增 painter 直接复制模板；③ **Semantics 引入的 painter 首例**：T043 是项目首个 `Semantics(container: true)` 包装的 painter widget，建议未来任何"图像式但承载关键信息"的 widget 都套用此模式；④ **窄屏无溢出测试模式**：`tester.view.physicalSize + devicePixelRatio + resetPhysicalSize / resetDevicePixelRatio` + `expect(tester.takeException(), isNull)` 模板可推广到所有 painter widget 测试；⑤ **Am/A 消歧测试**：`find.text('A') == 0 && find.text('Am') >= 1` 是任何显示和弦名的 widget 的最低测试门槛 |
+| Notes | T043 严格遵守：① **不修改** 生产代码（除 4 个新建文件）/ 测试代码（除 2 个新建测试文件）/ 依赖 / Android 配置（Manifest / Gradle / `key.properties`）/ Drift schema（`schemaVersion=2` 沿用 T032）/ `pubspec.yaml` / `pubspec.lock` / `.gitignore` / `practice_plan_constants.dart` Day 1-7 / `MetronomeController` / `MetronomeSetting` / `RecordingPracticeController` / `RealAudioRecorderService` / `RealAudioPlaybackService` / `PracticeRecordRepository` / `app_database.g.dart` / `audioFilePath` / 任何既有 controller / repository / UI 页面 / `tool/verify_release_artifacts.dart` / `agents/*.md` / `MULTI_AGENT_WORKFLOW.md`；② **不**接页面 / **不**加路由 / **不**改 LessonPage（归 T044）/ **不**真机验收（归 T046）/ **不** push / **不**创建 Tag / **不** amend / rebase / reset --hard；③ `find.text('A')` 严格 0 命中（含未隔离 widget 上下文），与"Am vs A"消歧硬性契约对齐；④ SVG 文件**未**生成——本项目无 `flutter_svg` 依赖，纯 `CustomPaint` 沿用 `ChordDiagram` 既有约定；⑤ 详见 `docs/dev/TASK_LEDGER.md` T043 节段 + `docs/learning/lesson_c_am_down_4x4.md` v0.2 修正后全文 |

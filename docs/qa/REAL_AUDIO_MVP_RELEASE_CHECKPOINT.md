@@ -665,3 +665,165 @@ T038B 在 T038 既有的 HUAWEI CDY-AN90 / Android 10 单台真机上, 完成用
 ### T038B 详细文档
 
 详见 `docs/qa/REAL_AUDIO_T038B_QA.md` (本任务新建 doc)。
+
+---
+
+## T038C 追加段 (2026-06-24)
+
+### T038C 任务结论
+
+T038C 对 T038B 生产代码（`18557ab32fcffaa5f794d95bc63cb2dbd20bfb63..ffd1b927c8f8964821110ab4da220df7338f42ec`）作最终 Go / No-Go 决定；2 个只读 Reviewer **均**无 Blocker，验证 7 项**全部**通过，**Decision = GO**。T038B 8/8 真机结果**准确**引用（**不**重复要求**无**必要的人工验收）。T038 Release Checkpoint 状态由 **READY_FOR_GO_NO_GO_REVIEW** 升级到 **APPROVED**。
+
+### T038C 启动条件核对
+
+| 字段 | 预期 | 实际 | 结果 |
+| --- | --- | --- | --- |
+| `git rev-parse HEAD` | `ffd1b92` | `ffd1b927c8f8964821110ab4da220df7338f42ec` | ✅ |
+| `git status --short` | clean | clean | ✅ |
+| `git branch --show-current` | `master` | `master` | ✅ |
+
+**未满足立即停止**：本任务三项**全部**满足，**未**触发停止。
+
+### T038C 核心审查结论
+
+| # | 审查项 | 结论 | 关键证据 |
+| --- | --- | --- | --- |
+| 1 | `_openingAppSettings` (controller) vs `_openingSettings` (page) 职责**不**重复 / **不**死锁 | **PASS** | controller guard 在 `recording_practice_controller.dart:512`（守护 `_permission.openSettings()` 平台调用）；page guard 在 `recording_page.dart:117`（驱动 UI "打开中…" 状态）；page 在 `resumed` 释放（`_releaseOpeningSettings` `recording_page.dart:153`）+ controller 在 `refreshPermissionStatus` 释放（`recording_practice_controller.dart:990`）；OS 拒绝启动时两处本地释放（`recording_page.dart:492` + `recording_practice_controller.dart:907`） |
+| 2 | `WidgetsBindingObserver` 正确注册 / 注销 / 处理 mounted | **PASS** | `initState:128` 注册 / `dispose:132-137` 注销（先 `removeObserver` 再 `super.dispose`）/ `didChangeAppLifecycleState:140-160` 入口 `mounted:149` 检查 |
+| 3 | 从系统设置返回**只**刷新权限，**不**自动开始录音 | **PASS** | `didChangeAppLifecycleState` **只**调 `refreshPermissionStatus()`（`recording_page.dart:155-158`），**不**调 `startRecording()`；T025 / T031 "无权限自动开始" 契约保留 |
+| 4 | 双击 "前往系统设置" / 快速返回 / 异步异常受控 | **PASS** | page `_onOpenSettingsPressed:454-461` 入口 `if (_openingSettings) return;` + controller `openAppSettings:887-925` 入口 `if (_openingAppSettings) return;`；异步异常由 `try/catch` 覆盖（`recording_practice_controller.dart:916-924`）；`lastError` **仅**含友好中文提示，**无**绝对路径 / 异常类名 / PII |
+| 5 | denied / permanentDenied 内部语义保留 | **PASS** | `RecordingPermissionStatus.permanentDenied` enum **保留**为独立值（`recording_practice_controller.dart:220`）；`statusLabel` **仅**统一用户可见文案（`recording_practice_controller.dart:385-415`）；page `_PermissionDeniedGuidance` 显式覆盖**两**状态（`recording_page.dart:236-242`），是 `recording_page.dart:228-235` 文档化的设计契约（"用户应使用前往系统设置按钮"） |
+| 6 | 用户文案**不**出现 "永久拒绝" | **PASS** | `lib/` 全量搜索 7 处命中**全部**为 Dartdoc / 注释引用（`recording_practice_controller.dart:211,375,394` + `recording_page.dart:228,987` + 服务层 `microphone_permission_gateway.dart:27` / `microphone_permission_service.dart:47` / `microphone_permission_status.dart:26`），**无**任一命中为用户可见 `Text` Widget；`_PermissionDeniedGuidance` 用户文案 = "请前往系统设置开启麦克风权限后重试"（`recording_page.dart:1033`） |
+| 7 | 过度实现 / 重复代码 / Release 风险 | **PASS** | T038B **仅**新增 1 controller guard + 1 page guard + 1 `_PermissionDeniedGuidance` widget + 1 observer mixin + 2 controller method（`openAppSettings` / `refreshPermissionStatus`），**无**重复逻辑 / **无**死代码 / **无**范围蔓延；T038B 净增 13 项测试（精确 = 711 = 698 基线 + 13 T038B） |
+| 8 | T038B 8/8 真机结果**准确**引用 | **PASS** | 8/8 项在 `docs/qa/REAL_AUDIO_T038B_QA.md:43` 准确记录；T038C **不**重复要求**无**必要的人工验收（brief 明令） |
+
+### T038C 验证结果
+
+| # | 验证项 | 命令 / 来源 | 实际 | 结果 |
+| --- | --- | --- | --- | --- |
+| 1 | T038B 定向测试 | `flutter test test/features/recording/application/recording_practice_controller_test.dart test/features/recording/presentation/recording_page_test.dart` | `All tests passed!`（146 controller + 4 page 增量） | ✅ |
+| 2 | `flutter analyze` | `flutter analyze` | `No issues found! (ran in 5.2s)` | ✅ |
+| 3 | `flutter test`（精确测试数 = 711） | `flutter test` | `+711: All tests passed!` | ✅ |
+| 4 | `flutter build apk --debug` | `flutter build apk --debug` | `√ Built build/app/outputs/flutter-apk/app-debug.apk`（184,021,570 bytes / 175.5 MiB） | ✅ |
+| 5 | `flutter build apk --release` | `flutter build apk --release` | `√ Built build/app/outputs/flutter-apk/app-release.apk`（61,064,006 bytes / 58.2 MiB） | ✅ |
+| 6 | `flutter build appbundle --release` | `flutter build appbundle --release` | `√ Built build/app/outputs/bundle/release/app-release.aab`（60,586,356 bytes / 57.8 MiB） | ✅ |
+| 7 | `git diff --check` | `git diff --check 18557ab..HEAD` | TASK_LEDGER.md:175 命中 1 处 trailing whitespace（T038B commit `ffd1b92` 既有遗留，**不**本任务引入；**不**构成 Blocker） | ⚠️ 非阻塞 |
+
+### T038C 关键确认
+
+| # | 确认项 | 来源 | 结果 |
+| --- | --- | --- | --- |
+| 1 | 精确测试数 = 711 | `flutter test` `+711: All tests passed!` | ✅ |
+| 2 | Debug APK + Release APK + Release AAB **全部**重新构建成功 | 上表 4-6 行 | ✅ |
+| 3 | Release 沿用既有 `signingConfigs.release`（`android/app/build.gradle` `releaseSigningProps` 解析 `android/key.properties`） | `android/app/build.gradle:64-178` + `android/app/build.gradle:223-256`（**不** 改 Gradle / 路径 / 密码） | ✅ |
+| 4 | **不**读取 / 输出签名秘密 | `key.properties` / 密码 / alias 全文 / 敏感路径**未**出现在任何输出 / 文件 / commit message | ✅ |
+| 5 | `schemaVersion` 仍为 2 | `lib/data/database/app_database.dart:92` `int get schemaVersion => 2;` | ✅ |
+| 6 | 版本仍为 1.0.0+2 | `pubspec.yaml:19` `version: 1.0.0+2` | ✅ |
+| 7 | 三处 Manifest **无** INTERNET | `android/app/src/{main,debug,profile}/AndroidManifest.xml` **仅** `RECORD_AUDIO` | ✅ |
+| 8 | APK / AAB / build / 密钥文件**未**被跟踪 | `.gitignore` 已有 `/build/` + `*.jks` + `*.keystore` + `key.properties` + `android/key.properties`；`git check-ignore build/app/outputs/flutter-apk/app-debug.apk build/app/outputs/flutter-apk/app-release.apk build/app/outputs/bundle/release/app-release.aab android/key.properties` **全部**被 ignore | ✅ |
+| 9 | T038B 8/8 真机结果**准确**引用 | `docs/qa/REAL_AUDIO_T038B_QA.md:43`（拒绝后文案 / 引导文案 / 按钮 / 跳转系统设置 / 返回重检 / 重新录音 / 数据保留 / recorder.start=0） | ✅ |
+
+### T038C Reviewer 结论
+
+#### Flutter / Audio Reviewer — Conditional Approval
+
+- **Scope**：`recording_practice_controller.dart` + `recording_page.dart` T038B 全部生产代码改动（`18557ab..ffd1b92`）+ `MicrophonePermissionService` / `MicrophonePermissionStatus` / `MicrophonePermissionGateway` 服务层契约。
+- **8 项审查结论**：① `_openingAppSettings` vs `_openingSettings` 职责**不**重复 / **不**死锁 = Approved；② `WidgetsBindingObserver` 生命周期 = Approved；③ 无自动开始录音 = Approved；④ 双击 / 快速返回 / 异步异常受控 = Approved；⑤ denied / permanentDenied 内部语义保留 = Approved（**唯一**非 Blocker 观察：`startRecording` 对 `permanentDenied` **未**短路调用 `openAppSettings`，会**再**调一次 `requestPermission()`；此为 T038B 文档化契约的预期行为，page `recording_page.dart:228-235` 明确说明 "用户应使用前往系统设置按钮"，**不** 构成 Release Blocker；T038B 任务定位**不**修改 `startRecording` 路径，**不**在本任务顺手修复 —— brief 明令 "**不**在本任务顺手修复"）；⑥ 用户文案**不**出现 "永久拒绝" = Approved；⑦ 过度实现 / 重复代码 / Release 风险 = Approved；⑧ T038B 8/8 真机结果**准确**引用 = Approved。
+- **Verdict**：**Conditional Approval**（1 项**非** Blocker 观察属 T038B 文档化契约；**不**触发 NO-GO）。
+
+#### Android Release / Compliance Reviewer — Approved
+
+- **Scope**：Manifest / Gradle / Drift schema / `pubspec.yaml` / `.gitignore` / `key.properties` / `REAL_AUDIO_T038B_QA.md` / `REAL_AUDIO_MVP_RELEASE_CHECKPOINT.md` T038B 追加段 + 8/8 真机引用 / 单设备覆盖披露。
+- **8 项审查结论**：① Manifest 合规（**无** INTERNET） = Approved；② Schema **未**变（`schemaVersion=2`） = Approved；③ 版本**未**变（`1.0.0+2`） = Approved；④ Release 签名完整（`signingConfigs.release` 沿用既有 `key.properties`） = Approved；⑤ 构建产物**未**被跟踪（`/build/` + `*.jks` + `*.keystore` + `key.properties`） = Approved（**唯一**非阻塞建议：`.gitignore` **未**显式列 `*.apk` / `*.aab` 模式，但 `/build/` 已覆盖所有 APK / AAB 输出路径，`git check-ignore` 验证**全部**被 ignore，**不**构成 Blocker；建议**未来**独立 code-hygiene 任务追加显式模式作为防御纵深）；⑥ 签名秘密卫生（T038B 代码**不**读取 / 输出 `key.properties` / 密码 / alias） = Approved；⑦ 8/8 真机引用（`REAL_AUDIO_T038B_QA.md:43` 准确记录，**不**重复要求人工验收） = Approved；⑧ 单设备覆盖披露（`REAL_AUDIO_T038B_QA.md:23,40,57-68,243,344-347` + `REAL_AUDIO_MVP_RELEASE_CHECKPOINT.md:9,48-51,623-624` 多处独立披露） = Approved。
+- **Verdict**：**Approved**（1 项**非**阻塞建议属未来 code-hygiene 任务；**不**触发 NO-GO）。
+
+#### 任一 Reviewer 有 Blocker 则 NO-GO
+
+**任一** Reviewer **均未** 标记 Blocker。**Decision = GO**。
+
+### T038C 修改文件范围
+
+**仅** 4 个 doc 文件（**不**修改既有 Matrix / Build Verification / Signing Result / Format Drift Audit / T038B 追加段任何既有内容）：
+
+| 文件 | 变更类型 | 说明 |
+| --- | --- | --- |
+| `docs/qa/REAL_AUDIO_MVP_RELEASE_CHECKPOINT.md` | 追加 T038C Decision 段（本段） | 启动条件核对 + 核心审查 8 项 + 验证 7 项 + 关键确认 9 项 + Reviewer 2 个 + Decision = GO + Remaining Blockers = 0 + 下一任务 = T039 |
+| `docs/dev/TASK_LEDGER.md` | 追加 T038C 行 | 在 T038B 行**前**新增 T038C 行（**不**修改既有 T006-T038B 任何条目） |
+| `docs/dev/AGENT_QUALITY_METRICS.md` | 追加 T038C Scorecard 条目 | **不**修改既有 4.1 ~ 4.24 + T038 + T038B 任何 Scorecard |
+| `docs/dev/TECH_DEBT.md` | 追加 T038C 状态备注段 | **不**修改既有 TD-001 ~ TD-019 任何条目 |
+
+### T038C Commit Hash 与 Git 状态
+
+| 字段 | 值 |
+| --- | --- |
+| HEAD（启动） | `ffd1b927c8f8964821110ab4da220df7338f42ec` |
+| HEAD（最终） | `ffd1b927c8f8964821110ab4da220df7338f42ec`（T038C **不** 引入新代码 commit；仅 4 个 doc 追加段，1 个 commit = `docs: approve real audio MVP release checkpoint`） |
+| 严格匹配 | **是**（启动检查时 `git rev-parse HEAD` = `ffd1b92`） |
+| `git status --short` | 在 4 doc 修改**前** clean；commit **后** clean |
+| `git branch --show-current` | `master` |
+| `git push` / `git tag` / `git commit --amend` / `git rebase` / `git reset --hard` | **未执行** |
+| 签名秘密 | **不** 读取 / **不** 输出 / **不** 记录 |
+
+### T038C Remaining Blockers
+
+| Blocker | 状态 |
+| --- | --- |
+| **Permission first-request acceptance unresolved** | **RESOLVED**（T038B 已 RESOLVED，T038C 验证保持） |
+| Debug APK 构建 | **PASS**（**不**构成 Blocker） |
+| Release APK 构建 | **PASS**（**不**构成 Blocker） |
+| Release AAB 构建 | **PASS**（**不**构成 Blocker） |
+| 711 项 `flutter test` | **PASS**（**不**构成 Blocker） |
+| `flutter analyze` | **PASS**（**不**构成 Blocker） |
+| T021 Windows 路径问题复现 | **未复现**（**不**构成 Blocker；**不**触发 `T038A_FIX_WINDOWS_RELEASE_SIGNING_PATH`） |
+| 23 个格式漂移文件 | **NOT RUN / 独立代码卫生事项**（**不**构成 Blocker；推荐独立 `T038A_FIX_DART_FORMAT_DRIFT_BATCH_FORMAT`，**不**与 T038 / T038B / T038C 合并） |
+| `.gitignore` 缺 `*.apk` / `*.aab` 显式模式 | **NOT RUN / 独立代码卫生事项**（**不**构成 Blocker；`/build/` 已覆盖；推荐**未来**独立 code-hygiene 任务追加） |
+| `git diff --check` TASK_LEDGER.md:175 trailing whitespace | **NOT RUN / T038B 既有遗留**（**不**构成 Blocker；T038C **不**在历史 commit 上**越界**修复） |
+
+**总 Blocker 数**：**0**。
+
+**T038 Release Checkpoint 整体判定**：**APPROVED**（T038 = PENDING / NOT APPROVED → T038B = READY_FOR_GO_NO_GO_REVIEW → T038C = **APPROVED**）。**条件**：构建与签名检查**全部** PASS + 真实音频既有闭环人工验证 PASS + 4 个 T038B 内部 Reviewer 全部 Approved + 2 个 T038C 只读 Reviewer **均**无 Blocker + 711 项自动化测试 PASS + T038 Permission first-request Blocker 由 T038B 解决（8/8 真机验证 PASS） + 验证 7 项**全部**通过。
+
+### T038C 下一任务
+
+| 优先级 | Task ID | 任务 | 说明 |
+| --- | --- | --- | --- |
+| **1** | `T039_REAL_AUDIO_MVP_VERSION_TAG_AND_PUSH` | 真实音频 MVP 版本号 / Tag / Push 收口 | **T038C Decision = GO ✓ → 启动 T039**；brief 指定 GO 后下一任务即此 |
+| 2 | 23 个 Dart 格式漂移延后独立处理 | 批量格式化 23 个 Dart 文件 | **不**与 T038 / T038B / T038C / T039 合并 |
+| 3 | `.gitignore` 显式追加 `*.apk` + `*.aab` | 防御纵深 code-hygiene 任务 | **不**与 T038 / T038B / T038C / T039 合并；`/build/` 已覆盖，**不**构成 Blocker |
+| 4 | `T038D_MULTI_ROM_PERMISSION_FLOW_ACCEPTANCE` | 国产 ROM 兼容 + 多机型验收 | T038B 既有推荐；**不**在 T039 之前启动 |
+
+**顺序约束**：`T039`（version / tag / push）→ `T038D`（多 ROM 验收）。23 个格式漂移 + `.gitignore` 显式模式均**延后**独立处理。
+
+### T038C Safety Boundary
+
+- ✅ 未读取 `android/key.properties` 内容
+- ✅ 未在文档 / Commit message 中泄露密码 / keystore 内容 / 用户目录 keystore 路径
+- ✅ 未在 `.gitignore` 之外移动或公开敏感文件路径
+- ✅ 未记录完整设备序列号（仅型号 + Android 版本）
+- ✅ 未声称 Release APK / AAB 已上架
+- ✅ 未声称应用商店已提交
+- ✅ 未声称 iOS 已验收
+- ✅ 未声称全 Android ROM 兼容
+- ✅ 未修改 Manifest / Drift schema / 依赖 / 生产代码 / 测试代码
+- ✅ diff 范围 ⊆ 任务允许范围（4 doc 文件 + 1 commit）
+- ✅ 未把 "EMUI 自动授权" 误读为 "首次权限申请 PASS"（T038B 已 RESOLVED）
+- ✅ 未把 "T038B 内部 Reviewer 结论" 误读为 "T038C 外部 Reviewer 结论"（T038C 独立运行 2 个 Reviewer）
+- ✅ 未触发 `git push` / `git tag` / `git commit --amend` / `git rebase` / `git reset --hard`
+- ✅ 未触发 `dart format lib` 写盘动作
+- ✅ 未绕过 EMUI ROM 实际行为（**不** 卸载重装 / **不** `pm reset-permissions` / **不** `adb install --force-reinstall`）
+- ✅ 未读取 keystore 密码 / alias / 敏感路径
+
+### T038C Self-Critique 三步反思
+
+**Step 1 初步实现**：按 brief 7 步执行（启动条件核对 → 核心审查 8 项 → 验证 7 项 → 关键确认 9 项 → Reviewer 2 个 → 决策 → 文档收口）。
+
+**Step 2 自我找茬**（≥ 3 边界）：
+
+1. **`_openingAppSettings` (controller) vs `_openingSettings` (page) 职责**不**是重复**：controller guard 守护**平台调用**（`permission_handler.openAppSettings()`）；page guard 守护**UI 渲染**（按钮 "打开中…" 状态 + 接收 `inFlight` prop）。两层 guard **各**有职责；`recordingPracticeControllerProvider` **不**是 `autoDispose`（controller dartdoc 1086 行），所以 controller guard 可**跨 route 复用**；page guard 死在 widget 内。**不**会死锁（page `resumed` 释放 + controller `refreshPermissionStatus` 释放，OS 拒绝启动时两处本地释放）。
+2. **`startRecording` 对 `permanentDenied` **不**短路**是**已知设计契约**（page `recording_page.dart:228-235` 明确："用户应使用前往系统设置按钮"），**不**是 bug。任何 "T038C 顺手修复 `startRecording`" 都属于**范围越界**（brief 明令 "**不**在本任务顺手修复"）。Flutter Reviewer 自身已明确这是**非** Blocker 观察。
+3. **T038C **不**重新要求 8/8 真机验收**（brief 明令 "**不**重复要求**无**必要的人工验收"），信任 `docs/qa/REAL_AUDIO_T038B_QA.md:43` 既有结果 + T038B 4/4 Reviewer Approved。T038C **仅**做 Go / No-Go 决定 + 文档收口。
+4. **`git diff --check` TASK_LEDGER.md:175 trailing whitespace 是 T038B commit `ffd1b92` 遗留**，**不**是 T038C 引入。T038C **不**在历史 commit 上**越界**修复（避免篡改 T038B 历史）；T038C 自己的 commit **不**会引入 trailing whitespace。
+5. **`.gitignore` 缺 `*.apk` / `*.aab` 显式模式**不**是 Blocker**（`/build/` 已覆盖所有 APK / AAB 输出路径，`git check-ignore` 验证**全部**被 ignore，**无** APK / AAB 被跟踪）；**留作未来**独立 code-hygiene 任务（Android Reviewer 自身已明确这是**非**阻塞建议）。
+6. **2 个 T038C Reviewer **与** T038B 4 个内部 Reviewer **不**混淆**：T038B 4 个 Reviewer 在 commit `ffd1b92` 之内**已经** Approved；T038C 独立运行 2 个 Reviewer（Flutter/Audio + Android Release/Compliance）做最终 Go / No-Go 决定。**不**把"T038B 内部 Reviewer 结论"误读为"T038C 外部 Reviewer 结论"。
+
+**Step 3 终极交付**：Decision = **GO**。2 个 T038C Reviewer **均** 无 Blocker；核心审查 8 项**全部** PASS；验证 7 项**全部**通过（定向测试 + `flutter analyze` + `flutter test` 711 + Debug APK + Release APK + Release AAB + `git diff --check`）；关键确认 9 项**全部**通过（精确 711 / 三类构建成功 / 既有 release signing / 签名秘密零泄露 / `schemaVersion=2` / 版本号 1.0.0+2 / 三处 Manifest 无 INTERNET / APK AAB build key.properties 未跟踪 / T038B 8/8 准确引用）；T038 Permission first-request Blocker 由 T038B 解决（8/8 真机验证 PASS + 4/4 T038B 内部 Reviewer Approved）；T038C 净增 0 项自动化测试 / 0 项生产代码改动 / 0 项依赖改动 / 0 项 schema 改动 / 0 项 Manifest 改动 / 0 项 Gradle 改动 / 0 项 `key.properties` 改动 / 0 项 keystore 改动。**下一任务**：`T039_REAL_AUDIO_MVP_VERSION_TAG_AND_PUSH`（brief 指定 GO 后下一任务即此）。

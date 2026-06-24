@@ -354,7 +354,7 @@
 ### ROADMAP 阶段门与 SDD v0.2 的引用关系
 
 - **Phase 6 MVP Polish (T014)**：T016 已完成；T019-T024 Release 工程化完成；T025-T031E 真实音频 MVP 完成。
-- **Product V2 Foundation (P1)** = T047 SDD → T048 TDD → T048A OP-1 Spike → 9 步闭环 T049+ 实现。
+- **Product V2 Foundation (P1)** = T047 SDD v0.4 → **T048 TDD v1.0（已落盘 `docs/architecture/TDD_PRODUCT_V2_PHASE1.md`；3/3 Reviewer Approved；0 Blocker；0 Approved with Conditions；11 个候选工作包 / Demo A/B/C 三组真机可见分组；Drift schemaVersion=2 保持；Day 3/5/6/7 课程仍冻结）** → T048A OP-1 Spike → T048B OP-2 调音器精度 Spike → T048C 校准 → 9 步闭环 T049+ 实现。
 - **SDD 是 ROADMAP 的"骨架"**：阶段门顺序不变；模块边界 / Drift 策略 / OP-1 决议 / 9 步 mapping / 平台边界 在 SDD v0.2 一次性锁定；T048+ TDD 任务按 SDD §3 + §4 + §6 落地。
 
 > **不**修改本节前的 `Phase 0-6 / V1-V5` 任何条目；仅追加"Product V2 路线（T047 后）"章节作为 SDD v0.2 的 ROADMAP 引用层。

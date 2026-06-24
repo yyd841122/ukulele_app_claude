@@ -334,3 +334,67 @@
 - **T038C 未 push / 未 Tag / 未 amend / rebase / reset --hard / 未读取 `key.properties` / 未读取 keystore 密码 / alias / 敏感路径 / 未声称 Release APK 已上架 / iOS 已验收 / 全 Android ROM 兼容 / 权限首次申请已通过**。
 - **T038C 详细文档**: `docs/qa/REAL_AUDIO_MVP_RELEASE_CHECKPOINT.md` T038C 追加段（启动条件核对 + 核心审查 8 项 + 验证 7 项 + 关键确认 9 项 + Reviewer 2 个 + Decision = GO + Remaining Blockers = 0 + 下一任务 = T039）+ `docs/dev/TASK_LEDGER.md` T038C 行 + `docs/dev/AGENT_QUALITY_METRICS.md` §4.27 T038C Scorecard + `docs/dev/TECH_DEBT.md` T038C 状态备注段（本段）= 4 个 doc 文件。
 - **下一任务**: `T039_REAL_AUDIO_MVP_VERSION_TAG_AND_PUSH`（brief 指定 GO 后下一任务即此；T038C Decision = **GO** ✓ → 启动 T039）。
+
+## TD-021: T039 真实音频 MVP v1.1.0 版本号 bump + `v1.1.0` annotated tag + `master` 与 tag 原子 fast-forward push — 闭环说明
+
+- **范围**: T039 是 T038C Decision = **GO** 后的发布执行任务。**仅** 4 文件:
+  1. `pubspec.yaml` `version: 1.0.0+2` → `1.1.0+3`（**仅**此 1 字段，**不**改 `environment` / `dependencies` / `dev_dependencies` / `flutter` 配置）。
+  2. `docs/qa/REAL_AUDIO_MVP_V110_RELEASE_CHECKPOINT.md` 新建（Document Status + Starting Commit + Device + Version Bump + Verification Results + Git Divergence Status + Commit Plan + Out of Scope）。
+  3. `docs/dev/TASK_LEDGER.md` T039 行（追加在 T038B 行**后**）。
+  4. `docs/dev/TECH_DEBT.md` TD-021 本段（追加）。
+- **测试基线**: **711** 项 `flutter test` 通过（与 T038B / T038C 完全一致；T039 **不**新增 / 删除任何自动化测试）。
+- **构建产物（重新构建确认）**:
+  - Release APK = 61,064,006 bytes / 58.2 MiB / `apksigner verify` exit 0 / schemes v2 + v3 + v4 / cert SHA256 = `e88687e53b272c86d20611c1045fc00d2fd4ca321672b1eec180d7543dc28591`（与 Debug 证书 differ = true）。
+  - Release AAB = 60,586,365 bytes / 57.8 MiB / `jarsigner -verify` exit 0。
+  - `[AAPT] applicationId=com.yupi.ukulele versionName=1.1.0 versionCode=3` ✅ 与 `pubspec.yaml` 一致。
+  - `flutter analyze` No issues found!（7.0s）✅。
+  - `git diff --check` exit 0 ✅（T039 本身**不**引入格式漂移）。
+- **关键确认 10 项**全部 PASS: 精确 711 / Release APK 重建 / Release AAB 重建 / 既有 release signing 完整 / 签名秘密零泄露 / `schemaVersion=2` 不变 / 三处 Manifest 无 INTERNET / `key.properties` / `*.jks` / `*.keystore` / `build/app/outputs/**` 全部 git untracked + gitignore `!!` / T022 verifier 3 项 FAIL 为 v1.1.0 预期差异 / T039 **不**新增 / 移除 `INTERNET` / **不**改 Manifest / Gradle / Drift schema / 签名配置。
+- **T022 verifier 行为校准**: `dart run tool/verify_release_artifacts.dart` 输出 3 项 FAIL = `versionName mismatch: expected 1.0.0, got 1.1.0` + `versionCode mismatch: expected 2, got 3` + `Forbidden permission declared in Manifest: android.permission.RECORD_AUDIO`。这 3 项**正是 v1.1.0 相对 v1.0.0 的预期差异**，不构成 Blocker: ① 版本号 mismatch 是 v1.1.0 release 的目的而非缺陷; ② `RECORD_AUDIO` 在 v1.0.0 时代被列入 forbidden 是因为 T022 当时尚无真实音频能力, v1.1.0 已落地真实音频 MVP (T030~T038B), `RECORD_AUDIO` 是**必需**权限; ③ Release 证书 + 产物存在性 + v2/v3/v4 scheme + Release 与 Debug 证书差异 4 项**真正**关键的安全 / 签名检查**全部** PASS。T039 **不**升级 T022 verifier (越界, 留待 T040+) — T022 verifier 是 T022 阶段的产物, 与 v1.0.0 基线硬编码耦合, 升级它需要独立任务评估完整改动面。
+- **T039 Git 启动条件核对** (与 T038C 一致 + v1.1.0 tag 缺席校验):
+  1. `git rev-parse HEAD` = `cb28bca40460d5dd5ae4bdbe413bf7b4302423ab` ✅ 严格匹配基线。
+  2. `git status --short` 在 `pubspec.yaml` 修改前 clean ✅。
+  3. `git branch --show-current` = `master` ✅。
+  4. `git remote get-url origin` = `https://github.com/yyd841122/ukulele_app_claude` ✅ 与预期一致。
+  5. `git fetch origin` 后 `git merge-base --is-ancestor origin/master master && echo ANCESTOR_OK_AFTER_FETCH` 输出 `ANCESTOR_OK_AFTER_FETCH` ✅。
+  6. `git rev-list --left-right --count master...origin/master` = `30    0` ✅ Local-only ahead (非真正分叉)。
+  7. `v1.1.0` 在本地 / 远程均**不存在** (`git rev-parse v1.1.0` 报 fatal unknown revision + `git ls-remote origin refs/tags/v1.1.0*` 返回空) ✅。
+  8. `v1.0.0-release` (peeled 703d2aa) + `v0.1.0-mvp` (peeled d49ce4b) 本地与远程均**未变** ✅。
+- **T039 Commit Plan** (release commit **必须**包含 `pubspec.yaml` + 3 个 doc 全部 4 文件, 保持提交自包含):
+  1. `git add pubspec.yaml docs/qa/REAL_AUDIO_MVP_V110_RELEASE_CHECKPOINT.md docs/dev/TASK_LEDGER.md docs/dev/TECH_DEBT.md`
+  2. `git commit -m "chore: release v1.1.0"`
+  3. `git tag -a v1.1.0 -m "Real audio MVP release v1.1.0"`
+  4. `git fetch origin` (再次)
+  5. `git merge-base --is-ancestor origin/master master && echo ANCESTOR_OK_BEFORE_PUSH` (再次)
+  6. **AskUserQuestion** 获得用户明确 push 授权
+  7. `git push origin master v1.1.0` (原子推送, **不**加 `--force` / `--force-with-lease`)
+  8. push 后验证: `git ls-remote origin master refs/tags/v1.1.0 refs/tags/v1.0.0-release refs/tags/v0.1.0-mvp` + `git tag -n3 v1.1.0` + `git status` clean
+- **Push 风险评估**:
+  - origin 顶端 (`703d2aa`) 是本地 HEAD (`cb28bca`) 的严格祖先 → **fast-forward** ✅ 不需要 `--force`。
+  - `v1.0.0-release` (peeled 703d2aa) 与 `v0.1.0-mvp` (peeled d49ce4b) 均不在 30 个新提交 + 1 个 release commit 内 → push 后保持原位**不动** ✅。
+  - `v1.1.0` 本地先创建 (annotated), push 与 master 原子同步 → push 后远程 tag 指向 release commit, peeled commit 与 tag 同一 SHA ✅。
+  - **数据丢失风险 = 0**。
+- **T039 范围限制 (明确不做)**:
+  - ❌ rebase / amend / reset / force push / 修改旧提交邮箱
+  - ❌ `git gc --prune=now` (会销毁 14 个不可达 commit + 悬空对象, 越界)
+  - ❌ T022 verifier 升级 (越界, 留待 T040+)
+  - ❌ GitHub Release 创建 / APK / AAB 上传
+  - ❌ INTERNET 权限新增 / 移除
+  - ❌ Manifest / Gradle / Drift schema / 签名配置修改
+  - ❌ 生产代码 / 测试代码 / 依赖 / `pubspec.lock` / `key.properties` / `.gitignore` 修改
+  - ❌ 清理悬空对象 / 技术债批量处理
+- **T039 净增**: 1 个版本号字段变更 + 1 个 release commit + 1 个 annotated tag (`v1.1.0`) + 3 个 doc 文件 (1 新建 + 2 追加) = **0 项自动化测试 / 0 项生产代码改动 / 0 项依赖改动 / 0 项 schema 改动 / 0 项 Manifest 改动 / 0 项 Gradle 改动 / 0 项 `key.properties` 改动 / 0 项 keystore 改动**。
+- **T039 Self-Critique 三步反思**:
+  - **Step 1 初步实现** — 启动核对 8 项 + 验证 9 项 + 关键确认 10 项 + Commit Plan 8 步 + Push 风险 4 项 + Out of Scope 8 类。
+  - **Step 2 自我找茬** (≥ 3 边界):
+    1. T022 verifier 3 项 FAIL **不是** Blocker — 是 T022 硬编码 v1.0.0 基线 + v1.1.0 故意 bump 版本 + 真实音频 MVP 必需 `RECORD_AUDIO` 三个**预期**差异的乘积; T039 **不**改 verifier (越界, 留待 T040+ 评估完整改动面)。
+    2. push 前**必须**重新 fetch + 验证 `merge-base --is-ancestor` — 防止 30 个本地提交被 origin 端其他人 force-push 改写后**误**以为仍是 fast-forward, 导致本地推一个**不**是 ancestor 的"祖先"而触发远端 non-fast-forward 拒绝。
+    3. 推送必须**原子** `git push origin master v1.1.0` 而非分两次 push (master 先 / tag 后) — 分两次会在两次推送之间留出"tag 指向本地未推送 commit" 的中间状态, 期间若其他人 force-push origin/master, 远端 `v1.1.0` tag 会指向一个**被回滚**的 commit, 产生幽灵 tag。
+    4. tag 必须 annotated 而非 lightweight — `git tag -a v1.1.0 -m "..."` 与 `git tag v1.1.0` 语义不同: annotated tag 携带 tagger + date + message (GitHub Releases UI 默认展示 annotated), lightweight 仅为一个 ref 指针; T039 明令 annotated。
+    5. **不**自动 push — 必须 AskUserQuestion 获得用户明确授权 (brief 明令"未经授权不得push"); 即使所有验证都 PASS, push 动作本身有远端副作用, 必须由用户拍板。
+    6. `pubspec.lock` 是否随版本号变更**自动**变化 — Flutter pub 在 `version:` 字段变更时**不**自动修改 lock (`pubspec.lock` 仅在 dependency 增删或 `flutter pub upgrade` 时变化), T039 仅 bump version → lock **不**变 → diff **不**含 lock → **不**误锁依赖, 但需**不**运行 `flutter pub upgrade` (越界)。
+    7. `flutter build apk --release` 警告"Kotlin Gradle Plugin 将在未来版本引发构建失败"是**预先公告**而非当前 Blocker (T038C / T038B 既有警告一致), **不**在 T039 修复 (越界, 留待 KGP → Built-in Kotlin 迁移独立任务)。
+    8. `app_database.g.dart` 是否会被 `flutter build` 触发重新生成 — Drift `build_runner` **不**在 `flutter build apk/appbundle` 期间自动触发, 仅 `dart run build_runner build` / `watch` 才生成; T039 **不**运行 `build_runner`, **不**改 `app_database.g.dart`。
+  - **Step 3 终极交付** — Version = `1.1.0+3`, Tag = `v1.1.0` (annotated, message = `Real audio MVP release v1.1.0`), Commit message = `chore: release v1.1.0` (含 `pubspec.yaml` + 3 个 doc = 4 文件), Push = 原子 fast-forward `git push origin master v1.1.0`, Reviewer 数量 = 2 (Release/Git Reviewer + Compliance Reviewer)。
+- **T039 详细文档**: `docs/qa/REAL_AUDIO_MVP_V110_RELEASE_CHECKPOINT.md` (新建) + `docs/dev/TASK_LEDGER.md` T039 行 (追加) + `docs/dev/TECH_DEBT.md` TD-021 段 (本段, 追加) = 3 个 doc 文件 + `pubspec.yaml` 版本号 bump = 4 文件。
+- **下一任务**: T039 push 成功后, 建议 T040+ 方向: ① T022 verifier 升级至 v1.1.0 基线 (移除硬编码 1.0.0+2 与 `RECORD_AUDIO` forbidden); ② `.gitignore` 追加 `*.apk` + `*.aab` 显式模式作为防御纵深 (T038C Reviewer 提示); ③ KGP → Built-in Kotlin 迁移 (T038C flutter build 警告); ④ iOS TestFlight 闭环 (TD-003); ⑤ 国产 ROM 兼容性补测 (TD-013, 小米 / OPPO / vivo / 三星)。

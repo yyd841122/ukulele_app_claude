@@ -1,6 +1,6 @@
 // Static visual widget for the `C ↔ Am` 4/4 down-strum pattern.
 //
-// T043 scope:
+// T043 initial scope:
 // - Pure Flutter widgets + CustomPaint. No third-party drawing
 //   library, no image / SVG assets.
 // - The widget is intentionally **static**: it does not animate,
@@ -8,16 +8,32 @@
 //   not clickable. Per PRD §6.5 "节奏型 不做", the metronome
 //   domain stays unaware of rhythm patterns — this diagram is the
 //   visual overlay referenced from the lesson / chord detail /
-//   metronome pages (wiring lives in T044+).
-// - Layout: 4 equally-spaced beat cells. Each cell renders, top
-//   to bottom:
+//   metronome pages.
+//
+// T044 refactor scope:
+// - The widget is now **data-driven**. Callers pass a [StrumPattern]
+//   (from `kBuiltInLessons[i].strumPattern`) and the diagram renders
+//   its `beatsPerMeasure` + `chordSequencePerBeat` directly. This
+//   resolves the T043 architecture review (Q1) Non-blocker
+//   observation: the previous hard-coded `_kChordSequence` /
+//   `_kBeatsPerMeasure` could silently drift from the source of
+//   truth in `lesson_constants.dart`.
+// - Time signature string is derived from `strumPattern.beatsPerMeasure`
+//   (only `4` is rendered today; the widget degrades gracefully if a
+//   future lesson ships a different count, e.g. `3/4` waltz).
+// - The Semantics label is rebuilt from the supplied [StrumPattern].
+//   T043's static label "前两拍弹 C 和弦，后两拍弹 Am 和弦" is replaced
+//   with a data-driven label that names the first two distinct chords
+//   from `chordSequencePerBeat` (or "—" when fewer than 2 distinct
+//   chords are present).
+// - Layout: 4 beat cells. Each cell renders, top to bottom:
 //     1. Chord name (`C` or `Am`)
 //     2. Beat number (`1` / `2` / `3` / `4`)
 //     3. Down-strum arrow (filled triangle drawn in CustomPaint)
 //   A horizontal "timeline" line runs underneath the cells; a
-//   small `*` marker sits between cell 2 and cell 3 to call out
-//   the chord switch on beat 3.
-// - The time signature `4/4` is drawn in the top-left.
+//   small `*` marker sits between the 2nd distinct-chord beat and
+//   the next beat to call out the chord switch.
+// - The time signature is drawn in the top-left.
 // - Sizing is responsive: callers control the on-screen size via
 //   [width]. The height is derived as `width * 0.55` (shorter than
 //   the chord diagram because there is no fret stack). A
@@ -34,12 +50,14 @@
 // Why this widget is opinionated (not a generic painter):
 // - Matches the project's `ChordDiagram` / `SingleNotePositionDiagram`
 //   pattern — every shipped diagram is its own widget, not a
-//   configurable one. T043 only needs the C↔Am lesson; if a
+//   configurable one. T044 only needs the C↔Am lesson; if a
 //   second lesson ever lands, the painter can be factored then.
 
 import 'package:flutter/material.dart';
 
-/// Reusable static visual for the `C ↔ Am` 4/4 down-strum lesson.
+import 'package:ukulele_app/core/constants/lesson_constants.dart';
+
+/// Reusable static visual for any [StrumPattern] lesson.
 ///
 /// Default width is 280 logical pixels. Pass a smaller `width`
 /// (e.g. `200`) for compact placements — the internal
@@ -47,33 +65,29 @@ import 'package:flutter/material.dart';
 class CAmDownStrumPatternDiagram extends StatelessWidget {
   const CAmDownStrumPatternDiagram({
     super.key,
+    required this.strumPattern,
     this.width = 280,
     this.showLabels = true,
   }) : assert(width > 0, 'width must be > 0');
+
+  /// The static rhythm pattern to render. Drives beats per measure,
+  /// chord labels, the chord-switch marker, the time-signature
+  /// string and the Semantics label.
+  ///
+  /// The MVP ships a single pattern (`kBuiltInLessons.first.strumPattern`).
+  /// When a future lesson adds a different pattern, callers simply
+  /// pass it here — no widget fork.
+  final StrumPattern strumPattern;
 
   /// Target width in logical pixels. Height is derived as
   /// `width * 0.55`.
   final double width;
 
-  /// When `false`, hides the `4/4` time signature and the per-cell
+  /// When `false`, hides the time signature and the per-cell
   /// chord / beat labels. Useful for very compact list previews
   /// (still keeps the down-strum arrows so the rhythm remains
   /// legible).
   final bool showLabels;
-
-  /// Hard-coded rhythm payload. Pulled from
-  /// `docs/learning/lesson_c_am_down_4x4.md` §4.4 + §7.1:
-  /// 4 beats per measure, down-strum, C on beats 1-2 and Am on
-  /// beats 3-4 (chord switches on beat 3).
-  static const List<String> _kChordSequence = <String>['C', 'C', 'Am', 'Am'];
-  static const int _kBeatsPerMeasure = 4;
-  static const String _kTimeSignature = '4/4';
-
-  /// Semantics label. Kept to a single sentence so screen readers
-  /// announce the diagram once as a group instead of reading each
-  /// beat in isolation.
-  static const String _kSemanticsLabel =
-      '4/4 拍，每拍下扫一次；前两拍弹 C 和弦，后两拍弹 Am 和弦';
 
   @override
   Widget build(BuildContext context) {
@@ -84,9 +98,17 @@ class CAmDownStrumPatternDiagram extends StatelessWidget {
     final Color labelColor = theme.colorScheme.onSurfaceVariant;
     final Color lineColor = theme.colorScheme.onSurface.withValues(alpha: 0.5);
 
+    final int beatsPerMeasure = strumPattern.beatsPerMeasure;
+    final List<String> chordSequence = strumPattern.chordSequencePerBeat;
+    final String timeSignature = _formatTimeSignature(beatsPerMeasure);
+    final String semanticsLabel = _buildSemanticsLabel(
+      beatsPerMeasure: beatsPerMeasure,
+      chordSequence: chordSequence,
+    );
+
     return Semantics(
       container: true,
-      label: _kSemanticsLabel,
+      label: semanticsLabel,
       child: SizedBox(
         width: width,
         height: height,
@@ -98,14 +120,14 @@ class CAmDownStrumPatternDiagram extends StatelessWidget {
             child: Stack(
               children: <Widget>[
                 // 1) CustomPaint draws the timeline, the chord-switch
-                //    marker line and the 4 down-strum arrows. The
+                //    marker line and the down-strum arrows. The
                 //    arrow geometry depends on the cell layout, so
                 //    the painter needs the same `width` / `height`
                 //    / `showLabels` inputs the Text widgets use.
                 Positioned.fill(
                   child: CustomPaint(
                     painter: _CAmDownStrumPatternPainter(
-                      beatsPerMeasure: _kBeatsPerMeasure,
+                      beatsPerMeasure: beatsPerMeasure,
                       arrowColor: arrowColor,
                       lineColor: lineColor,
                       showLabels: showLabels,
@@ -113,9 +135,10 @@ class CAmDownStrumPatternDiagram extends StatelessWidget {
                   ),
                 ),
                 // 2) The chord-switch `*` marker is a real Text widget
-                //    (between cells 2 and 3) so it shows up in
-                //    `find.text('*')` for tests AND screen readers.
-                if (showLabels)
+                //    (between the 2nd distinct-chord beat and the
+                //    next beat) so it shows up in `find.text('*')`
+                //    for tests AND screen readers.
+                if (showLabels && chordSequence.length >= 4)
                   Align(
                     alignment: Alignment.bottomCenter,
                     child: Padding(
@@ -133,19 +156,22 @@ class CAmDownStrumPatternDiagram extends StatelessWidget {
                       ),
                     ),
                   ),
-                // 3) The 4 beat cells: each cell renders its chord
-                //    name, beat number and reserves vertical space
-                //    for the arrow drawn by the painter above.
+                // 3) The beat cells: each cell renders its chord
+                //    name and beat number, and reserves vertical
+                //    space for the arrow drawn by the painter above.
                 if (showLabels)
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: <Widget>[
                       for (int beatIndex = 0;
-                          beatIndex < _kBeatsPerMeasure;
+                          beatIndex < beatsPerMeasure;
                           beatIndex++)
                         Expanded(
                           child: _BeatCell(
-                            chord: _kChordSequence[beatIndex],
+                            chord: _chordAt(
+                              chordSequence,
+                              beatIndex,
+                            ),
                             beatNumber: beatIndex + 1,
                             isDownbeat: beatIndex == 0,
                             textColor: textColor,
@@ -156,16 +182,16 @@ class CAmDownStrumPatternDiagram extends StatelessWidget {
                   ),
                 // 4) The time signature in the top-left, drawn LAST
                 //    so it sits on top of the painter's first beat
-                //    cell. We use IgnorePointer / excludeFromSemantics
-                //    on the time signature Text because the outer
-                //    Semantics label already names "4/4".
+                //    cell. We use `excludeSemantics: true` because
+                //    the outer Semantics label already names the
+                //    time signature (e.g. "4/4").
                 if (showLabels)
                   Positioned(
                     left: width * 0.10,
                     top: 0,
                     child: ExcludeSemantics(
                       child: Text(
-                        _kTimeSignature,
+                        timeSignature,
                         style: TextStyle(
                           color: labelColor,
                           fontWeight: FontWeight.w500,
@@ -180,6 +206,56 @@ class CAmDownStrumPatternDiagram extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// Defensive accessor: out-of-range beats render as empty cells
+  /// instead of throwing — protects against a future
+  /// `chordSequencePerBeat.length != beatsPerMeasure` typo.
+  static String _chordAt(List<String> chordSequence, int beatIndex) {
+    if (beatIndex < 0 || beatIndex >= chordSequence.length) {
+      return '';
+    }
+    return chordSequence[beatIndex];
+  }
+
+  /// Build a time-signature string from the beat count. Today the
+  /// widget only meaningfully renders 4/4; 3 is shown as 3/4 and
+  /// any other count falls back to "N/4" so the diagram never
+  /// crashes on a new lesson that ships a non-4/4 pattern.
+  static String _formatTimeSignature(int beatsPerMeasure) {
+    return '$beatsPerMeasure/4';
+  }
+
+  /// Build the Semantics label from the pattern. Names the first
+  /// two distinct chords (when present) so a screen reader user
+  /// hears "C and Am" without the widget having to hardcode them.
+  static String _buildSemanticsLabel({
+    required int beatsPerMeasure,
+    required List<String> chordSequence,
+  }) {
+    final List<String> distinct = <String>[];
+    for (final String chord in chordSequence) {
+      if (chord.isEmpty) continue;
+      if (!distinct.contains(chord)) {
+        distinct.add(chord);
+      }
+      if (distinct.length == 2) break;
+    }
+    final String beatClause;
+    switch (beatsPerMeasure) {
+      case 4:
+        beatClause = '4/4 拍，每拍下扫一次';
+        break;
+      case 3:
+        beatClause = '3/4 拍，每拍下扫一次';
+        break;
+      default:
+        beatClause = '$beatsPerMeasure/4 拍，每拍下扫一次';
+    }
+    if (distinct.length < 2) {
+      return beatClause;
+    }
+    return '$beatClause；前两拍弹 ${distinct[0]} 和弦，后两拍弹 ${distinct[1]} 和弦';
   }
 }
 
@@ -268,10 +344,12 @@ class _CAmDownStrumPatternPainter extends CustomPainter {
     final double arrowTopY = textStripBottom + size.height * 0.04;
     final double arrowBottomY = bottom - size.height * 0.10;
 
-    // 4 evenly spaced beat cells across [left, right].
-    final double cellWidth = (right - left) / beatsPerMeasure;
+    // Beat cells across [left, right]. Defensive: a zero/negative
+    // beat count would divide-by-zero; clamp to at least 1.
+    final int safeBeats = beatsPerMeasure < 1 ? 1 : beatsPerMeasure;
+    final double cellWidth = (right - left) / safeBeats;
 
-    for (int beatIndex = 0; beatIndex < beatsPerMeasure; beatIndex++) {
+    for (int beatIndex = 0; beatIndex < safeBeats; beatIndex++) {
       final double xCenter = left + (beatIndex + 0.5) * cellWidth;
       _paintDownArrow(
         canvas,

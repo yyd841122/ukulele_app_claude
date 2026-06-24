@@ -15,6 +15,7 @@ import 'package:ukulele_app/features/chord_library/application/chord_library_con
 import 'package:ukulele_app/features/chord_library/domain/chord.dart';
 import 'package:ukulele_app/features/chord_library/domain/chord_difficulty.dart';
 import 'package:ukulele_app/features/chord_library/presentation/widgets/chord_diagram.dart';
+import 'package:ukulele_app/features/lesson_c_am_down_4x4/presentation/widgets/lesson_intro_card.dart';
 
 class ChordDetailPage extends ConsumerWidget {
   const ChordDetailPage({super.key, required this.chordId});
@@ -87,6 +88,17 @@ class ChordDetailPage extends ConsumerWidget {
                 color: theme.colorScheme.onSurfaceVariant,
               ),
             ),
+            // T044: the first beginner lesson (T041 / T042) only
+            // layers onto Day 4 `day4_chord_switch`, whose
+            // `routePath` is `/chords/c` (see
+            // `practice_plan_constants.dart`). Other chord detail
+            // pages (Am / F / G) do NOT show this card — T041 §7
+            // R-01: a single entry point avoids the "two ways to
+            // do the same thing" confusion.
+            if (chord.id == 'c') ...<Widget>[
+              const SizedBox(height: 16),
+              const LessonIntroCard(),
+            ],
             const SizedBox(height: 16),
             Text(
               '和弦说明',

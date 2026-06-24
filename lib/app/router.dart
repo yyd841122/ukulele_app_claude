@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:ukulele_app/features/chord_library/presentation/chord_detail_page.dart';
 import 'package:ukulele_app/features/chord_library/presentation/chord_library_page.dart';
 import 'package:ukulele_app/features/home/presentation/home_page.dart';
+import 'package:ukulele_app/features/lesson_c_am_down_4x4/presentation/lesson_page.dart';
 import 'package:ukulele_app/features/metronome/presentation/metronome_page.dart';
 import 'package:ukulele_app/features/practice_records/presentation/practice_record_detail_page.dart';
 import 'package:ukulele_app/features/practice_records/presentation/practice_records_page.dart';
@@ -27,14 +28,12 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/',
       name: 'home',
-      builder: (BuildContext context, GoRouterState state) =>
-          const HomePage(),
+      builder: (BuildContext context, GoRouterState state) => const HomePage(),
     ),
     GoRoute(
       path: '/tuner',
       name: 'tuner',
-      builder: (BuildContext context, GoRouterState state) =>
-          const TunerPage(),
+      builder: (BuildContext context, GoRouterState state) => const TunerPage(),
     ),
     GoRoute(
       path: '/single-note',
@@ -63,6 +62,31 @@ final GoRouter appRouter = GoRouter(
       name: 'metronome',
       builder: (BuildContext context, GoRouterState state) =>
           const MetronomePage(),
+    ),
+    GoRoute(
+      path: '/lessons',
+      name: 'lessons',
+      // T044: beginner teaching phase 2 page. The `lessonId`
+      // path param is resolved against `lessonByIdProvider` —
+      // unknown / empty ids render a friendly not-found state
+      // inside the page (mirrors `ChordDetailPage`).
+      //
+      // The parent `/lessons` route has no builder because it
+      // is never meant to be visited directly — every link
+      // pushes `/lessons/<id>`. We use a redirect to send a
+      // direct visit back home instead of crashing go_router's
+      // "builder / pageBuilder / redirect must be provided"
+      // assertion.
+      redirect: (BuildContext context, GoRouterState state) => '/',
+      routes: <RouteBase>[
+        GoRoute(
+          path: ':lessonId',
+          name: 'lesson-detail',
+          builder: (BuildContext context, GoRouterState state) => LessonPage(
+            lessonId: state.pathParameters['lessonId'] ?? '',
+          ),
+        ),
+      ],
     ),
     GoRoute(
       path: '/recording',

@@ -322,3 +322,51 @@
 **未**修改：生产代码 / 测试代码 / 依赖 / Android 配置 / Drift schema / `app_database.g.dart` / `pubspec.yaml` / `pubspec.lock` / `key.properties` / `.gitignore` / 既有 T006-T042 任何台账条目 / 既有 §4.1-§4.31 任何 Scorecard / T041 / T042 任何 doc / `MULTI_AGENT_WORKFLOW.md` / `agents/*.md` / 构建产物。
 
 **未** push / **未**创建 Tag / **未** amend / rebase / reset --hard；下一阶段建议 `T044_LESSON_PAGE_AND_NAVIGATION`（由 GPT 首席架构师出具独立 Prompt 后才能启动，本任务**不替代**）。
+
+---
+
+## T044（初学者第一节课页面与导航闭环）
+
+**任务目标**：基于 T041 / T042 / T043 已落地的设计 / 内容 / 静态资源，交付第一节课 `C ↔ Am` 4/4 下扫的 **LessonPage + 路由 + 教学入口 + widget 强制数据驱动重构**。**不修改** Day 1-7 任何任务、`MetronomeController` / `MetronomeSetting` / `RecordingPracticeController` / `PracticeRecordRepository` / Drift schema / 依赖 / Manifest / 版本号 / 完成状态 / 数据库持久化。
+
+**协作模型**：`03-mobile-ui-engineer`（Primary，主导 widget 数据驱动重构 + 路由 + LessonPage + 入口卡片 + 6 项 widget test）+ 1 个独立 Flutter Architecture/UI Reviewer（只读）+ 1 个独立 Beginner UX Reviewer（只读）。
+
+**Primary 交付内容**：
+- **新建 4 个文件**：① `lib/features/lesson_c_am_down_4x4/application/lesson_controller.dart`（`lessonByIdProvider` family + `lessonLibraryProvider`，与 `chordByIdProvider` 同模式；未知 / 空 id → `null`）；② `lib/features/lesson_c_am_down_4x4/presentation/lesson_page.dart`（`ConsumerWidget` + `_LessonNotFound` 友好错误页 + `_LessonDataView` 包含 4 段：标题 + 描述、`CAmDownStrumPatternDiagram(strumPattern: lesson.strumPattern)`、C / Am 既有 `ChordDiagram` 引用、`_LessonStepList` 跳转既有 `/metronome` / `/recording`，**不**改 controller / repository / domain）；③ `lib/features/lesson_c_am_down_4x4/presentation/widgets/lesson_intro_card.dart`（`FilledButton.icon` 推 `/lessons/c_am_down_4x4`，`Semantics(container: true, label: ...)` 整卡读屏友好）；④ `test/features/lesson_c_am_down_4x4/presentation/lesson_page_test.dart`（6 项 widget test 覆盖：已知 id 渲染 / 未知 id 友好错误 / 空 id 友好错误 / 入口导航到 `/lessons/:id` / 节奏 widget 用课程数据 / 窄屏 320x800 无 overflow）。
+- **修改 3 个文件**：① `lib/app/router.dart`（新增顶级 `/lessons` + 子路由 `:lessonId`；`/lessons` 父级用 `redirect: (_) => '/'` 兜底直接访问）；② `lib/features/chord_library/presentation/chord_detail_page.dart`（仅 `/chords/c` 顶部嵌入 `LessonIntroCard`；Am / F / G 详情页**不**显示，避免 T041 §7 R-01 多入口困惑）；③ `lib/features/lesson_c_am_down_4x4/presentation/widgets/strum_pattern_diagram.dart`（**数据驱动重构**：`required StrumPattern strumPattern` 参数 + `_kChordSequence` / `_kBeatsPerMeasure` / `_kTimeSignature` / `_kSemanticsLabel` 全部从 pattern 派生 → 解决 T043 架构复审 §4.33 Q1 widget 硬编码 vs `kBuiltInLessons[0].strumPattern` drift；4 处现有 widget test 调用方同步更新）。
+- **修改 2 个测试文件**：① `test/features/lesson_c_am_down_4x4/presentation/widgets/strum_pattern_diagram_test.dart`（7 处构造调用更新为 `CAmDownStrumPatternDiagram(strumPattern: kBuiltInLessons.first.strumPattern)`，8 项断言主体保留）；② `test/features/chord_library/presentation/chord_detail_page_test.dart`（`renders C chord details` 改为 `setSurfaceSize(800, 1600)` + `scrollUntilVisible` 滚动 + 新增 LessonIntroCard 入口断言，**1 处**最小必要修改避免 T044 新增 card 把 description 挤出视口）。
+- **修改 2 处 doc**：本 T044 节段 + §4.34 T044 Scorecard。
+
+**T043 架构复审（§4.33）Q1 widget drift 修复**：
+- T043 widget `_kChordSequence = ['C', 'C', 'Am', 'Am']` 硬编码 vs `kBuiltInLessons[0].strumPattern` 可能 drift → T044 改为 `required StrumPattern strumPattern` 参数，beats / chordSequence / timeSignature / Semantics label 全部从 pattern 派生；现有 8 项 widget test 通过 `kBuiltInLessons.first.strumPattern` 传递 → 零硬编码副本。
+- Q1 resolved；Q2（types 迁 `domain/`） / Q3（目录命名 `features/lesson_c_am_down_4x4/` → `features/lessons/`）按 T043 Reviewer 共识**不在 T044 范围内**，留 lesson-2 时机处理。
+
+**Primary 自检 7 项风险 + 全部缓解**：
+1. **Widget 与常量 drift**（T043 架构复审 Q1）→ widget 强制数据驱动，测试构造同步更新。
+2. **多入口困惑**（T041 §7 R-01）→ `LessonIntroCard` 仅在 `chord.id == 'c'` 分支嵌入，Am / F / G 详情页零影响。
+3. **空 lessonId 路由崩溃** → `lessonByIdProvider` 对空 id 早返 `null`；`LessonPage` 渲染 `_LessonNotFound` 占位（含"未找到" + 返回首页按钮），**不**抛 `StateError`。
+4. **节拍器跳转是否预设 BPM** → 按钮文案明确"调整到 N BPM 后开始"，**不**带 query 参数 / **不**改 `MetronomeController` / `MetronomeSetting`；用户在节拍器页面手动调 BPM（与 T042 文档 §5.1 一致）。
+5. **窄屏 overflow** → 整页 `ListView` + widget 内部 `FittedBox(scaleDown)` 兜底；`setSurfaceSize(320, 800)` 测试覆盖。
+6. **Semantics 重复朗读** → 标题用 `Semantics(header: true)`；step 序号 `CircleAvatar` + `Step N` 文本包 `ExcludeSemantics` 避免读屏连读。
+7. **窄屏卡片按钮挤掉描述** → `_LessonStepTile` 用 `Wrap`（非 `Row`）让按钮可折行；`_LessonChordRow` 用 `Wrap` 容纳 C / Am 引用图。
+
+**实现后验证**（命令纪律逐条单命令）：
+1. `dart format` 4 个新文件 + 3 个修改文件 = 0 差异 ✓
+2. `flutter analyze` `No issues found!` ✓
+3. `flutter test test/features/lesson_c_am_down_4x4/presentation/lesson_page_test.dart` → 6 项全过 ✓
+4. `flutter test test/features/lesson_c_am_down_4x4/presentation/widgets/strum_pattern_diagram_test.dart` → 7 项全过（构造更新后） ✓
+5. `flutter test test/core/lesson_constants_test.dart` → 5 项全过（不应受影响） ✓
+6. `flutter test test/features/chord_library/presentation/chord_detail_page_test.dart` → 5 项全过（1 处测试已为新 card 更新） ✓
+7. `flutter test` 全量 → **基线 732 + T044 新增 6 = 738 tests passed**，既有测试未减 ✓
+8. `git diff --check` 干净 ✓
+9. `git status --short` 仅 4 个新文件 + 5 处修改 ✓
+10. `git ls-files` 四项敏感文件跟踪检查仍为空 ✓
+11. 确认 Manifest / 依赖 / schema / 版本号未变 ✓
+
+**Reviewer 协作（待 GPT 复审）**：T044 范围内 0 Blocker（详见 §4.34 Scorecard 模板）。Primary 自检覆盖 7 项风险；架构 / UX 双 Reviewer 待用户复审启动。
+
+**Files Modified / Created**：① `lib/features/lesson_c_am_down_4x4/application/lesson_controller.dart`（新建）；② `lib/features/lesson_c_am_down_4x4/presentation/lesson_page.dart`（新建）；③ `lib/features/lesson_c_am_down_4x4/presentation/widgets/lesson_intro_card.dart`（新建）；④ `test/features/lesson_c_am_down_4x4/presentation/lesson_page_test.dart`（新建）；⑤ `lib/app/router.dart`（追加 `/lessons` 顶级路由 + `:lessonId` 子路由 + `redirect: (_) => '/'` 兜底）；⑥ `lib/features/chord_library/presentation/chord_detail_page.dart`（仅 `chord.id == 'c'` 分支嵌入 `LessonIntroCard`，**1** 处最小必要修改）；⑦ `lib/features/lesson_c_am_down_4x4/presentation/widgets/strum_pattern_diagram.dart`（数据驱动重构，4 个 `_k*` 静态字段 → `strumPattern.*` 派生）；⑧ `test/features/lesson_c_am_down_4x4/presentation/widgets/strum_pattern_diagram_test.dart`（构造参数同步更新，断言主体保留）；⑨ `test/features/chord_library/presentation/chord_detail_page_test.dart`（`renders C chord details` 测试增加 `setSurfaceSize(800, 1600)` + 滚动 + LessonIntroCard 入口断言，**1** 处最小必要修改）；⑩ `docs/dev/TASK_LEDGER.md`（追加本 T044 节段）；⑪ `docs/dev/AGENT_QUALITY_METRICS.md`（追加 §4.34 T044 Scorecard）。
+
+**未**修改：生产代码（除 5 个新建 / 3 个修改文件）/ 测试代码（除 2 个新建 / 2 个修改文件）/ 依赖 / Android 配置（Manifest / Gradle）/ Drift schema / `app_database.g.dart`（schemaVersion = 1）/ `pubspec.yaml`（version 仍为 `1.1.0+3`）/ `pubspec.lock` / `key.properties` / `.gitignore` / 既有 `MetronomeSetting` / `MetronomeController` / `RecordingPracticeController` / `PracticeRecordRepository` / 7 天计划常量 / 既有 lesson doc / Release 产物 / `agents/*.md` / `MULTI_AGENT_WORKFLOW.md` / 既有 ROADMAP / PRD / DATA_MODEL_DRAFT / T041 / T042 / T043 任何 doc。
+
+**未**改 Day 1-7 任何任务 / **未**新增完成状态 / **未**新增数据库持久化 / **未**接节拍器 / 录音的 controller / **未** push / **未**创建 Tag / **未** amend / rebase / reset --hard；下一阶段建议 `T045_LESSON_TEST_AND_ACCEPTANCE`（T044 复审通过后启动；本任务**不替代**）。

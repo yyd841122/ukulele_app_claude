@@ -18,6 +18,18 @@ import 'package:ukulele_app/features/chord_library/presentation/widgets/chord_di
 void main() {
   group('ChordDetailPage', () {
     testWidgets('renders C chord details', (WidgetTester tester) async {
+      // T044 added a [LessonIntroCard] at the top of the C chord
+      // detail page (the only entry point for the first beginner
+      // lesson). The extra content pushes the chord description
+      // below the 800x600 default surface; scroll to it before
+      // asserting.
+      tester.view.physicalSize = const Size(800, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
       await tester.pumpWidget(
         ProviderScope(
           child: MaterialApp(
@@ -32,11 +44,18 @@ void main() {
       // App bar title uses display name (may appear in multiple
       // places — the app bar AND the heading).
       expect(find.text(c.displayName), findsWidgets);
+      // T044 entry-point card is the new top-of-page element.
+      expect(find.byType(ChordDiagram), findsOneWidget);
+      expect(find.text('开始课程'), findsOneWidget);
       // Description is rendered.
+      final Finder scrollable = find.byType(Scrollable).first;
+      await tester.scrollUntilVisible(
+        find.textContaining(c.description),
+        200,
+        scrollable: scrollable,
+      );
       expect(find.textContaining(c.description), findsOneWidget);
       expect(find.text('练习提示'), findsOneWidget);
-      // Diagram widget is on the page.
-      expect(find.byType(ChordDiagram), findsOneWidget);
     });
 
     testWidgets('renders Am chord details', (WidgetTester tester) async {

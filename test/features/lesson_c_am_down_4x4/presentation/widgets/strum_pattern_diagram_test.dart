@@ -22,7 +22,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:ukulele_app/core/constants/lesson_constants.dart';
 import 'package:ukulele_app/features/lesson_c_am_down_4x4/presentation/widgets/strum_pattern_diagram.dart';
+
+/// The single shipped pattern today — passed into the widget
+/// constructor in every test so the diagram renders the same
+/// payload `kBuiltInLessons` ships, with no hard-coded duplication.
+final StrumPattern _kLessonPattern = kBuiltInLessons.first.strumPattern;
 
 void main() {
   group('CAmDownStrumPatternDiagram', () {
@@ -32,7 +38,9 @@ void main() {
         MaterialApp(
           home: Scaffold(
             body: Center(
-              child: CAmDownStrumPatternDiagram(),
+              child: CAmDownStrumPatternDiagram(
+                strumPattern: _kLessonPattern,
+              ),
             ),
           ),
         ),
@@ -47,7 +55,9 @@ void main() {
         MaterialApp(
           home: Scaffold(
             body: Center(
-              child: CAmDownStrumPatternDiagram(),
+              child: CAmDownStrumPatternDiagram(
+                strumPattern: _kLessonPattern,
+              ),
             ),
           ),
         ),
@@ -63,7 +73,9 @@ void main() {
         MaterialApp(
           home: Scaffold(
             body: Center(
-              child: CAmDownStrumPatternDiagram(),
+              child: CAmDownStrumPatternDiagram(
+                strumPattern: _kLessonPattern,
+              ),
             ),
           ),
         ),
@@ -82,7 +94,9 @@ void main() {
         MaterialApp(
           home: Scaffold(
             body: Center(
-              child: CAmDownStrumPatternDiagram(),
+              child: CAmDownStrumPatternDiagram(
+                strumPattern: _kLessonPattern,
+              ),
             ),
           ),
         ),
@@ -106,7 +120,9 @@ void main() {
         MaterialApp(
           home: Scaffold(
             body: Center(
-              child: CAmDownStrumPatternDiagram(),
+              child: CAmDownStrumPatternDiagram(
+                strumPattern: _kLessonPattern,
+              ),
             ),
           ),
         ),
@@ -144,7 +160,9 @@ void main() {
         MaterialApp(
           home: Scaffold(
             body: Center(
-              child: CAmDownStrumPatternDiagram(),
+              child: CAmDownStrumPatternDiagram(
+                strumPattern: _kLessonPattern,
+              ),
             ),
           ),
         ),
@@ -169,7 +187,10 @@ void main() {
         MaterialApp(
           home: Scaffold(
             body: Center(
-              child: CAmDownStrumPatternDiagram(width: 240),
+              child: CAmDownStrumPatternDiagram(
+                strumPattern: _kLessonPattern,
+                width: 240,
+              ),
             ),
           ),
         ),

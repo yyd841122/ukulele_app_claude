@@ -76,6 +76,7 @@ import 'package:ukulele_app/shared/providers/real_audio_recorder_service_provide
 import 'package:ukulele_app/shared/services/audio_file_storage_service.dart';
 import 'package:ukulele_app/shared/services/audio_playback_gateway.dart';
 import 'package:ukulele_app/shared/services/audio_recorder_state.dart';
+import 'package:ukulele_app/shared/services/microphone_permission_gateway.dart';
 import 'package:ukulele_app/shared/services/microphone_permission_service.dart';
 import 'package:ukulele_app/shared/services/microphone_permission_status.dart';
 import 'package:ukulele_app/shared/services/practice_day_context.dart';
@@ -173,7 +174,11 @@ void main() {
         currentPlaybackDuration: null,
         lastError: null,
       );
-      expect(denied.statusLabel, '麦克风权限被拒绝');
+      // T038B: the user-visible copy is unified for `denied`
+      // and `permanentDenied` so the page never shows
+      // "永久拒绝". The internal enum value is still
+      // RecordingPermissionStatus.denied.
+      expect(denied.statusLabel, '麦克风权限已拒绝');
 
       const RecordingPracticeState permDenied = RecordingPracticeState(
         isRecording: false,
@@ -192,7 +197,13 @@ void main() {
         currentPlaybackDuration: null,
         lastError: null,
       );
-      expect(permDenied.statusLabel, '麦克风权限已永久拒绝');
+      // T038B: same user-visible copy as `denied`. The page
+      // is the source of truth for the system-settings entry
+      // point — the internal enum value is the only signal
+      // the page reads to decide which affordance to surface.
+      expect(permDenied.statusLabel, '麦克风权限已拒绝');
+      expect(permDenied.statusLabel, isNot(contains('永久拒绝')),
+          reason: 'T038B: statusLabel must never contain 永久拒绝');
 
       const RecordingPracticeState restricted = RecordingPracticeState(
         isRecording: false,
@@ -499,6 +510,450 @@ void main() {
         expect(state.permission, RecordingPermissionStatus.restricted);
         expect(state.isRecording, isFalse);
         expect(ctx.recorderGateway.startCallCount, 0);
+      },
+    );
+
+    // -----------------------------------------------------------------
+    // T038B — user-visible copy + system-settings recovery.
+    //
+    // Pins the post-T038B contract:
+    //  - Internal `permanentlyDenied` semantics are preserved
+    //    (the controller still distinguishes `denied` and
+    //    `permanentDenied` for routing decisions).
+    //  - User-visible `statusLabel` is unified to
+    //    "麦克风权限已拒绝" for both `denied` and
+    //    `permanentDenied` — the page never shows "永久拒绝".
+    //  - `openAppSettings` is the official path for jumping
+    //    to the system settings page on a `permanentDenied`
+    //    outcome. It guards against double-tap re-entrancy
+    //    and never throws.
+    //  - `refreshPermissionStatus` re-reads the platform-side
+    //    status without auto-starting a recording, so a
+    //    "返回App" recheck updates the visible state without
+    //    bypassing the user's tap on "开始录音".
+    // -----------------------------------------------------------------
+
+    test(
+      'T038B: openAppSettings delegates to the gateway and is gated '
+      'by the controller\'s re-entrancy guard (back-to-back calls '
+      'collapse to a single gateway invocation)',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) => b
+            ..nextCheckStatus = MicrophonePermissionStatus.denied
+            ..nextRequestStatus = MicrophonePermissionStatus.permanentlyDenied
+            ..nextOpenSettingsResult = true,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+
+        // First call: must hit the gateway exactly once.
+        await controller.openAppSettings();
+        await _pumpEventQueue();
+        expect(ctx.permissionGateway.openSettingsCallCount, 1);
+
+        // T038B: a second back-to-back call (without a
+        // resume in between) is a no-op — the controller
+        // holds the re-entrancy guard until the user
+        // returns from the system settings page.
+        await controller.openAppSettings();
+        await _pumpEventQueue();
+        expect(ctx.permissionGateway.openSettingsCallCount, 1,
+            reason:
+                'T038B: the controller is the canonical re-entrancy guard; '
+                'back-to-back calls collapse to a single gateway invocation');
+        expect(ctx.recorderGateway.startCallCount, 0,
+            reason: 'T038B: openAppSettings must NEVER touch the recorder');
+      },
+    );
+
+    test(
+      'T038B: openAppSettings records a lastError when the gateway '
+      'returns false (e.g. some OEM ROMs cannot launch the settings page)',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) => b
+            ..nextCheckStatus = MicrophonePermissionStatus.denied
+            ..nextRequestStatus = MicrophonePermissionStatus.permanentlyDenied
+            ..nextOpenSettingsResult = false,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+
+        await controller.openAppSettings();
+        await _pumpEventQueue();
+
+        final RecordingPracticeState state =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(ctx.permissionGateway.openSettingsCallCount, 1);
+        expect(state.lastError, isNotNull,
+            reason: 'T038B: openAppSettings failure must surface via lastError');
+        expect(state.lastError, contains('无法打开系统设置'),
+            reason: 'T038B: failure copy is friendly + non-PII');
+      },
+    );
+
+    test(
+      'T038B: openAppSettings records a lastError when the gateway throws',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) => b
+            ..nextCheckStatus = MicrophonePermissionStatus.denied
+            ..nextRequestStatus = MicrophonePermissionStatus.permanentlyDenied
+            ..nextOpenSettingsException =
+                StateError('synthetic openAppSettings failure'),
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+
+        await controller.openAppSettings();
+        await _pumpEventQueue();
+
+        final RecordingPracticeState state =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(ctx.permissionGateway.openSettingsCallCount, 1);
+        expect(state.lastError, isNotNull);
+        expect(state.lastError, contains('打开系统设置失败'),
+            reason: 'T038B: openAppSettings throw surfaces a friendly message');
+      },
+    );
+
+    test(
+      'T038B: refreshPermissionStatus re-reads the platform status '
+      'without auto-starting a recording',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) => b
+            ..nextCheckStatus = MicrophonePermissionStatus.denied
+            ..nextRequestStatus = MicrophonePermissionStatus.permanentlyDenied,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+
+        // Drive into permanentDenied.
+        await controller.startRecording();
+        await _pumpEventQueue();
+        expect(
+          ctx.container.read(recordingPracticeControllerProvider).permission,
+          RecordingPermissionStatus.permanentDenied,
+        );
+        final int checksBefore = ctx.permissionGateway.checkStatusCallCount;
+
+        // The fake gateway now reports `granted` (simulating
+        // the user having toggled the permission in system
+        // settings and returning to the app).
+        ctx.permissionGateway.nextCheckStatus =
+            MicrophonePermissionStatus.granted;
+
+        await controller.refreshPermissionStatus();
+        await _pumpEventQueue();
+
+        final RecordingPracticeState state =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(ctx.permissionGateway.checkStatusCallCount, checksBefore + 1,
+            reason: 'T038B: refresh must call checkStatus exactly once');
+        expect(state.permission, RecordingPermissionStatus.granted,
+            reason: 'T038B: refresh must reconcile the enum value');
+        expect(state.isRecording, isFalse,
+            reason: 'T038B: refresh must NOT auto-start a recording');
+        expect(ctx.recorderGateway.startCallCount, 0,
+            reason: 'T038B: refresh must NOT touch the recorder');
+      },
+    );
+
+    test(
+      'T038B: refreshPermissionStatus is a no-op while a check is in flight',
+      () async {
+        // T038B: drive the controller into `checking` by
+        // swapping in a gateway whose checkStatus hangs
+        // until we manually complete the future. The
+        // synchronous state write sets
+        // `permission = checking` BEFORE the await; the
+        // hung future keeps the in-flight state observable
+        // while we test the gate.
+        final Completer<MicrophonePermissionStatus> pendingCheck =
+            Completer<MicrophonePermissionStatus>();
+        final _HangingPermissionGateway hanging =
+            _HangingPermissionGateway(pendingCheck.future);
+        final (:rootProvider, :root) = _isolatedRoot();
+        addTearDown(() {
+          if (root.existsSync()) {
+            try {
+              root.deleteSync(recursive: true);
+            } on FileSystemException {
+              // ignore
+            }
+          }
+        });
+        final AudioFileStorageService storage = AudioFileStorageService(
+          rootDirectoryProvider: rootProvider,
+        );
+        final RealAudioRecorderService recorderService =
+            RealAudioRecorderService(
+          gateway: FakeAudioRecorderGateway(),
+          storage: storage,
+        );
+        final RealAudioPlaybackService playbackService =
+            RealAudioPlaybackService(
+          gateway: FakeAudioPlaybackGateway(),
+          storage: storage,
+        );
+        final MicrophonePermissionService hangingService =
+            MicrophonePermissionService(hanging);
+        final ProviderContainer container = ProviderContainer(
+          overrides: <Override>[
+            audioFileStorageServiceProvider.overrideWithValue(storage),
+            realAudioRecorderServiceProvider.overrideWithValue(recorderService),
+            realAudioPlaybackServiceProvider
+                .overrideWithValue(playbackService),
+            microphonePermissionServiceProvider
+                .overrideWithValue(hangingService),
+            practiceRecordIdGeneratorProvider.overrideWithValue(
+              _SequentialPracticeRecordIdGenerator(),
+            ),
+            installDateServiceProvider.overrideWithValue(
+              _FakeInstallDateService(
+                DateTime.utc(2026, 6, 19, 0, 0, 0),
+              ),
+            ),
+            practiceDayResolverProvider
+                .overrideWithValue(_FakePracticeDayResolver()),
+            appClockProvider.overrideWithValue((() => _kTestNowUtc)),
+          ],
+        );
+        addTearDown(container.dispose);
+
+        final RecordingPracticeController controller = container.read(
+          recordingPracticeControllerProvider.notifier,
+        );
+
+        // Drive into `checking` without awaiting (the
+        // pendingCheck future never resolves, so the
+        // controller stays in the in-flight state).
+        // ignore: unawaited_futures
+        controller.startRecording();
+        // Allow the synchronous state write to land.
+        await _pumpEventQueue();
+        expect(
+          container.read(recordingPracticeControllerProvider).permission,
+          RecordingPermissionStatus.checking,
+        );
+        final int checksBefore = hanging.checkStatusCallCount;
+        await controller.refreshPermissionStatus();
+        await _pumpEventQueue();
+        expect(
+          hanging.checkStatusCallCount,
+          checksBefore,
+          reason: 'T038B: refresh must NOT re-enter while checking',
+        );
+        // Tidy up: complete the pending future so the
+        // original startRecording can resolve, then dispose.
+        pendingCheck.complete(MicrophonePermissionStatus.granted);
+        await _pumpEventQueue();
+      },
+    );
+
+    test(
+      'T038B: refreshPermissionStatus keeps the previous permission on '
+      'a thrown gateway error',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) => b
+            ..nextCheckStatus = MicrophonePermissionStatus.denied
+            ..nextRequestStatus = MicrophonePermissionStatus.permanentlyDenied,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        expect(
+          ctx.container.read(recordingPracticeControllerProvider).permission,
+          RecordingPermissionStatus.permanentDenied,
+        );
+        ctx.permissionGateway.nextCheckException =
+            StateError('synthetic checkStatus failure');
+        await controller.refreshPermissionStatus();
+        await _pumpEventQueue();
+        final RecordingPracticeState state =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(state.permission, RecordingPermissionStatus.permanentDenied,
+            reason: 'T038B: refresh failure must preserve the prior permission');
+        expect(state.lastError, isNotNull);
+      },
+    );
+
+    test(
+      'T038B: page-layer can call openAppSettings even when the controller '
+      'is in the denied state (the page is the affordance)',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) => b
+            ..nextCheckStatus = MicrophonePermissionStatus.denied
+            ..nextRequestStatus = MicrophonePermissionStatus.denied
+            ..nextOpenSettingsResult = true,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        expect(
+          ctx.container.read(recordingPracticeControllerProvider).permission,
+          RecordingPermissionStatus.denied,
+        );
+        await controller.openAppSettings();
+        await _pumpEventQueue();
+        expect(ctx.permissionGateway.openSettingsCallCount, 1,
+            reason: 'T038B: openAppSettings is callable on BOTH denied and '
+                'permanentDenied — the page wires the same button for both');
+        expect(ctx.recorderGateway.startCallCount, 0,
+            reason: 'T038B: the controller still does not call recorder.start');
+      },
+    );
+
+    test(
+      'T038B: permanentlyDenied does NOT loop requestPermission: '
+      'each call to startRecording re-enters the request branch exactly once',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) => b
+            ..nextCheckStatus = MicrophonePermissionStatus.denied
+            ..nextRequestStatus = MicrophonePermissionStatus.permanentlyDenied,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+
+        // First tap: drives into permanentlyDenied.
+        await controller.startRecording();
+        await _pumpEventQueue();
+        expect(
+          ctx.container.read(recordingPracticeControllerProvider).permission,
+          RecordingPermissionStatus.permanentDenied,
+        );
+        final int firstCheckCount =
+            ctx.permissionGateway.checkStatusCallCount;
+        final int firstRequestCount =
+            ctx.permissionGateway.requestPermissionCallCount;
+
+        // Second tap: must re-enter the request branch
+        // exactly once (NOT loop). The T031 contract says
+        // the controller may call requestPermission() again
+        // on user demand — but it must be a single call,
+        // not a polling loop.
+        await controller.startRecording();
+        await _pumpEventQueue();
+        expect(
+          ctx.permissionGateway.checkStatusCallCount,
+          firstCheckCount + 1,
+          reason: 'T038B: each user-tap triggers exactly one checkStatus',
+        );
+        expect(
+          ctx.permissionGateway.requestPermissionCallCount,
+          firstRequestCount + 1,
+          reason: 'T038B: each user-tap triggers exactly one request, '
+              'not a polling loop',
+        );
+        expect(
+          ctx.container.read(recordingPracticeControllerProvider).permission,
+          RecordingPermissionStatus.permanentDenied,
+          reason: 'T038B: permanentlyDenied stays permanentlyDenied '
+              'until the user re-enables it via system settings',
+        );
+        expect(ctx.recorderGateway.startCallCount, 0);
+      },
+    );
+
+    test(
+      'T038B: permanentlyDenied → granted: refreshPermissionStatus is the '
+      'canonical path from the system-settings return',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) => b
+            ..nextCheckStatus = MicrophonePermissionStatus.denied
+            ..nextRequestStatus = MicrophonePermissionStatus.permanentlyDenied,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        expect(
+          ctx.container.read(recordingPracticeControllerProvider).permission,
+          RecordingPermissionStatus.permanentDenied,
+        );
+        // Simulate the user toggling the permission in
+        // system settings and returning to the app.
+        ctx.permissionGateway.nextCheckStatus =
+            MicrophonePermissionStatus.granted;
+        await controller.refreshPermissionStatus();
+        await _pumpEventQueue();
+        final RecordingPracticeState granted =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(granted.permission, RecordingPermissionStatus.granted);
+        // Now a fresh startRecording actually starts.
+        await controller.startRecording();
+        await _pumpEventQueue();
+        final RecordingPracticeState after =
+            ctx.container.read(recordingPracticeControllerProvider);
+        expect(after.isRecording, isTrue,
+            reason: 'T038B: after re-enable the user can record again');
+        expect(ctx.recorderGateway.startCallCount, 1);
+        // Cleanup.
+        ctx.recorderGateway.nextStopResult =
+            _stopPath(ctx.recorderGateway.lastStartPath!);
+        await controller.stopRecording();
+      },
+    );
+
+    test(
+      'T038B: still denied after return from system settings: '
+      'the controller state stays denied and the recorder is not invoked',
+      () async {
+        final ctx = _buildContext(
+          permission: (b) => b
+            ..nextCheckStatus = MicrophonePermissionStatus.denied
+            ..nextRequestStatus = MicrophonePermissionStatus.permanentlyDenied,
+        );
+        addTearDown(ctx.container.dispose);
+
+        final RecordingPracticeController controller =
+            ctx.container.read(recordingPracticeControllerProvider.notifier);
+        await controller.startRecording();
+        await _pumpEventQueue();
+        // Even after a refresh, the fake still says
+        // denied at the checkStatus layer — request is
+        // the only path that returns permanentlyDenied,
+        // and refreshPermissionStatus does NOT call
+        // request. The visible state therefore reverts
+        // to denied (the "still denied" case).
+        await controller.refreshPermissionStatus();
+        await _pumpEventQueue();
+        final RecordingPracticeState state =
+            ctx.container.read(recordingPracticeControllerProvider);
+        // T038B: the user-visible state stays in the
+        // denied family — refresh must NOT silently
+        // re-enable anything, and must NOT call recorder.
+        expect(state.permission, isNot(RecordingPermissionStatus.granted));
+        // A subsequent startRecording still does NOT
+        // bypass the permission check.
+        await controller.startRecording();
+        await _pumpEventQueue();
+        expect(ctx.recorderGateway.startCallCount, 0,
+            reason: 'T038B: denied must NEVER start the recorder');
       },
     );
 
@@ -5310,4 +5765,33 @@ class _FakeInstallDateService implements InstallDateService {
 
   @override
   Future<DateTime> getInstallDate() async => _fixed;
+}
+
+/// T038B — fake gateway whose `checkStatus` returns the
+/// supplied pending future. The test completes the future
+/// manually once the assertions are done so the controller
+/// can resolve its in-flight `startRecording` call. Used by
+/// the "refresh is a no-op while a check is in flight" test
+/// to exercise the canonical in-flight gate.
+class _HangingPermissionGateway implements MicrophonePermissionGateway {
+  _HangingPermissionGateway(this._pending);
+
+  final Future<MicrophonePermissionStatus> _pending;
+  int checkStatusCallCount = 0;
+
+  @override
+  Future<MicrophonePermissionStatus> checkStatus() async {
+    checkStatusCallCount += 1;
+    return _pending;
+  }
+
+  @override
+  Future<MicrophonePermissionStatus> requestPermission() async {
+    return MicrophonePermissionStatus.denied;
+  }
+
+  @override
+  Future<bool> openSettings() async {
+    return true;
+  }
 }

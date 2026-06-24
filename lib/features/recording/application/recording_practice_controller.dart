@@ -1,4 +1,4 @@
-// Riverpod controller for the recording practice flow (T012 + T013.4A + T031 + T031C + T033 + T037B + T037B1 + T037B2).
+// Riverpod controller for the recording practice flow (T012 + T013.4A + T031 + T031C + T033 + T037B + T037B1 + T037B2 + T038B).
 //
 // Design notes (T031 - real audio state machine integration):
 //
@@ -369,15 +369,32 @@ class RecordingPracticeState {
   }
 
   /// Human-readable status string used by the page's status card.
+  ///
+  /// T038B: the user-visible copy is intentionally "麦克风权限已拒绝"
+  /// for both `denied` and `permanentDenied` so the page never
+  /// shows the wording "永久拒绝" to the user. The internal
+  /// permission state machine (the [RecordingPermissionStatus]
+  /// enum value) is unchanged — both states still map to
+  /// distinct semantics inside the controller (the `denied`
+  /// state allows `startRecording` to call
+  /// `MicrophonePermissionService.requestPermission()`; the
+  /// `permanentDenied` state shows the system-settings entry
+  /// point via [openAppSettings]). The page reads
+  /// [statusLabel] for the status card and [permission] for
+  /// the affordance decision; both reads are independent.
   String get statusLabel {
     if (permission == RecordingPermissionStatus.checking) {
       return '正在检查麦克风权限…';
     }
     if (permission == RecordingPermissionStatus.denied) {
-      return '麦克风权限被拒绝';
+      return '麦克风权限已拒绝';
     }
     if (permission == RecordingPermissionStatus.permanentDenied) {
-      return '麦克风权限已永久拒绝';
+      // T038B: user-visible copy is identical to `denied` —
+      // we DO NOT surface "永久拒绝" to the user. The
+      // affordance layer (system-settings entry point) is
+      // driven by [permission] (the enum), not by this label.
+      return '麦克风权限已拒绝';
     }
     if (permission == RecordingPermissionStatus.restricted) {
       return '麦克风被系统限制';
@@ -484,6 +501,15 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
   /// request (after the user retries a failed stop) can start
   /// a fresh in-flight Future.
   Future<PageExitStopResult>? _pageExitStopFuture;
+
+  /// T038B — `openAppSettings` re-entrancy guard. Mirrors the
+  /// `_pageExitStopFuture` pattern but uses a plain `bool` (the
+  /// page is single-threaded on the UI isolate). Prevents a
+  /// rapid double-tap on the page's "前往系统设置" button from
+  /// queueing two `permission_handler.openAppSettings()` calls
+  /// (the OS would launch the system settings page twice and
+  /// the second one would land on top of the first).
+  bool _openingAppSettings = false;
 
   @override
   RecordingPracticeState build() {
@@ -820,6 +846,150 @@ class RecordingPracticeController extends Notifier<RecordingPracticeState> {
     state = state.copyWith(
       isPlaying: false,
       currentPlaybackPosition: Duration.zero,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Permission recovery (T038B)
+  // ---------------------------------------------------------------------------
+
+  /// T038B — opens the system settings page for this app so the
+  /// user can re-enable the microphone permission after a
+  /// `permanentDenied` / `USER_FIXED` outcome.
+  ///
+  /// Internally:
+  /// 1. Guards against re-entrancy — a rapid double-tap on
+  ///    the page's "前往系统设置" button must NOT call
+  ///    `MicrophonePermissionService.openSettings()` twice
+  ///    (the OS would queue two settings-page launches).
+  ///    The guard is in the controller and persists until
+  ///    the OS settings page returns control to the app —
+  ///    see [refreshPermissionStatus] for the release path.
+  /// 2. Calls `MicrophonePermissionService.openSettings()`
+  ///    (which delegates to `permission_handler`'s
+  ///    `openAppSettings()` — the official API for jumping
+  ///    from the app to the system settings page).
+  /// 3. **Never** throws — failures are surfaced via
+  ///    [lastError] so the page can render a SnackBar and
+  ///    keep itself mounted.
+  /// 4. The system settings page is OS-owned; the controller
+  ///    does NOT receive a callback when the user returns.
+  ///    The page wires a `WidgetsBindingObserver.didChangeAppLifecycleState`
+  ///    resume observer that calls [refreshPermissionStatus]
+  ///    to re-read the platform-side status when the app
+  ///    comes back to the foreground — that resume hook is
+  ///    also what releases the in-flight guard so a
+  ///    follow-up tap is honoured.
+  ///
+  /// The method is a no-op if the controller is disposed, the
+  /// widget is not mounted, or an in-flight call is already
+  /// running.
+  Future<void> openAppSettings() async {
+    if (_disposed || !ref.mounted) {
+      return;
+    }
+    if (_openingAppSettings) {
+      return;
+    }
+    _openingAppSettings = true;
+    try {
+      final bool launched = await _permission.openSettings();
+      if (_disposed || !ref.mounted) {
+        return;
+      }
+      if (!launched) {
+        state = state.copyWith(
+          lastError: '无法打开系统设置，请手动前往系统设置开启麦克风权限',
+        );
+        // T038B: the OS refused to launch the settings
+        // page. Release the guard immediately so the
+        // user can try again.
+        _openingAppSettings = false;
+      }
+      // T038B: on a successful launch the guard stays
+      // set — the OS is about to bring the system
+      // settings page to the foreground. The guard is
+      // released by [refreshPermissionStatus] when the
+      // app comes back to the foreground (i.e. the user
+      // has toggled the permission and swiped / pressed
+      // back into the app).
+    } on Object catch (e) {
+      if (_disposed || !ref.mounted) {
+        return;
+      }
+      state = state.copyWith(
+        lastError: '打开系统设置失败：$e',
+      );
+      _openingAppSettings = false;
+    }
+  }
+
+  /// T038B — re-reads the platform-side microphone permission
+  /// status and reconciles the controller's permission field
+  /// with it.
+  ///
+  /// The page wires this call to the
+  /// `WidgetsBindingObserver.didChangeAppLifecycleState`
+  /// `AppLifecycleState.resumed` event so that when the user
+  /// returns from the system settings page (or the system
+  /// permission dialog), the controller immediately reflects
+  /// the new status without waiting for the user to tap a
+  /// button.
+  ///
+  /// Behaviour:
+  /// - **No-op** if the controller is disposed or the widget
+  ///   is not mounted.
+  /// - **No-op** if a permission check is already in flight
+  ///   (`state.permission == checking`).
+  /// - Otherwise: flips `permission` to `checking`, calls
+  ///   `MicrophonePermissionService.checkStatus()`, and
+  ///   reconciles the result with `_mapPermissionStatus`. On
+  ///   `granted` the controller does NOT auto-start a
+  ///   recording — the user must tap "开始录音" again. This
+  ///   preserves the "no permission auto-start" T025 / T031
+  ///   contract: returning from the system settings page
+  ///   only refreshes the visual state.
+  /// - On error: `permission` reverts to the previous value
+  ///   and `lastError` is set so the UI can surface a SnackBar.
+  /// - Releases the [`_openingAppSettings`] re-entrancy
+  ///   guard so the user can re-tap "前往系统设置" after
+  ///   returning from the system settings page.
+  Future<void> refreshPermissionStatus() async {
+    if (_disposed || !ref.mounted) {
+      return;
+    }
+    if (state.permission == RecordingPermissionStatus.checking) {
+      return;
+    }
+    final RecordingPermissionStatus previousPermission = state.permission;
+    state = state.copyWith(
+      permission: RecordingPermissionStatus.checking,
+      clearLastError: true,
+    );
+    MicrophonePermissionStatus status;
+    try {
+      status = await _permission.checkStatus();
+    } on Object catch (e) {
+      if (_disposed || !ref.mounted) {
+        return;
+      }
+      state = state.copyWith(
+        permission: previousPermission,
+        lastError: '权限服务异常：$e',
+      );
+      return;
+    }
+    if (_disposed || !ref.mounted) {
+      return;
+    }
+    // T038B: the user is back from the system settings
+    // page. Release the openAppSettings re-entrancy guard
+    // so a follow-up tap (e.g. the user re-denied and
+    // wants to re-enter the system settings page) can
+    // proceed.
+    _openingAppSettings = false;
+    state = state.copyWith(
+      permission: _mapPermissionStatus(status),
     );
   }
 

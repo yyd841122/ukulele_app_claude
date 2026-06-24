@@ -339,3 +339,34 @@
 - ✅ 未把"用户未观察到崩溃"写成"测试证明无崩溃"
 - ✅ 未把"既有 MA 项未跑"误归为本轮 PASS
 - ✅ 未触发 `git push` / `git tag` / `git commit --amend` / `git rebase` / `git reset --hard`
+---
+
+## T038B 追加段 (2026-06-24)
+
+### T038B Permission Acceptance Results
+
+T038B 在 T038 既有的 HUAWEI CDY-AN90 / Android 10 单台真机上完成用户可见文案 + 系统设置恢复路径的补充验证, **T038 Permission first-request acceptance Blocker 标记为 RESOLVED**。
+
+#### T038B 真机验收结果 (用户逐项确认)
+
+| # | 检查项 | 结果 | 来源 | 证据类型 |
+| --- | --- | --- | --- | --- |
+| 1 | 拒绝后状态卡显示 "麦克风权限已拒绝" (无"永久拒绝"字样) | **PASS** | User confirmed | 用户真机行为观察 |
+| 2 | 引导文案 "请前往系统设置开启麦克风权限后重试" 可见 | **PASS** | User confirmed | 用户真机行为观察 |
+| 3 | "前往系统设置" 按钮存在 | **PASS** | User confirmed | 用户真机行为观察 |
+| 4 | 点击按钮跳转 com.yupi.ukulele 系统设置页 | **PASS** | User confirmed | 用户真机行为观察 |
+| 5 | 开启权限后返回 App, 权限状态恢复 | **PASS** | User confirmed | 用户真机行为观察 |
+| 6 | 再次点击开始录音能正常录音/停止/回放 | **PASS** | User confirmed（听觉） | 用户真实听觉确认 |
+| 7 | 既有 2 个 temp m4a + ukulele.db 未丢失 | **PASS** | run-as 实测 | 设备文件系统 |
+| 8 | 拒绝期间 `recorder.start` 调用次数为 0 | **PASS** | 自动化测试 + Controller 源码 | 既有 + T038B 自动化覆盖 |
+
+#### T038B 自动化覆盖
+
+- **Tests Added or Updated**: ~14 个 T038B 相关测试 (11 controller + 4 page, 部分合并既有)
+- **Exact Test Count**: 711 (基线 698 + T038B 新增 13)
+- **flutter analyze**: clean
+- **flutter test**: 711/711 PASS
+
+#### T038B 详细文档
+
+详见 `docs/qa/REAL_AUDIO_T038B_QA.md` (本任务新建 doc)。

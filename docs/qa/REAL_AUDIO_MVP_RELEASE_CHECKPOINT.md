@@ -632,3 +632,36 @@
 - ✅ 未触发 `dart format lib` 写盘动作
 - ✅ 未绕过 EMUI ROM 实际行为（不卸载重装 / 不 `pm reset-permissions` / 不 `adb install --force-reinstall`）
 - ✅ 未读取 keystore 密码 / alias / 敏感路径
+
+---
+
+## T038B 追加段 (2026-06-24)
+
+### T038B 任务结论
+
+T038B 在 T038 既有的 HUAWEI CDY-AN90 / Android 10 单台真机上, 完成用户可见文案统一 + 系统设置恢复路径 + 生命周期重检, **T038 Permission first-request acceptance Blocker 标记为 RESOLVED**; T038 Release Checkpoint 状态由 **PENDING / NOT APPROVED** (BLOCKED_BY_PERMISSION_ACCEPTANCE) 升级到 **READY_FOR_GO_NO_GO_REVIEW**。
+
+### T038B 关键数据
+
+| 字段 | 值 |
+| --- | --- |
+| Task ID | `T038B_FIX_PERMISSION_DENIED_COPY_AND_SETTINGS_RECOVERY` |
+| 基线 Commit | `18557ab32fcffaa5f794d95bc63cb2dbd20bfb63` (与 T038 一致) |
+| HEAD (最终) | `18557ab32fcffaa5f794d95bc63cb2dbd20bfb63` (**不**主动 commit, **不**push) |
+| **Code Changes** | **4 个 lib/test 文件** (2 生产 + 2 测试) |
+| **Tests Added or Updated** | **~14 个 T038B 相关测试** (11 controller + 4 page, 部分合并既有) |
+| **Exact Test Count** | **711** (基线 698 + T038B 新增 13) |
+| 设备 | HUAWEI CDY-AN90 / Android 10 / API 29 (与 T038 同) |
+| 真机验证 | 8/8 项用户逐项确认通过 |
+| Reviewer 结论 | **4/4 Approved, 0 Blocker** |
+| T038 Blocker 影响 | **RESOLVED** (详见 `docs/qa/REAL_AUDIO_T038B_QA.md`) |
+
+### T038B 释放的 Acceptance Decision
+
+- T038 既有的 19 项 Checkpoint Matrix **不**修改任何 PASS / FAIL / NOT RUN 标记。
+- T038 既有的 Permissions and Privacy / Build Verification / Signing Result / Format Drift Audit / Multi-Agent Review / Acceptance Decision / Command Discipline / Safety Boundary 段落**不**修改。
+- T038B 新增段仅**追加**, **不**覆盖既有内容。
+
+### T038B 详细文档
+
+详见 `docs/qa/REAL_AUDIO_T038B_QA.md` (本任务新建 doc)。

@@ -284,3 +284,12 @@
   - **若 Release APK / AAB FAIL 或权限流程关键项 FAIL 或 698 测试 FAIL 或有 Blocker**：Checkpoint **不通过**；可输出失败报告；**不**提交"通过"Checkpoint；**不**push / tag；推荐独立修复任务。
   - **T038 当前决策**：T038 整体 = **PENDING / NOT APPROVED**（`BLOCKED_BY_PERMISSION_ACCEPTANCE`）—— 构建与签名检查全部 PASS + 真实音频既有闭环人工验证 PASS + Flutter Release / Android Signing Approved + Audio QA / Compliance Conditional Approval + Blocker；首次权限申请仍为 NOT RUN / 设备行为异常；总 Blocker 数 = **1**（`Permission first-request acceptance unresolved`），**不**是"0 Blockers"。
 - **遗留技术债（不属于本任务范围）**：① 23 个 Dart 文件格式漂移（建议独立 `T038A_FIX_DART_FORMAT_DRIFT_BATCH_FORMAT`）；② 真实设备权限首次申请 ROM 行为与 `permission_handler 12.0.3` 单元测试预期不一致（建议独立 `T038B_FIX_PERMISSION_FIRST_REQUEST_REAL_DEVICE_PROMPT`）；③ 国产 ROM 兼容性（HUAWEI / 小米 / OPPO / vivo / 三星）必须由真机用户验收 —— 本任务**不**越界覆盖（指向 `docs/qa/REAL_AUDIO_ANDROID_ACCEPTANCE.md` 单设备限制）；④ App 启动时清理孤儿 temp 文件的机制**未**实现（`AudioFileStorageService.ensureDirectories` 只确保目录存在，不扫描 stale `temp/*.m4a`）；⑤ native 录音 / 播放 stop 失败后是否真的停止仍依赖 service-layer 反馈（service 抛错 = black-box，native 仍可能在跑）；⑥ Crash / ANR / `am_crash` 等 Native 信号需要引入 `flutter_driver` / `integration_test` 端到端 crash hook 或 Sentry 等崩溃监控。
+
+### T038B 追加状态备注 (2026-06-24)
+
+- **T038B 任务范围**：T038B 完成用户可见文案统一 ("麦克风权限已拒绝" 替换"麦克风权限已永久拒绝", denied / permanentDenied 两状态文案完全相同) + 新增"前往系统设置"引导面板 (文案"请前往系统设置开启麦克风权限后重试") + 新增 `controller.openAppSettings()` (委托既有 `MicrophonePermissionService.openSettings()` → `permission_handler.openAppSettings()` 官方 API) + 新增 `controller.refreshPermissionStatus()` (重新读权限, **不**自动开始录音) + page 端 `WidgetsBindingObserver` 在 `AppLifecycleState.resumed` 时自动重检权限。
+- **T038B 实际修改文件**: 4 个 lib/test + 5 个 doc + 1 个新 doc = 10 个文件; 严格守住范围, **不**修改 pubspec / Manifest / Gradle / Drift / 录音服务 / 播放服务 / 存储服务 / INTERNET 权限 / 版本号 / `key.properties` / `.gitignore` / keystore。
+- **T038B 自动化测试**: 711 项通过 (基线 698 + T038B 新增 13); `flutter analyze` clean; 4 个 Reviewer 全部 Approved, 0 Blocker。
+- **T038B 真机验证 (HUAWEI CDY-AN90 / Android 10 / API 29)**: 8/8 项用户逐项确认通过; 既有 2 个 temp m4a + ukulele.db + flutter_assets + res_timestamp-* 完整保留。
+- **T038 Blocker 影响**: `Permission first-request acceptance unresolved` 标记为 **RESOLVED**; T038 Release Checkpoint 状态由 PENDING / NOT APPROVED (BLOCKED_BY_PERMISSION_ACCEPTANCE) 升级到 **READY_FOR_GO_NO_GO_REVIEW** (**不**自动写为 Approved; 由 GPT 首席架构师复审后决定)。
+- **T038B 详细文档**: `docs/qa/REAL_AUDIO_T038B_QA.md` (本任务新建 doc, 完整证据 + 根因分析 + 三步反思 + T038 Blocker 解决条件核对 + 后续建议)。

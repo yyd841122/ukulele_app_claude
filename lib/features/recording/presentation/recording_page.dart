@@ -93,7 +93,8 @@ class RecordingPage extends ConsumerStatefulWidget {
   ConsumerState<RecordingPage> createState() => _RecordingPageState();
 }
 
-class _RecordingPageState extends ConsumerState<RecordingPage> {
+class _RecordingPageState extends ConsumerState<RecordingPage>
+    with WidgetsBindingObserver {
   /// T037B — exit-coordination re-entrancy guard. While an
   /// exit is in flight (we are awaiting the controller's
   /// [RecordingPracticeController.requestStopForPageExit] OR
@@ -105,6 +106,58 @@ class _RecordingPageState extends ConsumerState<RecordingPage> {
   /// a plain bool — the page is single-threaded on the UI
   /// isolate and no async gap exists between read and write.
   bool _exitInFlight = false;
+
+  /// T038B — openAppSettings re-entrancy guard. Mirrors the
+  /// `_exitInFlight` pattern: a rapid double-tap on the
+  /// "前往系统设置" button must NOT queue two
+  /// `permission_handler.openAppSettings()` calls. The guard
+  /// is intentionally a plain bool — the page is single-
+  /// threaded on the UI isolate and no async gap exists
+  /// between read and write.
+  bool _openingSettings = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // T038B — wire the WidgetsBindingObserver so the page
+    // can re-check the microphone permission status when the
+    // app returns to the foreground (i.e. after the user
+    // toggles the permission in the system settings page
+    // and swipes / presses back into the app). The observer
+    // is a no-op for unrelated lifecycle transitions.
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    // T038B — remove the WidgetsBindingObserver to avoid
+    // late-fire callbacks after the widget tree is torn down.
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // T038B — when the app comes back to the foreground
+    // (e.g. after the user has toggled the microphone
+    // permission in the system settings page), re-read the
+    // platform-side status so the controller state machine
+    // immediately reflects the new value. We deliberately
+    // do NOT auto-start a recording on resume — the user
+    // must still tap "开始录音" explicitly (this is the
+    // T025 / T031 "no permission auto-start" contract).
+    if (state == AppLifecycleState.resumed && mounted) {
+      // T038B: release the page-level `_openingSettings`
+      // guard so a follow-up tap on "前往系统设置" is
+      // honoured now that the user is back in the app.
+      _releaseOpeningSettings();
+      // ignore: discarded_futures
+      ref
+          .read(recordingPracticeControllerProvider.notifier)
+          .refreshPermissionStatus();
+    }
+    super.didChangeAppLifecycleState(state);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -167,6 +220,26 @@ class _RecordingPageState extends ConsumerState<RecordingPage> {
               const SizedBox(height: 16),
               // Live status card.
               StatusCard(state: state),
+              // T038B — permission-denied guidance panel. Shows
+              // a short instruction and a "前往系统设置" button
+              // when the user-visible permission state is
+              // `denied` or `permanentDenied`. The two states
+              // are intentionally mapped to the same visible
+              // copy (the user should never see "永久拒绝");
+              // the button is always enabled so the user can
+              // jump to the system settings page even on a
+              // freshly-denied state — the system itself may
+              // have flagged the app with `USER_FIXED` even
+              // before the user has been routed through the
+              // permission dialog a second time, and the
+              // recovery path is the same in both cases.
+              if (state.permission == RecordingPermissionStatus.denied ||
+                  state.permission == RecordingPermissionStatus.permanentDenied)
+                _PermissionDeniedGuidance(
+                  state: state,
+                  inFlight: _openingSettings,
+                  onOpenSettings: _onOpenSettingsPressed,
+                ),
               const SizedBox(height: 16),
               // MM:SS timer.
               ElapsedDisplay(state: state),
@@ -355,6 +428,90 @@ class _RecordingPageState extends ConsumerState<RecordingPage> {
       return;
     }
     context.go('/');
+  }
+
+  /// T038B — "前往系统设置" button chokepoint.
+  ///
+  /// Drives the controller's [openAppSettings] (which
+  /// delegates to `permission_handler`'s `openAppSettings()`)
+  /// when the user is on the denied / permanentDenied
+  /// guidance panel. Guards against re-entrancy: a rapid
+  /// double-tap on the button must NOT queue two system-
+  /// settings launches.
+  ///
+  /// The page-level guard mirrors the controller's
+  /// `[_openingAppSettings]` flag so the button can
+  /// render a "打开中…" disabled state while the OS
+  /// settings page is in flight. The guard is released
+  /// either:
+  ///  - by [didChangeAppLifecycleState] when the app
+  ///    returns to the foreground (i.e. the user came
+  ///    back from the system settings page);
+  ///  - by [_runOpenSettings] if the controller
+  ///    reports a launch failure (the OS refused to
+  ///    open the settings page — the user can re-tap
+  ///    immediately).
+  void _onOpenSettingsPressed() {
+    if (_openingSettings) {
+      return;
+    }
+    _openingSettings = true;
+    // ignore: discarded_futures
+    _runOpenSettings();
+  }
+
+  Future<void> _runOpenSettings() async {
+    final RecordingPracticeController controller = ref.read(
+      recordingPracticeControllerProvider.notifier,
+    );
+    await controller.openAppSettings();
+    if (!mounted) {
+      // The widget was disposed while we awaited. The
+      // page is on its way out — no need to release the
+      // guard (it dies with the State).
+      return;
+    }
+    final String? error =
+        ref.read(recordingPracticeControllerProvider).lastError;
+    if (error != null && error.contains('打开系统设置')) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          key: const ValueKey<String>(
+            'recording-open-app-settings-failure-snackbar',
+          ),
+          content: Text(error),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+      // T038B: the OS refused to launch the settings
+      // page. Release the guard so the user can re-tap
+      // immediately. The "happy path" (settings page
+      // launched) keeps the guard set — it is released
+      // by [didChangeAppLifecycleState] when the app
+      // returns to the foreground.
+      _openingSettings = false;
+    }
+    // T038B: the success path intentionally does NOT
+    // release `_openingSettings` here. The OS is now
+    // showing the system settings page; the guard is
+    // released when the user comes back to the app
+    // (the [AppLifecycleState.resumed] handler below
+    // calls [refreshPermissionStatus], which itself
+    // releases the controller's guard; the page-level
+    // guard is released by [_releaseOpeningSettings]
+    // when the resume handler runs).
+  }
+
+  /// T038B — helper that releases the
+  /// `_openingSettings` re-entrancy guard. Called from
+  /// [didChangeAppLifecycleState] when the app returns
+  /// to the foreground after a system-settings round
+  /// trip.
+  void _releaseOpeningSettings() {
+    if (!_openingSettings) {
+      return;
+    }
+    _openingSettings = false;
   }
 
   /// Drives the save flow and surfaces the contract-mandated
@@ -809,6 +966,97 @@ class _SectionTitle extends StatelessWidget {
       style: theme.textTheme.titleSmall?.copyWith(
         color: theme.colorScheme.primary,
         fontWeight: FontWeight.w600,
+      ),
+    );
+  }
+}
+
+/// T038B — permission-denied guidance panel.
+///
+/// Renders the user-visible guidance text
+/// ("请前往系统设置开启麦克风权限后重试") and the
+/// "前往系统设置" action button when the controller's
+/// `permission` state is `denied` or `permanentDenied`.
+///
+/// The widget is intentionally a `StatelessWidget` (the page
+/// already owns the re-entrancy guard); it only reads the
+/// `inFlight` flag from the page so the button can show a
+/// "打开中…" disabled state while the OS settings page is
+/// being launched.
+///
+/// The widget NEVER displays "永久拒绝" — the user-facing
+/// copy is identical for both `denied` and `permanentDenied`
+/// states (the page never tells the user "you can never
+/// re-enable this"). The internal distinction is preserved
+/// in the controller state and used only to choose the
+/// recovery path (re-call `requestPermission` for `denied`,
+/// jump to system settings for `permanentDenied`); both
+/// paths are valid and the widget surfaces the same button
+/// in both cases because the system may flip the internal
+/// state mid-session.
+class _PermissionDeniedGuidance extends StatelessWidget {
+  const _PermissionDeniedGuidance({
+    required this.state,
+    required this.inFlight,
+    required this.onOpenSettings,
+  });
+
+  final RecordingPracticeState state;
+  final bool inFlight;
+  final VoidCallback onOpenSettings;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    return Container(
+      key: const ValueKey<String>('recording-permission-denied-guidance'),
+      margin: const EdgeInsets.only(top: 16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.errorContainer,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Icon(
+                Icons.settings_outlined,
+                size: 20,
+                color: theme.colorScheme.onErrorContainer,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '请前往系统设置开启麦克风权限后重试',
+                  key: const ValueKey<String>(
+                    'recording-permission-denied-guidance-text',
+                  ),
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onErrorContainer,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            key: const ValueKey<String>(
+              'recording-open-app-settings-button',
+            ),
+            onPressed: inFlight ? null : onOpenSettings,
+            icon: inFlight
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.open_in_new),
+            label: Text(inFlight ? '打开中…' : '前往系统设置'),
+          ),
+        ],
       ),
     );
   }

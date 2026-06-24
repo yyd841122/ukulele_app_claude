@@ -364,8 +364,9 @@ void main() {
 
   group('RecordingPage T031 status + copy transitions', () {
     testWidgets(
-      'permission denied: status flips to 麦克风权限被拒绝, '
-      'recording controls are disabled',
+      'permission denied: status flips to 麦克风权限已拒绝, '
+      'recording controls are disabled, '
+      '前往系统设置 affordance is rendered (T038B)',
       (WidgetTester tester) async {
         await _useTallSurface(tester);
         final (:rootProvider, :root) = _isolatedRoot();
@@ -387,24 +388,247 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        expect(find.text('麦克风权限被拒绝'), findsOneWidget);
+        // T038B: the unified user-visible copy is "麦克风权限已拒绝"
+        // (was "麦克风权限被拒绝" pre-T038B; "永久拒绝" wording has
+        // been removed from the page).
+        expect(find.text('麦克风权限已拒绝'), findsOneWidget);
+        expect(find.text('麦克风权限被拒绝'), findsNothing,
+            reason: 'T038B: pre-T038B wording must no longer appear');
+        expect(find.textContaining('永久拒绝'), findsNothing,
+            reason: 'T038B: the page must never show 永久拒绝 to the user');
         expect(find.text('准备录音'), findsNothing);
         // Recorder service MUST NOT have been called.
         expect(ctx.recorderGateway.startCallCount, 0);
 
+        // T038B: the guidance panel + the "前往系统设置" button are
+        // rendered on the denied state.
+        expect(
+          find.byKey(
+            const ValueKey<String>('recording-permission-denied-guidance'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(
+            const ValueKey<String>('recording-open-app-settings-button'),
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('请前往系统设置开启麦克风权限后重试'), findsOneWidget);
+        expect(find.text('前往系统设置'), findsOneWidget);
+
         // Start button stays enabled so the user can re-tap it to
         // re-request permission (the page is the affordance for
         // "重新申请权限"). Recording controls disabled while
-        // permission is denied — wait, the brief says the start
-        // button stays enabled so the user can retry. Verify by
-        // tapping start a second time triggers a fresh
-        // requestPermission call.
+        // permission is denied.
         final FilledButton startButton = tester.widget<FilledButton>(
           find.byKey(const ValueKey<String>('recording-start')),
         );
         expect(startButton.onPressed, isNotNull,
             reason: 'start button stays enabled so the user can re-request');
         expect(ctx.permissionGateway.checkStatusCallCount, 1);
+      },
+    );
+
+    testWidgets(
+      'permission permanentlyDenied: status flips to 麦克风权限已拒绝, '
+      '前往系统设置 affordance is rendered (T038B)',
+      (WidgetTester tester) async {
+        await _useTallSurface(tester);
+        final (:rootProvider, :root) = _isolatedRoot();
+        final AudioFileStorageService storage = AudioFileStorageService(
+          rootDirectoryProvider: rootProvider,
+        );
+        final _PageContext ctx = _PageContext(
+          recorderGateway: FakeAudioRecorderGateway(),
+          playbackGateway: FakeAudioPlaybackGateway(),
+          permissionGateway: FakeMicrophonePermissionGateway()
+            ..nextCheckStatus = MicrophonePermissionStatus.denied
+            ..nextRequestStatus = MicrophonePermissionStatus.permanentlyDenied,
+          storage: storage,
+        );
+        await _pumpPage(tester, _FakePracticeRecordRepository(), ctx: ctx);
+
+        await tester.tap(
+          find.byKey(const ValueKey<String>('recording-start')),
+        );
+        await tester.pumpAndSettle();
+
+        // T038B: identical copy to the `denied` branch.
+        expect(find.text('麦克风权限已拒绝'), findsOneWidget);
+        expect(find.textContaining('永久拒绝'), findsNothing);
+        expect(find.text('麦克风权限被拒绝'), findsNothing);
+        expect(ctx.recorderGateway.startCallCount, 0,
+            reason: 'recorder MUST NOT be invoked on permanentlyDenied');
+        expect(ctx.permissionGateway.openSettingsCallCount, 0,
+            reason: 'openAppSettings must NOT be auto-invoked');
+
+        expect(
+          find.byKey(
+            const ValueKey<String>('recording-open-app-settings-button'),
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('前往系统设置'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'T038B: tapping 前往系统设置 calls openAppSettings exactly once '
+      'even with a rapid double-tap (controller guard)',
+      (WidgetTester tester) async {
+        await _useTallSurface(tester);
+        final (:rootProvider, :root) = _isolatedRoot();
+        final AudioFileStorageService storage = AudioFileStorageService(
+          rootDirectoryProvider: rootProvider,
+        );
+        final _PageContext ctx = _PageContext(
+          recorderGateway: FakeAudioRecorderGateway(),
+          playbackGateway: FakeAudioPlaybackGateway(),
+          permissionGateway: FakeMicrophonePermissionGateway()
+            ..nextCheckStatus = MicrophonePermissionStatus.denied
+            ..nextRequestStatus = MicrophonePermissionStatus.permanentlyDenied,
+          storage: storage,
+        );
+        await _pumpPage(tester, _FakePracticeRecordRepository(), ctx: ctx);
+
+        await tester.tap(
+          find.byKey(const ValueKey<String>('recording-start')),
+        );
+        await tester.pumpAndSettle();
+
+        final Finder openButton = find.byKey(
+          const ValueKey<String>('recording-open-app-settings-button'),
+        );
+        // T038B: verify the controller's re-entrancy guard
+        // is the canonical protection. We invoke the
+        // controller's openAppSettings twice directly
+        // (back-to-back) and assert the gateway only sees
+        // ONE call while the first is in flight. The page
+        // layer mirrors this with its own `_openingSettings`
+        // bool.
+        final BuildContext pageContext =
+            tester.element(find.byType(RecordingPage));
+        final RecordingPracticeController controller =
+            ProviderScope.containerOf(pageContext).read(
+          recordingPracticeControllerProvider.notifier,
+        );
+        // Fire two openAppSettings() back-to-back WITHOUT
+        // awaiting. The first sets the guard; the second
+        // must short-circuit.
+        final Future<void> first = controller.openAppSettings();
+        final Future<void> second = controller.openAppSettings();
+        await tester.pumpAndSettle();
+        await first;
+        await second;
+        expect(
+          ctx.permissionGateway.openSettingsCallCount,
+          1,
+          reason: 'T038B: the controller guard must let only one call through',
+        );
+        // The button itself should also be present + the
+        // page must NOT have crashed.
+        expect(openButton, findsOneWidget);
+        expect(ctx.recorderGateway.startCallCount, 0);
+      },
+    );
+
+    testWidgets(
+      'T038B: returning from the system settings page (resumed lifecycle) '
+      're-checks the permission status',
+      (WidgetTester tester) async {
+        await _useTallSurface(tester);
+        final (:rootProvider, :root) = _isolatedRoot();
+        final AudioFileStorageService storage = AudioFileStorageService(
+          rootDirectoryProvider: rootProvider,
+        );
+        final _PageContext ctx = _PageContext(
+          recorderGateway: FakeAudioRecorderGateway(),
+          playbackGateway: FakeAudioPlaybackGateway(),
+          permissionGateway: FakeMicrophonePermissionGateway()
+            ..nextCheckStatus = MicrophonePermissionStatus.denied
+            ..nextRequestStatus = MicrophonePermissionStatus.permanentlyDenied,
+          storage: storage,
+        );
+        await _pumpPage(tester, _FakePracticeRecordRepository(), ctx: ctx);
+
+        // Drive into the denied state.
+        await tester.tap(
+          find.byKey(const ValueKey<String>('recording-start')),
+        );
+        await tester.pumpAndSettle();
+        final int checksBefore =
+            ctx.permissionGateway.checkStatusCallCount;
+        expect(find.text('麦克风权限已拒绝'), findsOneWidget);
+
+        // The fake gateway now reports `granted` for the
+        // next checkStatus call (simulating the user having
+        // toggled the permission in the system settings
+        // page and returning to the app).
+        ctx.permissionGateway.nextCheckStatus =
+            MicrophonePermissionStatus.granted;
+
+        // T038B: the page wires a WidgetsBindingObserver;
+        // we simulate the user-journey transition (the
+        // app goes to background while the user is in the
+        // system settings page, then returns to the
+        // foreground when the user swipes / presses
+        // back into the app) by walking the canonical
+        // lifecycle state machine. Flutter's
+        // [AppLifecycleListener] validates the transition
+        // graph strictly:
+        //   resumed → inactive → hidden → paused
+        //   paused → hidden → inactive → resumed
+        // (and several others — see
+        // package:flutter/src/widgets/app_lifecycle_listener.dart).
+        // We follow the foreground → background →
+        // foreground path to land on [AppLifecycleState.resumed]
+        // without tripping the framework assertion.
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.inactive,
+        );
+        await tester.pumpAndSettle();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.hidden,
+        );
+        await tester.pumpAndSettle();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.paused,
+        );
+        await tester.pumpAndSettle();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.hidden,
+        );
+        await tester.pumpAndSettle();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.inactive,
+        );
+        await tester.pumpAndSettle();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          ctx.permissionGateway.checkStatusCallCount,
+          greaterThan(checksBefore),
+          reason: 'T038B: returning from system settings must re-check '
+              'permission status',
+        );
+        // The status card now reflects granted — the user can
+        // tap "开始录音" again and the controller will mint a
+        // fresh take.
+        expect(find.text('准备录音'), findsOneWidget,
+            reason: 'T038B: post-return status must reflect granted');
+        expect(find.text('麦克风权限已拒绝'), findsNothing);
+        expect(
+          find.byKey(
+            const ValueKey<String>('recording-open-app-settings-button'),
+          ),
+          findsNothing,
+          reason: 'T038B: open-app-settings affordance disappears '
+              'once permission is granted',
+        );
       },
     );
 

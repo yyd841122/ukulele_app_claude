@@ -61,7 +61,11 @@ void main() {
       expect(find.byType(ChordDiagram), findsOneWidget);
     });
 
-    testWidgets('renders all four chords', (WidgetTester tester) async {
+    testWidgets('renders all shipped chords', (WidgetTester tester) async {
+      // T053: the built-in library now ships 7 chords (C / Am / F / G
+      // / G7 / Dm / Em). The widget count is derived from
+      // [kBuiltInChords] so the assertion stays honest as the library
+      // grows.
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
@@ -78,7 +82,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.byType(ChordDiagram), findsNWidgets(4));
+      expect(find.byType(ChordDiagram), findsNWidgets(kBuiltInChords.length));
     });
   });
 

@@ -22,6 +22,14 @@ void main() {
   group('ChordLibraryPage', () {
     testWidgets('renders title, blurb and a card for every chord',
         (WidgetTester tester) async {
+      // Bump the test viewport so all 7 cards fit without scrolling
+      // — T053 added G7 / Dm / Em to the library, so the page is
+      // taller than the default 800×600 test surface.
+      tester.view.physicalSize = const Size(800, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
       await tester.pumpWidget(
         ProviderScope(
           child: MaterialApp(

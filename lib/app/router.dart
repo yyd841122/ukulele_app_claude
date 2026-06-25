@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import 'package:ukulele_app/features/chord_library/presentation/chord_detail_page.dart';
 import 'package:ukulele_app/features/chord_library/presentation/chord_library_page.dart';
+import 'package:ukulele_app/features/chord_practice/presentation/chord_practice_page.dart';
 import 'package:ukulele_app/features/home/presentation/home_page.dart';
 import 'package:ukulele_app/features/lesson_c_am_down_4x4/presentation/lesson_page.dart';
 import 'package:ukulele_app/features/metronome/presentation/metronome_page.dart';
@@ -56,6 +57,18 @@ final GoRouter appRouter = GoRouter(
           ),
         ),
       ],
+    ),
+    GoRoute(
+      // T053: 7-chord switchable practice surface. Deliberately a
+      // *separate* path from `/chords` — the library page is the
+      // read-only reference (T008), while the practice page is the
+      // "pick one and switch" training surface. Keeping the routes
+      // independent avoids leaking practice state into the library
+      // navigation and lets each page evolve on its own.
+      path: '/chord-practice',
+      name: 'chord-practice',
+      builder: (BuildContext context, GoRouterState state) =>
+          const ChordPracticePage(),
     ),
     GoRoute(
       path: '/metronome',

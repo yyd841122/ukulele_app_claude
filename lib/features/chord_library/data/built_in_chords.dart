@@ -13,6 +13,13 @@
 //   the rightmost column, which is the conventional orientation used
 //   by most beginner chord charts.
 //
+// T053 extension:
+// - Three additional beginner-friendly chords (G7 / Dm / Em) are
+//   appended to the list so the `ChordPracticePage` can show the
+//   canonical 7-chord "first-week" set as a single switchable view.
+//   The model / `ChordFingering.validate` shape is unchanged — T053
+//   only consumes the existing data, no schema migration is needed.
+//
 // Voicings below are the *most common* beginner voicings as
 // documented by mainstream ukulele learning resources (UkuTabs,
 // Ukulele Underground, Justin Guitar ukulele track, etc.):
@@ -37,8 +44,33 @@ import 'package:ukulele_app/features/chord_library/domain/chord.dart';
 import 'package:ukulele_app/features/chord_library/domain/chord_difficulty.dart';
 import 'package:ukulele_app/features/chord_library/domain/chord_fingering.dart';
 
-/// The four chords shipped with the MVP, ordered as displayed in the
+/// The seven chords shipped with the MVP, ordered as displayed in the
 /// library list. Ordering is stable — do not re-sort in the UI.
+///
+/// T053 extends the T008 set (C / Am / F / G) with three extra
+/// beginner-friendly chords (G7 / Dm / Em) so the practice page can
+/// show all seven canonical "first-week" ukulele chords in a single
+/// switchable view. Voicings below are the standard beginner shapes
+/// as documented by mainstream ukulele learning resources
+/// (UkuTabs, Ukulele Underground, Justin Guitar ukulele track):
+///
+///   C  : A3            — 1 finger (ring on A string fret 3)
+///   Am : G2            — 1 finger (middle on G string fret 2)
+///   F  : E1 + G2       — 2 fingers (index on E string fret 1,
+///                                   middle on G string fret 2)
+///   G  : C2 + E3 + A2  — 3 fingers (index on C string fret 2,
+///                                   middle on E string fret 3,
+///                                   ring on A string fret 2)
+///   G7 : C2 + E1 + A2  — 3 fingers (index on E string fret 1,
+///                                   middle on C string fret 2,
+///                                   ring on A string fret 2)
+///   Dm : E1 + G2       — 2 fingers (index on E string fret 1,
+///                                   middle on G string fret 2)
+///   Em : C4            — 1 finger (index on C string fret 4)
+///
+/// Fret arrays below are stored string 1..4 (A, E, C, G), left-to-right
+/// in the rendered diagram. Tests pin these arrays so a typo in the
+/// constants is caught by CI rather than by a beginner at 23:00.
 final List<Chord> kBuiltInChords = <Chord>[
   // ---- C major ----
   // Standard 1-finger voicing on high-G ukulele.
@@ -177,6 +209,112 @@ final List<Chord> kBuiltInChords = <Chord>[
       '3 根手指呈"小楼梯"形状，立起来按弦。',
     ],
     relatedChordIds: <String>['c', 'am', 'f'],
+  ),
+
+  // ---- G dominant 7 ----
+  // Standard 3-finger voicing — same shape family as G major but with
+  // the middle finger dropped to the E string fret 1 (F note) instead
+  // of fret 3 (G note). Resulting notes (A..G): B, F, D, G  → G7
+  // (G, B, D, F).
+  Chord(
+    id: 'g7',
+    name: 'G7',
+    displayName: 'G7 和弦',
+    description: 'G 属七和弦。G 和弦的“蓝调味”变体，少一根手指，常用在流行歌转位。',
+    difficulty: ChordDifficulty.intermediate,
+    voicings: <ChordFingering>[
+      ChordFingering(
+        startFret: 1,
+        maxFretShown: 4,
+        stringPositions: <ChordStringPosition>[
+          // String 1 = A. fret 2 → B. Ring finger.
+          ChordStringPosition(stringNumber: 1, fret: 2, finger: 3),
+          // String 2 = E. fret 1 → F. Index finger.
+          ChordStringPosition(stringNumber: 2, fret: 1, finger: 1),
+          // String 3 = C. fret 2 → D. Middle finger.
+          ChordStringPosition(stringNumber: 3, fret: 2, finger: 2),
+          // String 4 = G. open.
+          ChordStringPosition(stringNumber: 4, fret: 0),
+        ],
+      ),
+    ],
+    tips: <String>[
+      '把 G 和弦的中指从 2 弦第 3 品挪到 3 弦第 2 品，食指改按 2 弦第 1 品。',
+      '4 弦（G 弦）保持空弦。',
+      'G → G7 的切换只动 1 根手指，是练转位的最便宜起步。',
+    ],
+    relatedChordIds: <String>['c', 'g', 'f'],
+  ),
+
+  // ---- D minor ----
+  // 2-finger beginner voicing. Resulting notes (A..G): A, F, C, A
+  // — Dm chord (D, F, A) with the D root omitted (a common sparse
+  // beginner voicing; sounds clearly minor and resolves cleanly to
+  // C / F / G). Same physical shape as F major; labelled "Dm"
+  // because the open strings turn it into a Dm sound.
+  Chord(
+    id: 'dm',
+    name: 'Dm',
+    displayName: 'Dm 和弦',
+    description: 'D 小三和弦的简化按法。和 F 和弦同形，听感上低半音、偏忧郁。',
+    difficulty: ChordDifficulty.easy,
+    voicings: <ChordFingering>[
+      ChordFingering(
+        startFret: 1,
+        maxFretShown: 4,
+        stringPositions: <ChordStringPosition>[
+          // String 1 = A. open.
+          ChordStringPosition(stringNumber: 1, fret: 0),
+          // String 2 = E. fret 1 → F. Index finger.
+          ChordStringPosition(stringNumber: 2, fret: 1, finger: 1),
+          // String 3 = C. open.
+          ChordStringPosition(stringNumber: 3, fret: 0),
+          // String 4 = G. fret 2 → A. Middle finger.
+          ChordStringPosition(stringNumber: 4, fret: 2, finger: 2),
+        ],
+      ),
+    ],
+    tips: <String>[
+      '指型与 F 和弦完全相同，听感上更低、更忧郁。',
+      '食指按 2 弦（E 弦）第 1 品，中指按 4 弦（G 弦）第 2 品。',
+      '从 F 切换到 Dm 手指不用动，只要在心理上“降半音”即可。',
+    ],
+    relatedChordIds: <String>['f', 'am', 'g'],
+  ),
+
+  // ---- E minor ----
+  // 1-finger beginner voicing. Resulting notes (A..G): A, E, E, G
+  // → Em chord (E, G, B) with the B 5th omitted and the A 4th
+  // doubled; sounds clearly minor and is the easiest way to start
+  // a minor-chord progression. Finger sits on the C string fret 4.
+  Chord(
+    id: 'em',
+    name: 'Em',
+    displayName: 'Em 和弦',
+    description: 'E 小三和弦的简化按法。只需要一根手指按 3 弦第 4 品，听感低沉。',
+    difficulty: ChordDifficulty.beginner,
+    voicings: <ChordFingering>[
+      ChordFingering(
+        startFret: 1,
+        maxFretShown: 4,
+        stringPositions: <ChordStringPosition>[
+          // String 1 = A. open.
+          ChordStringPosition(stringNumber: 1, fret: 0),
+          // String 2 = E. open.
+          ChordStringPosition(stringNumber: 2, fret: 0),
+          // String 3 = C. fret 4 → E. Index finger.
+          ChordStringPosition(stringNumber: 3, fret: 4, finger: 1),
+          // String 4 = G. open.
+          ChordStringPosition(stringNumber: 4, fret: 0),
+        ],
+      ),
+    ],
+    tips: <String>[
+      '只需要一根手指：食指按 3 弦（C 弦）第 4 品。',
+      '其他 3 根弦保持空弦，听起来是低沉的 E 小调。',
+      '从 C / Am 切到 Em 时 1 弦、2 弦、4 弦都不用动，只下移 3 弦。',
+    ],
+    relatedChordIds: <String>['am', 'c', 'g'],
   ),
 ];
 

@@ -6,6 +6,11 @@
 //   fret ranges, no spurious finger indices on open / muted strings).
 // - Spot-check the displayed fret values so a typo in the constants
 //   is caught by tests, not by a beginner at 23:00.
+//
+// T053 extension:
+// - The library now ships 7 chords (the T008 four + G7 / Dm / Em).
+//   The length and id-set assertions are widened; the per-chord
+//   structural assertions already cover the new entries.
 
 import 'package:flutter_test/flutter_test.dart';
 
@@ -16,11 +21,14 @@ import 'package:ukulele_app/features/chord_library/domain/chord_fingering.dart';
 
 void main() {
   group('kBuiltInChords', () {
-    test('contains C, Am, F, G', () {
+    test('contains C, Am, F, G, G7, Dm, Em (T053 = 7 chords)', () {
       final List<String> ids =
           kBuiltInChords.map((Chord c) => c.id).toList();
-      expect(ids, containsAll(<String>['c', 'am', 'f', 'g']));
-      expect(kBuiltInChords.length, 4);
+      expect(
+        ids,
+        containsAll(<String>['c', 'am', 'f', 'g', 'g7', 'dm', 'em']),
+      );
+      expect(kBuiltInChords.length, 7);
     });
 
     test('every chord has exactly 4 strings per voicing', () {
@@ -104,6 +112,36 @@ void main() {
           .map((ChordStringPosition p) => p.fret)
           .toList();
       expect(frets, <int?>[2, 3, 2, 0]);
+    });
+
+    test('G7 chord uses fret 2,1,2,0 on strings 1-4', () {
+      final Chord c = kBuiltInChords.firstWhere(
+        (Chord ch) => ch.id == 'g7',
+      );
+      final List<int?> frets = c.primaryVoicing.stringPositions
+          .map((ChordStringPosition p) => p.fret)
+          .toList();
+      expect(frets, <int?>[2, 1, 2, 0]);
+    });
+
+    test('Dm chord uses fret 0,1,0,2 on strings 1-4 (T053 = 2-finger)', () {
+      final Chord c = kBuiltInChords.firstWhere(
+        (Chord ch) => ch.id == 'dm',
+      );
+      final List<int?> frets = c.primaryVoicing.stringPositions
+          .map((ChordStringPosition p) => p.fret)
+          .toList();
+      expect(frets, <int?>[0, 1, 0, 2]);
+    });
+
+    test('Em chord uses fret 0,0,4,0 on strings 1-4 (T053 = 1-finger)', () {
+      final Chord c = kBuiltInChords.firstWhere(
+        (Chord ch) => ch.id == 'em',
+      );
+      final List<int?> frets = c.primaryVoicing.stringPositions
+          .map((ChordStringPosition p) => p.fret)
+          .toList();
+      expect(frets, <int?>[0, 0, 4, 0]);
     });
 
     test('every chord declares a difficulty', () {

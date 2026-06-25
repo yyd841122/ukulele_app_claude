@@ -423,3 +423,46 @@
 - **未**修改生产代码 / 测试代码（除本任务唯一新增 `test/tool/verify_release_artifacts_test.dart`）/ 依赖 / Android 配置 / Drift schema / `app_database.g.dart` / `PracticeRecord` 域模型 / Repository / DAO / `audioFilePath` 字段 / `RealAudioRecorderService` / `RealAudioPlaybackService` / `AudioFileStorageService` / `MicrophonePermissionService` / Manifest / 隐私政策 / `key.properties` / `.gitignore` / keystore / 构建产物 / 既有 T006-T039 任何台账条目 / 既有 TD-001 ~ TD-021 任何条目。
 - **T040 详细文档**：`docs/dev/TASK_LEDGER.md` T040 节段（**仅**追加） + `docs/dev/AGENT_QUALITY_METRICS.md` §4.28 T040 Scorecard（**仅**追加） + `docs/dev/TECH_DEBT.md` TD-022 本闭环说明段（**仅**追加） = 3 个 doc 文件 + `tool/verify_release_artifacts.dart` + `test/tool/verify_release_artifacts_test.dart` = **5 个文件**（2 代码 + 3 doc）。
 - **下一任务**（按 brief）：T041+（建议方向：① T022 verifier 增量场景覆盖 —— Release 证书与 Debug 证书"matched" 失败路径 / AAB jarsigner exit != 0 失败路径 / `parseExpectedVersion` 解析失败 → `_FailFast` exit 2 路径；② `.gitignore` 追加 `*.apk` + `*.aab` 显式模式（T038C Reviewer 提示）；③ KGP → Built-in Kotlin 迁移；④ iOS TestFlight 闭环（TD-003）；⑤ 国产 ROM 兼容性补测（TD-013 小米 / OPPO / vivo / 三星）；⑥ 23 个 Dart 格式漂移延后独立处理）。
+
+## TD-023: T047B F-1 T047 ledger `else if` 措辞遗留 — 登记
+
+- **问题**：T047 既有 ledger 条目（`docs/dev/TASK_LEDGER.md` line 470）保留已废弃 `else if` 措辞（描述 T047 v0.3 错误的"if / else if 精确分支对"作为历史快照）。T047B v0.4 勘误后该措辞已被 §3.8(b) 累进式 `if (from < N)` 链替代，但 T047 既有 ledger 条目作为历史台账**未**回溯修改（属 T047 历史 ledger 措辞遗留）。
+- **影响**：对当前功能 / 维护成本 / 用户体验**无**实际影响；仅 ledger 措辞与 v0.4 设计轻微不一致；可能让阅读者误以为 v0.4 仍推荐 `else if` 链（实际 v0.4 已显式禁用）。
+- **优先级**：**Low**（不阻塞 P1；不阻塞 v1.1.0 Release / 商店 / 真机 / 验收；不影响 Drift schemaVersion 行为）。
+- **建议处理阶段**：P1 关闭门后任意 P2+ 任务顺手修（建议 T051+ 任意 ledger audit 任务；或留 ROADMAP cleanup 独立任务）。
+- **状态**：**待处理**（不阻塞 P1）。
+- **T049 Implementation Plan 误读防护**：(1) `docs/architecture/IMPLEMENTATION_PLAN_PRODUCT_V2_PHASE1.md` §6 显式记录"不复制 `else if` 措辞（统一为'累进式 `if (from < N)` 链'）"；(2) §6 显式登记本条 TD-023 + 链接；(3) §6 引用 SDD v0.4 §3.8(b) 累进式为唯一权威设计；(4) 任何后续 Implementation Task 启动前必须读 T047B Scorecard + 本 Implementation Plan §6 + TD-023 / TD-024。
+- **T049A 关闭门依据**：`t049a-implementation-plan-reviewer`（subagent `ac0c16877010ab8a5`）r1 → final **Approved**（0 Findings，0 Blocker，0 Approved with Conditions），显式审计通过"T047B F-1 / F-2 登记 TD-023 / TD-024 + 显式记录在 §6"。
+
+## TD-024: T047B F-2 ROADMAP P4 Curriculum schemaVersion 2→3 vs 3→4 冲突 — 登记
+
+- **问题**：`docs/ROADMAP.md` P4 Curriculum 行（第 3 节 P4 描述）写"Drift schemaVersion=2 → 3（含 P2 `scores` 表列对齐）"，与实际 P4 升级路径 3→4（SDD v0.4 §3.8 / §5 显式说明 P2 占 2→3 名额 / P4 占 3→4 名额）冲突。属 T047A → T047B 跨阶段编号独立化过程中残留的旧表述（v0.3 阶段 P2 与 P4 同时占用 schemaVersion=3 编号，后 v0.4 勘误将 P4 升级目标改为 schemaVersion=4）。
+- **影响**：对当前功能 / 维护成本 / 用户体验**无**实际影响；ROADMAP 文本与 SDD v0.4 实际设计轻微不一致；可能让阅读者误以为 P4 升级会到 schemaVersion=3（实际是 schemaVersion=4）；仅 P4 阶段启动前需要解决。
+- **优先级**：**Low**（不阻塞 P1；不阻塞 v1.1.0 Release / 商店 / 真机 / 验收；P1 schemaVersion=2 保持与本条无关；冲突属 P4 阶段）。
+- **建议处理阶段**：P4 Curriculum 阶段启动前 1 个独立 ROADMAP cleanup 任务（建议 T051+ P4 启动准备任务；或留 ROADMAP cleanup 独立任务）。
+- **状态**：**待处理**（不阻塞 P1；P4 启动前必须解决）。
+- **T049 Implementation Plan 误读防护**：(1) `docs/architecture/IMPLEMENTATION_PLAN_PRODUCT_V2_PHASE1.md` §6 显式记录"引用 ROADMAP schemaVersion 时，统一用 SDD v0.4 编号（P2 = 2→3 / P4 = 3→4）"；(2) §6 显式登记本条 TD-024 + 链接；(3) §6 引用 SDD v0.4 §5 Drift 升级铁律为唯一权威设计；(4) §7.8 Drift schemaVersion 保持 2 验收条件**不**依赖 ROADMAP P4 schemaVersion 行；(5) 任何后续 Implementation Task 启动前必须读 T047B Scorecard + 本 Implementation Plan §6 + TD-023 / TD-024。
+- **T049A 关闭门依据**：`t049a-implementation-plan-reviewer`（subagent `ac0c16877010ab8a5`）r1 → final **Approved**（0 Findings，0 Blocker，0 Approved with Conditions），显式审计通过"T047B F-1 / F-2 登记 TD-023 / TD-024 + 显式记录在 §6"。
+
+## T049A 状态备注（Implementation Plan 复审证据补齐 + T047B 2 项 Minor 登记 TECH_DEBT 闭环）
+
+- **Task ID**：`T049A_FIX_IMPLEMENTATION_PLAN_REVIEW_AND_EVIDENCE`。
+- **起始 Commit**：`0de2949`（T049 v1.1 Implementation Plan 提交）。
+- **HEAD（最终）**：TBD（T049A 提交后；T049A 仅 4 doc 追加段，1 个 commit = `docs: complete product v2 implementation plan review evidence`）。
+- **任务定位**：T049 v1.1 提交后 GPT 首席架构师复审指出 3 项 Finding（TASK_LEDGER / AGENT_QUALITY_METRICS / TECH_DEBT 证据补齐 + T047B Minor 处理 + Reviewer 真实落地）。T049A **仅**完成 3 项 Finding 修正闭环，**不**修改 T049 Implementation Plan 11 个任务序列核心结构、**不**启动 Implementation Task（T049A_OP1_AUDIO_CAPTURE_SPIKE 等 11 个正式实施任务**仍**必须由 GPT 首席架构师出具独立 Prompt）、**不**写实现代码 / **不**执行 OP-1 / OP-2 Spike / **不** push / **不** Tag / **不** amend / rebase / reset --hard。
+- **启动条件**：HEAD = `0de2949` / `git status --short` clean / `git branch --show-current` = `product-v2` 全部满足 ✓。
+- **核心审查 3 项**全部 PASS：
+  1. 头部 Reviewer 状态由 `Pending` 改为 `Approved`（subagent `ac0c16877010ab8a5`）= PASS（消除"Pending vs 0 Blocker"自相矛盾）。
+  2. T047B F-1 / F-2 登记 TD-023 / TD-024 = PASS（消除"不修且不登记"双重否定歧义；T047B Scorecard 留痕 + TECH_DEBT.md 登记两条独立证据路径）。
+  3. TASK_LEDGER + AGENT_QUALITY_METRICS + TECH_DEBT 三 doc 全部补齐 T049 + T049A 证据 = PASS（TASK_LEDGER 追加 2 条台账 + AGENT_QUALITY_METRICS 追加 §4.AA + §4.AB Scorecard + TECH_DEBT 追加 TD-023 / TD-024 + T049A 状态备注段）。
+- **T049A Reviewer 闭环**：`t049a-implementation-plan-reviewer`（subagent `ac0c16877010ab8a5`）r1 → final **Approved**（7 维度全部 PASS：① PRD / SDD / TDD 一致性；② 任务拆分 11 任务 12 字段齐全；③ 依赖顺序 OP-1 / OP-2 ADR → T8 + m4a 闭环保护；④ Demo A/B/C 三组 + Demo C 时间窗警告；⑤ T11 关闭门 8 项验收 + 降级路径显式标注；⑥ 多 Agent 风险分级 Low 1 / Med 2 / High 3 + 二元裁决铁律；⑦ T047B F-1 / F-2 登记 TD-023 / TD-024 + §6 显式记录）；0 Findings / 0 Blocker / 0 Approved with Conditions。
+- **关键确认 9 项**全部 PASS：精确 744 / Implementation Plan v1.2 / TASK_LEDGER 追加 T049 + T049A 两条 / AGENT_QUALITY_METRICS 追加 §4.AA + §4.AB / TECH_DEBT 追加 TD-023 / TD-024 / Reviewer 真实独立只读 / **不**修改生产代码 / 测试 / pubspec / Manifest / Drift / `app_database.dart` / `app_database.g.dart`（schemaVersion 仍为 2）/ **不**启动 OP-1 / OP-2 Spike。
+- **T049A 修改文件范围**（**仅** 4 doc 文件）：
+  1. `docs/architecture/IMPLEMENTATION_PLAN_PRODUCT_V2_PHASE1.md` v1.1 → v1.2（头部 Reviewer Pending → Approved + §6 T047B 2 项 Minor 改为登记 TECH_DEBT + §9 版本表追加 v1.2 + T049A Task ID 落盘 + Implementation Plan 状态 = "Approved / 可启动任务"）。
+  2. `docs/dev/TASK_LEDGER.md` 追加 T049 + T049A 两条台账条目（T049 含"未批准原因"段 + T049A 接力任务段；T049A 含完整证据闭环段）。
+  3. `docs/dev/AGENT_QUALITY_METRICS.md` 追加 §4.AA T049 Scorecard + §4.AB T049A Scorecard（两段均按 AGENT_REVIEW_TEMPLATE 模板填写 Scope Reviewed / Evidence Checked / Findings / Verdict / Collaboration Value / Notes）。
+  4. `docs/dev/TECH_DEBT.md` 追加 TD-023（来源 T047B F-1，Low 风险，不阻塞 P1 原因 + 后续建议处理时机 + Implementation Plan 误读防护）+ TD-024（来源 T047B F-2，Low 风险，不阻塞 P1 原因 + 后续建议处理时机 + Implementation Plan 误读防护）+ T049A 状态备注段（本段）。
+  **不**修改既有 1 ~ TD-022 任何条目 / 既有 4.1 ~ 4.Z 任何 Scorecard / 既有 T006-T048 任何台账条目。
+- **T049A 净增 0 项自动化测试 / 0 项生产代码改动 / 0 项依赖改动 / 0 项 schema 改动 / 0 项 Manifest 改动 / 0 项 Gradle 改动 / 0 项 `key.properties` 改动 / 0 项 keystore 改动**。
+- **T049A 未 push / 未 Tag / 未 amend / rebase / reset --hard / 未读取 `key.properties` / 未读取 keystore 密码 / alias / 敏感路径 / 未声称 Release APK 已上架 / iOS 已验收 / 全 Android ROM 兼容 / 权限首次申请已通过**。
+- **下一任务**（按 brief）：T049A 提交后**仅**能由 GPT 首席架构师决定是否进入 T049A_OP1_AUDIO_CAPTURE_SPIKE 等 11 个正式实施任务；T049A **不**预先启动任何 Implementation Task。

@@ -27,6 +27,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:ukulele_app/features/metronome/audio/metronome_audio_source.dart';
+import 'package:ukulele_app/features/metronome/audio/metronome_audio_source_provider.dart';
 import 'package:ukulele_app/features/metronome/domain/metronome_settings.dart';
 
 /// Default bounds and defaults. Kept at file scope so tests can
@@ -100,12 +102,23 @@ class MetronomeState {
 /// through a provider.
 class MetronomeController extends Notifier<MetronomeState> {
   Timer? _timer;
+  late final MetronomeAudioSource _audioSource;
 
   @override
   MetronomeState build() {
+    // Resolve the audio source via the Provider so tests can
+    // override it. We `read` (not `watch`) because the audio
+    // source is a long-lived service whose identity never changes.
+    _audioSource = ref.read(metronomeAudioSourceProvider);
     // Re-arm cleanup: when the provider is disposed (e.g. the page
-    // pops), ensure the timer is cancelled.
+    // pops), cancel the timer and release the audio source.
     ref.onDispose(_cancelTimer);
+    ref.onDispose(() {
+      // `dispose()` is documented as idempotent on the audio
+      // source, so calling it here twice (if a test also tears
+      // the provider down) is safe.
+      unawaited(_audioSource.dispose());
+    });
     return MetronomeState(
       settings: const MetronomeSettings(
         bpm: kMetronomeDefaultBpm,
@@ -209,13 +222,38 @@ class MetronomeController extends Notifier<MetronomeState> {
 
   /// Internal "advance one beat" logic. Updates `currentBeat`
   /// (wrap to 1 after the last beat) and increments `tickCount`.
+  /// If the user has enabled the audible click, also fires a
+  /// single click on the audio source — accent is the *new*
+  /// current beat, not the previous one.
   void _advance() {
-    final int next = state.currentBeat >= state.beatsPerBar
-        ? 1
-        : state.currentBeat + 1;
+    final int next =
+        state.currentBeat >= state.beatsPerBar ? 1 : state.currentBeat + 1;
     state = state.copyWith(
       currentBeat: next,
       tickCount: state.tickCount + 1,
+    );
+    _maybePlayClick(isAccent: next == 1);
+  }
+
+  /// Fires an audible click iff the user has enabled sound.
+  /// Fire-and-forget — the metronome does not await playback
+  /// completion; the next Timer tick can overlap a still-playing
+  /// click because the click is shorter than the inter-tick gap
+  /// even at the maximum BPM (200 BPM → 300 ms period; click is
+  /// 20 ms). Errors are swallowed on purpose: a misbehaving
+  /// audio source must not break beat progression, and the page
+  /// will still show the visual beat indicator.
+  void _maybePlayClick({required bool isAccent}) {
+    if (!state.settings.soundEnabled) {
+      return;
+    }
+    // We do not await — the audio engine runs in its own
+    // microtask and the metronome must keep advancing on time.
+    unawaited(
+      _audioSource.playClick(isAccent: isAccent).catchError((Object _) {
+        // Swallow: audio is best-effort, the visual beat remains
+        // the source of truth for the user.
+      }),
     );
   }
 

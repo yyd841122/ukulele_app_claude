@@ -6,6 +6,17 @@
 // - beatsPerBar whitelist.
 // - start / stop / toggleRunning behaviour.
 //
+// T052 ADDS:
+// - Audible click delegation: each tick with `soundEnabled == true`
+//   calls [MetronomeAudioSource.playClick]; with `soundEnabled ==
+//   false` it does not.
+// - Accent comes from the *new* beat (post-increment), not the old
+//   one, so the wrap from beat N → 1 plays an accent.
+// - BPM changes (e.g. `setBpm`) do NOT trigger a click.
+// - The provider's `dispose` releases the audio source.
+// - `stop()` cancels the timer; no further clicks fire after stop
+//   unless a new tick is requested (e.g. via `tickForTesting`).
+//
 // Testing strategy — Timer coverage is intentionally limited:
 // - T010 does NOT directly assert the number of `Timer` instances
 //   held by the controller (we have no fake test double for it and
@@ -32,10 +43,30 @@
 // rely on real wall-clock time.
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:ukulele_app/features/metronome/application/metronome_controller.dart';
+import 'package:ukulele_app/features/metronome/audio/fake_metronome_audio_source.dart';
+import 'package:ukulele_app/features/metronome/audio/metronome_audio_source_provider.dart';
 import 'package:ukulele_app/features/metronome/domain/metronome_settings.dart';
+
+/// Build a [ProviderContainer] with a [FakeMetronomeAudioSource]
+/// already attached to [metronomeAudioSourceProvider]. Returns the
+/// container AND the fake so callers can assert against
+/// `fake.recordedCalls`, `fake.isDisposed`, etc.
+({
+  ProviderContainer container,
+  FakeMetronomeAudioSource fake,
+}) _containerWithFake() {
+  final FakeMetronomeAudioSource fake = FakeMetronomeAudioSource();
+  final ProviderContainer container = ProviderContainer(
+    overrides: <Override>[
+      metronomeAudioSourceProvider.overrideWithValue(fake),
+    ],
+  );
+  return (container: container, fake: fake);
+}
 
 void main() {
   group('MetronomeSettings', () {
@@ -100,11 +131,12 @@ void main() {
 
   group('MetronomeController', () {
     test('initial state has default BPM 80 and beat 1', () {
-      final ProviderContainer container = ProviderContainer();
-      addTearDown(container.dispose);
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
 
       final MetronomeState state =
-          container.read(metronomeControllerProvider);
+          r.container.read(metronomeControllerProvider);
 
       expect(state.bpm, 80);
       expect(state.beatsPerBar, 4);
@@ -115,50 +147,53 @@ void main() {
     });
 
     test('setBpm clamps values below min', () {
-      final ProviderContainer container = ProviderContainer();
-      addTearDown(container.dispose);
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
 
       final MetronomeController controller =
-          container.read(metronomeControllerProvider.notifier);
+          r.container.read(metronomeControllerProvider.notifier);
       controller.setBpm(10);
       expect(
-        container.read(metronomeControllerProvider).bpm,
+        r.container.read(metronomeControllerProvider).bpm,
         kMetronomeMinBpm,
       );
     });
 
     test('setBpm clamps values above max', () {
-      final ProviderContainer container = ProviderContainer();
-      addTearDown(container.dispose);
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
 
       final MetronomeController controller =
-          container.read(metronomeControllerProvider.notifier);
+          r.container.read(metronomeControllerProvider.notifier);
       controller.setBpm(9999);
       expect(
-        container.read(metronomeControllerProvider).bpm,
+        r.container.read(metronomeControllerProvider).bpm,
         kMetronomeMaxBpm,
       );
     });
 
     test('increaseBpm and decreaseBpm work and stay within bounds', () {
-      final ProviderContainer container = ProviderContainer();
-      addTearDown(container.dispose);
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
 
       final MetronomeController controller =
-          container.read(metronomeControllerProvider.notifier);
+          r.container.read(metronomeControllerProvider.notifier);
 
       controller.increaseBpm();
-      expect(container.read(metronomeControllerProvider).bpm, 81);
+      expect(r.container.read(metronomeControllerProvider).bpm, 81);
       controller.decreaseBpm();
       controller.decreaseBpm();
-      expect(container.read(metronomeControllerProvider).bpm, 79);
+      expect(r.container.read(metronomeControllerProvider).bpm, 79);
 
       // Walk to the floor.
       for (int i = 0; i < 200; i++) {
         controller.decreaseBpm();
       }
       expect(
-        container.read(metronomeControllerProvider).bpm,
+        r.container.read(metronomeControllerProvider).bpm,
         kMetronomeMinBpm,
       );
 
@@ -167,126 +202,132 @@ void main() {
         controller.increaseBpm();
       }
       expect(
-        container.read(metronomeControllerProvider).bpm,
+        r.container.read(metronomeControllerProvider).bpm,
         kMetronomeMaxBpm,
       );
     });
 
     test('setBeatsPerBar accepts 2, 3, 4, 6', () {
-      final ProviderContainer container = ProviderContainer();
-      addTearDown(container.dispose);
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
 
       final MetronomeController controller =
-          container.read(metronomeControllerProvider.notifier);
+          r.container.read(metronomeControllerProvider.notifier);
 
       for (final int beats in MetronomeSettings.allowedBeatsPerBar) {
         controller.setBeatsPerBar(beats);
         expect(
-          container.read(metronomeControllerProvider).beatsPerBar,
+          r.container.read(metronomeControllerProvider).beatsPerBar,
           beats,
         );
       }
     });
 
     test('setBeatsPerBar rejects invalid values without changing state', () {
-      final ProviderContainer container = ProviderContainer();
-      addTearDown(container.dispose);
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
 
       final MetronomeController controller =
-          container.read(metronomeControllerProvider.notifier);
+          r.container.read(metronomeControllerProvider.notifier);
       final int original =
-          container.read(metronomeControllerProvider).beatsPerBar;
+          r.container.read(metronomeControllerProvider).beatsPerBar;
 
       // Try a handful of bad values.
       for (final int bad in const <int>[-1, 0, 1, 5, 7, 99]) {
         controller.setBeatsPerBar(bad);
       }
       expect(
-        container.read(metronomeControllerProvider).beatsPerBar,
+        r.container.read(metronomeControllerProvider).beatsPerBar,
         original,
       );
     });
 
     test('tickForTesting advances from 1 to 2 and increments tickCount', () {
-      final ProviderContainer container = ProviderContainer();
-      addTearDown(container.dispose);
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
 
       final MetronomeController controller =
-          container.read(metronomeControllerProvider.notifier);
+          r.container.read(metronomeControllerProvider.notifier);
 
-      expect(container.read(metronomeControllerProvider).currentBeat, 1);
+      expect(r.container.read(metronomeControllerProvider).currentBeat, 1);
       controller.tickForTesting();
-      MetronomeState state = container.read(metronomeControllerProvider);
+      MetronomeState state = r.container.read(metronomeControllerProvider);
       expect(state.currentBeat, 2);
       expect(state.tickCount, 1);
     });
 
     test('currentBeat wraps back to 1 after the last beat of a bar', () {
-      final ProviderContainer container = ProviderContainer();
-      addTearDown(container.dispose);
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
 
       final MetronomeController controller =
-          container.read(metronomeControllerProvider.notifier);
+          r.container.read(metronomeControllerProvider.notifier);
 
       // Advance from 1 to 4.
       controller.tickForTesting(); // 2
       controller.tickForTesting(); // 3
       controller.tickForTesting(); // 4
       expect(
-        container.read(metronomeControllerProvider).currentBeat,
+        r.container.read(metronomeControllerProvider).currentBeat,
         4,
       );
 
       // Next tick wraps to 1.
       controller.tickForTesting();
       expect(
-        container.read(metronomeControllerProvider).currentBeat,
+        r.container.read(metronomeControllerProvider).currentBeat,
         1,
       );
       expect(
-        container.read(metronomeControllerProvider).tickCount,
+        r.container.read(metronomeControllerProvider).tickCount,
         4,
       );
     });
 
     test('changing beatsPerBar mid-bar clamps currentBeat into range', () {
-      final ProviderContainer container = ProviderContainer();
-      addTearDown(container.dispose);
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
 
       final MetronomeController controller =
-          container.read(metronomeControllerProvider.notifier);
+          r.container.read(metronomeControllerProvider.notifier);
 
       // Walk to beat 4 of a 4-beat bar.
       controller.tickForTesting();
       controller.tickForTesting();
       controller.tickForTesting();
       expect(
-        container.read(metronomeControllerProvider).currentBeat,
+        r.container.read(metronomeControllerProvider).currentBeat,
         4,
       );
 
       // Drop to 2 beats per bar. currentBeat must clamp to 2.
       controller.setBeatsPerBar(2);
       expect(
-        container.read(metronomeControllerProvider).beatsPerBar,
+        r.container.read(metronomeControllerProvider).beatsPerBar,
         2,
       );
       expect(
-        container.read(metronomeControllerProvider).currentBeat,
+        r.container.read(metronomeControllerProvider).currentBeat,
         2,
       );
     });
 
     test('start sets isRunning to true; stop resets currentBeat to 1', () {
-      final ProviderContainer container = ProviderContainer();
-      addTearDown(container.dispose);
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
 
       final MetronomeController controller =
-          container.read(metronomeControllerProvider.notifier);
+          r.container.read(metronomeControllerProvider.notifier);
 
       controller.start();
       expect(
-        container.read(metronomeControllerProvider).isRunning,
+        r.container.read(metronomeControllerProvider).isRunning,
         isTrue,
       );
 
@@ -294,37 +335,37 @@ void main() {
       controller.tickForTesting();
       controller.tickForTesting();
       expect(
-        container.read(metronomeControllerProvider).currentBeat,
+        r.container.read(metronomeControllerProvider).currentBeat,
         3,
       );
 
       controller.stop();
-      MetronomeState state =
-          container.read(metronomeControllerProvider);
+      MetronomeState state = r.container.read(metronomeControllerProvider);
       expect(state.isRunning, isFalse);
       expect(state.currentBeat, 1);
     });
 
     test('toggleRunning flips state', () {
-      final ProviderContainer container = ProviderContainer();
-      addTearDown(container.dispose);
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
 
       final MetronomeController controller =
-          container.read(metronomeControllerProvider.notifier);
+          r.container.read(metronomeControllerProvider.notifier);
 
       controller.toggleRunning();
       expect(
-        container.read(metronomeControllerProvider).isRunning,
+        r.container.read(metronomeControllerProvider).isRunning,
         isTrue,
       );
       controller.toggleRunning();
       expect(
-        container.read(metronomeControllerProvider).isRunning,
+        r.container.read(metronomeControllerProvider).isRunning,
         isFalse,
       );
       controller.toggleRunning();
       expect(
-        container.read(metronomeControllerProvider).isRunning,
+        r.container.read(metronomeControllerProvider).isRunning,
         isTrue,
       );
       // Leave it stopped so the timer is cancelled on dispose.
@@ -332,32 +373,33 @@ void main() {
     });
 
     test('calling start twice does not change the running state', () {
-      final ProviderContainer container = ProviderContainer();
-      addTearDown(container.dispose);
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
 
       final MetronomeController controller =
-          container.read(metronomeControllerProvider.notifier);
+          r.container.read(metronomeControllerProvider.notifier);
 
       controller.start();
       expect(
-        container.read(metronomeControllerProvider).isRunning,
+        r.container.read(metronomeControllerProvider).isRunning,
         isTrue,
       );
       // Second start is a no-op.
       controller.start();
       expect(
-        container.read(metronomeControllerProvider).isRunning,
+        r.container.read(metronomeControllerProvider).isRunning,
         isTrue,
       );
       // Manually tick — should still work exactly once per call.
       controller.tickForTesting();
       expect(
-        container.read(metronomeControllerProvider).currentBeat,
+        r.container.read(metronomeControllerProvider).currentBeat,
         2,
       );
       controller.tickForTesting();
       expect(
-        container.read(metronomeControllerProvider).currentBeat,
+        r.container.read(metronomeControllerProvider).currentBeat,
         3,
       );
 
@@ -365,40 +407,42 @@ void main() {
     });
 
     test('dispose cancels the active timer', () {
-      final ProviderContainer container = ProviderContainer();
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
       final MetronomeController controller =
-          container.read(metronomeControllerProvider.notifier);
+          r.container.read(metronomeControllerProvider.notifier);
 
       controller.start();
       expect(
-        container.read(metronomeControllerProvider).isRunning,
+        r.container.read(metronomeControllerProvider).isRunning,
         isTrue,
       );
       // Disposing must not throw — `ref.onDispose` cancels the timer.
-      container.dispose();
+      r.container.dispose();
       // We can't read state from a disposed container; the assertion
       // is that dispose itself did not raise.
     });
 
     test('toggleSoundEnabled flips the soundEnabled flag', () {
-      final ProviderContainer container = ProviderContainer();
-      addTearDown(container.dispose);
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
 
       final MetronomeController controller =
-          container.read(metronomeControllerProvider.notifier);
+          r.container.read(metronomeControllerProvider.notifier);
 
       expect(
-        container.read(metronomeControllerProvider).settings.soundEnabled,
+        r.container.read(metronomeControllerProvider).settings.soundEnabled,
         isFalse,
       );
       controller.toggleSoundEnabled();
       expect(
-        container.read(metronomeControllerProvider).settings.soundEnabled,
+        r.container.read(metronomeControllerProvider).settings.soundEnabled,
         isTrue,
       );
       controller.toggleSoundEnabled();
       expect(
-        container.read(metronomeControllerProvider).settings.soundEnabled,
+        r.container.read(metronomeControllerProvider).settings.soundEnabled,
         isFalse,
       );
     });
@@ -407,26 +451,178 @@ void main() {
       // We can't observe the timer interval directly, but we can
       // verify the BPM update is applied to the state and that
       // stopping afterwards is still possible (i.e. no leaked timer).
-      final ProviderContainer container = ProviderContainer();
-      addTearDown(container.dispose);
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
 
       final MetronomeController controller =
-          container.read(metronomeControllerProvider.notifier);
+          r.container.read(metronomeControllerProvider.notifier);
 
       controller.start();
       controller.setBpm(120);
       expect(
-        container.read(metronomeControllerProvider).bpm,
+        r.container.read(metronomeControllerProvider).bpm,
         120,
       );
       expect(
-        container.read(metronomeControllerProvider).isRunning,
+        r.container.read(metronomeControllerProvider).isRunning,
         isTrue,
       );
       controller.stop();
       expect(
-        container.read(metronomeControllerProvider).isRunning,
+        r.container.read(metronomeControllerProvider).isRunning,
         isFalse,
+      );
+    });
+  });
+
+  // ----- T052: audible metronome sound -----
+
+  group('MetronomeController audible click (T052)', () {
+    test('default state does not play a click on construction', () {
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
+
+      // No ticks → no clicks; ensureLoaded is lazy and not
+      // triggered by build().
+      expect(r.fake.recordedCalls, isEmpty);
+      expect(r.fake.ensureLoadedCalls, 0);
+    });
+
+    test('tickForTesting with soundEnabled=true fires a click', () {
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
+
+      final MetronomeController controller =
+          r.container.read(metronomeControllerProvider.notifier);
+      controller.toggleSoundEnabled();
+      // Toggle flips the flag; no click yet.
+      expect(r.fake.recordedCalls, isEmpty);
+
+      // 1 → 2 is an offbeat (no accent on the new beat 2).
+      controller.tickForTesting();
+      // The fake records synchronously (the async-but-immediately-
+      // resolving fake stores `isAccent` before its first await),
+      // so we can read the recorded call right after the tick.
+      expect(r.fake.recordedCalls.length, 1);
+      expect(r.fake.recordedCalls.last, isFalse);
+    });
+
+    test('soundEnabled=false suppresses all clicks', () {
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
+
+      final MetronomeController controller =
+          r.container.read(metronomeControllerProvider.notifier);
+      // soundEnabled is false by default.
+      for (int i = 0; i < 3; i++) {
+        controller.tickForTesting();
+      }
+      expect(r.fake.recordedCalls, isEmpty);
+    });
+
+    test('accent is true on the wrap beat (N → 1)', () {
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
+
+      final MetronomeController controller =
+          r.container.read(metronomeControllerProvider.notifier);
+      controller.toggleSoundEnabled();
+
+      // 1 → 2 (offbeat), 2 → 3 (offbeat), 3 → 4 (offbeat),
+      // 4 → 1 (DOWNBEAT → accent), 1 → 2 (offbeat).
+      controller.tickForTesting();
+      controller.tickForTesting();
+      controller.tickForTesting();
+      controller.tickForTesting();
+      controller.tickForTesting();
+      expect(r.fake.recordedCalls, <bool>[false, false, false, true, false]);
+    });
+
+    test('changing BPM does not trigger a click', () {
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
+
+      final MetronomeController controller =
+          r.container.read(metronomeControllerProvider.notifier);
+      controller.toggleSoundEnabled();
+
+      controller.setBpm(120);
+      controller.setBpm(160);
+      controller.increaseBpm();
+      controller.decreaseBpm();
+      expect(r.fake.recordedCalls, isEmpty);
+    });
+
+    test('container.dispose releases the audio source', () {
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      // Intentionally NOT using addTearDown — we want to assert
+      // about post-dispose state.
+      r.container.read(metronomeControllerProvider.notifier);
+      expect(r.fake.isDisposed, isFalse);
+      r.container.dispose();
+      expect(r.fake.isDisposed, isTrue);
+    });
+
+    test('audio source errors do not break beat progression', () {
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
+
+      final MetronomeController controller =
+          r.container.read(metronomeControllerProvider.notifier);
+      controller.toggleSoundEnabled();
+      r.fake.throwOnPlayClick = true;
+
+      // Despite the configured throw, the controller must still
+      // update its state and call playClick again on the next
+      // tick. The unawaited future swallows the exception inside
+      // the controller (see `_maybePlayClick`).
+      controller.tickForTesting();
+      controller.tickForTesting();
+      controller.tickForTesting();
+
+      // First call threw (so the fake never recorded it). Second
+      // and third calls succeeded and were recorded.
+      expect(r.fake.recordedCalls, <bool>[false, false]);
+      // tickCount increments regardless of audio errors.
+      expect(
+        r.container.read(metronomeControllerProvider).tickCount,
+        3,
+      );
+    });
+
+    test('start then stop leaves the timer cancelled (no leaked clicks)', () {
+      final ({ProviderContainer container, FakeMetronomeAudioSource fake}) r =
+          _containerWithFake();
+      addTearDown(r.container.dispose);
+
+      final MetronomeController controller =
+          r.container.read(metronomeControllerProvider.notifier);
+      controller.toggleSoundEnabled();
+      controller.start();
+      controller.tickForTesting();
+      controller.tickForTesting();
+      controller.tickForTesting();
+      final int clicksBeforeStop = r.fake.recordedCalls.length;
+
+      controller.stop();
+      // After stop, manually ticking must still work (we never
+      // removed the test entry point). The audio path is the
+      // same; the fake records every call.
+      controller.tickForTesting();
+      controller.tickForTesting();
+      controller.tickForTesting();
+      expect(
+        r.fake.recordedCalls.length,
+        clicksBeforeStop + 3,
+        reason: 'stop() must not retroactively cancel the test entry point',
       );
     });
   });

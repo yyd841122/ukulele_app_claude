@@ -76,6 +76,11 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  # Audio assets (T052 metronome audible sound).
+  assets:
+    - assets/audio/metronome_click_high.wav
+    - assets/audio/metronome_click_low.wav
+
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg

@@ -1,14 +1,17 @@
-// Metronome page (T010).
+// Metronome page (T010 + T052 audible sound).
 //
 // Scope:
-// - Visual-only metronome. No audio backend, no microphone, no
-//   network, no persistence — see the task brief §边界限制.
+// - Visual-only metronome with an optional audible click driven by
+//   the [metronomeAudioSourceProvider]. No microphone, no network,
+//   no persistence — see the task brief §边界限制.
 // - The page reads [metronomeControllerProvider] and forwards
 //   button taps to the controller.
-// - The "声音" switch is wired into the controller's
-//   `soundEnabled` flag but the UI clearly tells the user the
-//   audio backend is not yet shipped, matching the brief's
-//   "如果本任务不实现真实声音，请明确文案" requirement.
+// - The "声音" switch is wired into the controller's `soundEnabled`
+//   flag and the actual click is produced by
+//   [MetronomeAudioSource.playClick] called from inside
+//   `MetronomeController._advance()`. The page itself never touches
+//   the audio engine — the controller is the single integration
+//   point.
 // - The widget tree is split into small components
 //   (MetronomeDisplay / BpmControls / BeatsPerBarSelector /
 //   MetronomeStartStopButton) so this file stays short and each
@@ -28,8 +31,7 @@ class MetronomePage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final MetronomeState state =
-        ref.watch(metronomeControllerProvider);
+    final MetronomeState state = ref.watch(metronomeControllerProvider);
     final MetronomeController controller =
         ref.read(metronomeControllerProvider.notifier);
     final ThemeData theme = Theme.of(context);
@@ -42,9 +44,6 @@ class MetronomePage extends ConsumerWidget {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: <Widget>[
-            // Disclaimer banner — required by the brief.
-            _AudioDisclaimer(theme: theme),
-            const SizedBox(height: 16),
             // Big beat indicator.
             MetronomeDisplay(state: state),
             const SizedBox(height: 16),
@@ -83,8 +82,8 @@ class MetronomePage extends ConsumerWidget {
               title: const Text('开启声音'),
               subtitle: Text(
                 state.settings.soundEnabled
-                    ? '已开启（当前仍为可视化节拍，声音将在后续任务接入）'
-                    : '当前版本为可视化节拍，声音将在后续任务接入。',
+                    ? '已开启声音（每拍播放一次点击，强拍音高更高）'
+                    : '已关闭声音（仅可视化节拍）',
               ),
               value: state.settings.soundEnabled,
               onChanged: (_) => controller.toggleSoundEnabled(),
@@ -92,45 +91,6 @@ class MetronomePage extends ConsumerWidget {
             const SizedBox(height: 16),
           ],
         ),
-      ),
-    );
-  }
-}
-
-/// Yellow-ish banner explaining that the MVP ships a visual
-/// metronome only. Required by the brief.
-class _AudioDisclaimer extends StatelessWidget {
-  const _AudioDisclaimer({required this.theme});
-
-  final ThemeData theme;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.secondaryContainer,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Icon(
-            Icons.info_outline,
-            size: 20,
-            color: theme.colorScheme.onSecondaryContainer,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              '当前版本为可视化节拍器，没有真实声音播放；'
-              '声音功能将在后续任务接入。本节拍器适合跟随视觉节拍练习按弦与拨弦节奏。',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSecondaryContainer,
-              ),
-            ),
-          ),
-        ],
       ),
     );
   }

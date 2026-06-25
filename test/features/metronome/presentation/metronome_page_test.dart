@@ -1,21 +1,27 @@
-// Tests for the [MetronomePage] widget (T010).
+// Tests for the [MetronomePage] widget (T010 + T052).
 //
 // Scope:
-// - Verifies the page renders the title, the audio-disclaimer
-//   copy, the BPM hero, the start/stop button, the BPM +/- and
-//   preset chips, the beats-per-bar selector, and the sound
-//   toggle.
+// - Verifies the page renders the title, the BPM hero, the
+//   start/stop button, the BPM +/- and preset chips, the
+//   beats-per-bar selector, and the sound toggle.
 // - Verifies that tapping BPM + / BPM - updates the displayed
 //   BPM, that tapping the start/stop button flips the label,
 //   that picking a preset BPM updates the display, that
 //   selecting a different beats-per-bar updates the indicator,
 //   and that toggling the sound switch flips the subtitle.
+// - T052 ADDS: the audio-disclaimer banner is gone (audio is now
+//   real), and the sound toggle subtitle text is updated
+//   accordingly. The page itself does not touch the audio source
+//   — that is the controller's job.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:ukulele_app/features/metronome/application/metronome_controller.dart';
+import 'package:ukulele_app/features/metronome/audio/fake_metronome_audio_source.dart';
+import 'package:ukulele_app/features/metronome/audio/metronome_audio_source_provider.dart';
 import 'package:ukulele_app/features/metronome/presentation/metronome_page.dart';
 import 'package:ukulele_app/features/metronome/presentation/widgets/bpm_controls.dart';
 
@@ -30,8 +36,13 @@ Future<void> _useTallSurface(WidgetTester tester) async {
 
 Future<void> _pumpPage(WidgetTester tester) async {
   await tester.pumpWidget(
-    const ProviderScope(
-      child: MaterialApp(
+    ProviderScope(
+      overrides: <Override>[
+        metronomeAudioSourceProvider.overrideWithValue(
+          FakeMetronomeAudioSource(),
+        ),
+      ],
+      child: const MaterialApp(
         home: MetronomePage(),
       ),
     ),
@@ -41,7 +52,7 @@ Future<void> _pumpPage(WidgetTester tester) async {
 
 void main() {
   group('MetronomePage', () {
-    testWidgets('renders title, BPM hero, controls, and audio disclaimer',
+    testWidgets('renders title, BPM hero, controls, and sound toggle',
         (WidgetTester tester) async {
       await _useTallSurface(tester);
       await _pumpPage(tester);
@@ -49,10 +60,10 @@ void main() {
       // AppBar title.
       expect(find.text('节拍器'), findsOneWidget);
 
-      // Audio disclaimer banner copy is present.
+      // The "no audio backend" disclaimer banner is gone.
       expect(
         find.textContaining('当前版本为可视化节拍器'),
-        findsOneWidget,
+        findsNothing,
       );
 
       // BPM hero — initial 80.
@@ -77,11 +88,11 @@ void main() {
         expect(find.text('$beats'), findsWidgets);
       }
 
-      // Sound toggle exists with the visual-only disclaimer.
+      // Sound toggle exists with the audible-click subtitle.
       expect(find.text('开启声音'), findsOneWidget);
       expect(
-        find.textContaining('可视化节拍'),
-        findsWidgets,
+        find.text('已关闭声音（仅可视化节拍）'),
+        findsOneWidget,
       );
     });
 
@@ -90,7 +101,8 @@ void main() {
       await _useTallSurface(tester);
       await _pumpPage(tester);
 
-      await tester.tap(find.byKey(const ValueKey<String>('metronome-bpm-increase')));
+      await tester
+          .tap(find.byKey(const ValueKey<String>('metronome-bpm-increase')));
       await tester.pumpAndSettle();
 
       expect(find.text('81 BPM'), findsOneWidget);
@@ -102,7 +114,8 @@ void main() {
       await _useTallSurface(tester);
       await _pumpPage(tester);
 
-      await tester.tap(find.byKey(const ValueKey<String>('metronome-bpm-decrease')));
+      await tester
+          .tap(find.byKey(const ValueKey<String>('metronome-bpm-decrease')));
       await tester.pumpAndSettle();
 
       expect(find.text('79 BPM'), findsOneWidget);
@@ -127,14 +140,16 @@ void main() {
       await _pumpPage(tester);
 
       expect(find.text('开始'), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey<String>('metronome-start-stop')));
+      await tester
+          .tap(find.byKey(const ValueKey<String>('metronome-start-stop')));
       await tester.pumpAndSettle();
 
       expect(find.text('停止'), findsOneWidget);
       expect(find.text('开始'), findsNothing);
 
       // Stop again flips it back.
-      await tester.tap(find.byKey(const ValueKey<String>('metronome-start-stop')));
+      await tester
+          .tap(find.byKey(const ValueKey<String>('metronome-start-stop')));
       await tester.pumpAndSettle();
 
       expect(find.text('开始'), findsOneWidget);
@@ -170,7 +185,7 @@ void main() {
 
       // Off state subtitle is present.
       expect(
-        find.text('当前版本为可视化节拍，声音将在后续任务接入。'),
+        find.text('已关闭声音（仅可视化节拍）'),
         findsOneWidget,
       );
 
@@ -181,13 +196,11 @@ void main() {
 
       // On state subtitle is now present, off-state copy is gone.
       expect(
-        find.text(
-          '已开启（当前仍为可视化节拍，声音将在后续任务接入）',
-        ),
+        find.text('已开启声音（每拍播放一次点击，强拍音高更高）'),
         findsOneWidget,
       );
       expect(
-        find.text('当前版本为可视化节拍，声音将在后续任务接入。'),
+        find.text('已关闭声音（仅可视化节拍）'),
         findsNothing,
       );
     });

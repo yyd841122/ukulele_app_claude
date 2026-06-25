@@ -1,7 +1,7 @@
 // Built-in single-note library data for the MVP.
 //
 // T009 scope:
-// - Six notes: C / D / E / F / G / A. Fret positions match the
+// - Seven notes: C / D / E / F / G / A / B. Fret positions match the
 //   standard high-G (re-entrant) tuning G-C-E-A, and use the most
 //   common beginner fingerings on a standard ukulele:
 //     C  : 3rd string fret 0 (open C)        — no finger
@@ -10,6 +10,7 @@
 //     F  : 2nd string fret 1                  — index finger
 //     G  : 4th string fret 0 (open G)        — no finger
 //     A  : 1st string fret 0 (open A)        — no finger
+//     B  : 4th string fret 2                  — index finger  (T054)
 //   The "A" note could alternatively be played on a different
 //   string and fret, but the open A on string 1 is the easier
 //   choice for absolute beginners (no fretting required) and
@@ -34,7 +35,7 @@
 import 'package:ukulele_app/features/single_note_practice/domain/single_note.dart';
 import 'package:ukulele_app/features/single_note_practice/domain/single_note_difficulty.dart';
 
-/// The six notes shipped with the MVP, ordered as displayed in the
+/// The seven notes shipped with the MVP, ordered as displayed in the
 /// practice carousel. Ordering is stable — do not re-sort in the UI.
 final List<SingleNote> kBuiltInSingleNotes = <SingleNote>[
   // ---- C ----
@@ -154,6 +155,30 @@ final List<SingleNote> kBuiltInSingleNotes = <SingleNote>[
       '不需要按品，直接拨响 1 弦。',
       '1 弦在图中显示在最右侧。',
       '如果想换个位置练习同名 A 音，可以在 4 弦第 2 品上找到。',
+    ],
+  ),
+
+  // ---- B ----
+  // T054: seventh built-in note. 4th string, fret 2, index finger.
+  // On a standard high-G (re-entrant) ukulele, the G string at
+  // fret 2 sounds B — the simplest fretting for a beginner
+  // because the G string is the thickest, easiest to press, and
+  // already familiar as the open G one step away. Pairs naturally
+  // with A (open) → B (fret 2) on the same string.
+  SingleNote(
+    id: 'b',
+    name: 'B',
+    displayName: 'B 音',
+    description: 'B 大调的第一个音。食指按 4 弦第 2 品。',
+    stringName: 'G',
+    stringNumber: 4,
+    fret: 2,
+    finger: 1,
+    difficulty: SingleNoteDifficulty.higherFret,
+    tips: <String>[
+      '食指按 4 弦（G 弦）第 2 品。',
+      '指肚立起来靠近品丝，音色更干净。',
+      '和 A 音对比练习：先拨空弦 1 弦（A），再拨 4 弦第 2 品（B），感受同名音不同位置的区别。',
     ],
   ),
 ];

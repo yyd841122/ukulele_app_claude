@@ -235,7 +235,7 @@ class _Controls extends StatelessWidget {
 }
 
 /// Fallback shown only if the built-in note list ever becomes
-/// empty (defensive — the MVP ships 6 notes).
+/// empty (defensive — the MVP ships 7 notes).
 class _EmptyState extends StatelessWidget {
   const _EmptyState();
 

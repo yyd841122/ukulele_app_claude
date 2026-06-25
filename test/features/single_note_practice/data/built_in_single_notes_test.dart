@@ -17,11 +17,14 @@ import 'package:ukulele_app/features/single_note_practice/domain/single_note_dif
 
 void main() {
   group('kBuiltInSingleNotes', () {
-    test('contains C, D, E, F, G, A', () {
+    test('contains C, D, E, F, G, A, B', () {
       final List<String> ids =
           kBuiltInSingleNotes.map((SingleNote n) => n.id).toList();
-      expect(ids, containsAll(<String>['c', 'd', 'e', 'f', 'g', 'a']));
-      expect(kBuiltInSingleNotes.length, 6);
+      expect(
+        ids,
+        containsAll(<String>['c', 'd', 'e', 'f', 'g', 'a', 'b']),
+      );
+      expect(kBuiltInSingleNotes.length, 7);
     });
 
     test('every note passes structural validation', () {
@@ -104,6 +107,24 @@ void main() {
       expect(a.stringName, 'A');
     });
 
+    test('B is 4th string, fret 2, index finger (T054)', () {
+      // T054: seventh built-in note. The G string at fret 2 is
+      // the simplest fretting for B on a high-G ukulele and pairs
+      // naturally with the open A on the same string one step
+      // away. Pin the field choices so a future refactor cannot
+      // silently flip to a different voicing.
+      final SingleNote b =
+          kBuiltInSingleNotes.firstWhere((SingleNote n) => n.id == 'b');
+      expect(b.stringNumber, 4);
+      expect(b.stringName, 'G');
+      expect(b.fret, 2);
+      expect(b.finger, 1);
+      expect(b.isFretted, isTrue);
+      expect(b.isOpen, isFalse);
+      expect(b.difficulty, SingleNoteDifficulty.higherFret);
+      expect(b.validate(), isNull);
+    });
+
     test('every stringNumber / fret / finger is in the legal range', () {
       for (final SingleNote n in kBuiltInSingleNotes) {
         expect(n.stringNumber, inInclusiveRange(1, 4),
@@ -125,7 +146,10 @@ void main() {
     });
 
     test('findBuiltInSingleNote returns null for unknown ids', () {
-      expect(findBuiltInSingleNote('b'), isNull);
+      // T054 added B; the remaining letter ids are NOT shipped
+      // (no 'h', 'i', 'j', etc.) and must still return null.
+      expect(findBuiltInSingleNote('h'), isNull);
+      expect(findBuiltInSingleNote('bb'), isNull);
       expect(findBuiltInSingleNote(''), isNull);
       expect(findBuiltInSingleNote('not-a-note'), isNull);
     });

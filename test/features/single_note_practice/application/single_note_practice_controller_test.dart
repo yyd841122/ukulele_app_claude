@@ -19,7 +19,7 @@ import 'package:ukulele_app/features/single_note_practice/domain/single_note.dar
 
 void main() {
   group('SingleNotePracticeController', () {
-    test('initial state exposes all six notes and the first as current',
+    test('initial state exposes all seven notes and the first as current',
         () {
       final ProviderContainer container = ProviderContainer();
       addTearDown(container.dispose);

@@ -59,7 +59,7 @@ class SingleNotePracticeState {
   });
 
   /// The full note list, in display order. Always non-empty in
-  /// practice — the built-in data ships 6 notes.
+  /// practice — the built-in data ships 7 notes (T054).
   final List<SingleNote> notes;
 
   /// 0-based index into [notes] pointing at the active note. Always

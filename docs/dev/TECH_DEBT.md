@@ -542,3 +542,89 @@
 - `record ^7.1.0` 双实例共用 `MethodChannel('record_android')` 的 `onStop` / `onCancel` 回调归属 —— SDD v0.4 §7.2 明文"目前无官方 API 文档证伪也未证实"；需真机 platform-channel 日志采集验证（建议未来 spike 增补）
 - spike 工具当前时长档位硬编码（`Duration(seconds: 5)`）；30s / 5min 档位需手动改源码 —— 建议未来 spike 工具支持 CLI args 解析（`--duration=30s`）减少改源码易错性
 - 5 分钟录音档位下 app 被电池优化 / 屏幕关闭导致系统 kill app 的风险 —— 建议未来真机执行 spike 前置条件：保持屏幕常亮 / 关闭电池优化 / 禁用 Doze
+
+## TD-026: T051 OP-1 Audio Capture 真机执行尝试（0 完成实验 / 1 设备检测 / 决策保持 `Blocked`） — 闭环说明
+
+**任务定位**：`T051_OP1_AUDIO_CAPTURE_DEVICE_EXECUTION` 是 Product V2 Phase 1 Implementation Plan v1.2 §2 T1 真机实验主体的**尝试任务**（与 T050 spike 工具 + ADR 收口接力）。本任务在 T050 spike 工具 + ADR（决策 = `Blocked`）基础上，尝试在真实 Android 设备上执行 5s/30s/5min 三档双 `record` 实例实验并更新 ADR。**实际结果：0 完成实验 / 1 设备检测 / Agent 不自动启动 spike / 决策保持 `Blocked` / 0 净增测试 / 0 生产代码改动**。
+
+**T051 硬边界（任务 §6 + §12 停止条件）**：
+- 允许修改：`docs/architecture/OP1_AUDIO_CAPTURE_ADR.md`（追加 §4.b + §18）+ `docs/dev/TASK_LEDGER.md`（追加 T051 行）+ `docs/dev/AGENT_QUALITY_METRICS.md`（追加 §4.AD T051 Scorecard）+ 本 TECH_DEBT 段
+- 禁止修改：`tool/spike_op1_audio_capture.dart`（T050 交付保持）/ `lib/**` / `test/**` / `integration_test/**` / `pubspec.yaml` / `pubspec.lock` / `android/**` / Manifest / Drift schema / generated files / release / signing 文件 / APK / AAB / build 产物
+- 任务 §6 + §12 停止条件明确："无真机可用" / "用户无法提供人工真机执行结果" 必须停止并报告；"只有 1 台设备但试图批准 A 方案" 必须停止并报告
+
+**T051 实际修改文件**（4 个文件，**全部仅 doc 追加**，无既有内容修改）：
+1. `docs/architecture/OP1_AUDIO_CAPTURE_ADR.md`（追加 §4.b T051 真机执行尝试 + §18 T051 闭环说明 = 三步反思 + §18.1 初步实现 + §18.2 自我找茬 + §18.3 终极交付 + §19 引用列表追加 TD-026；**不**修改 T050 §1-§17 既有内容）
+2. `docs/dev/TASK_LEDGER.md`（追加 T051 行；**不**修改既有 T006-T050 任何条目）
+3. `docs/dev/AGENT_QUALITY_METRICS.md`（追加 §4.AD T051 Scorecard；**不**修改既有 4.1 ~ 4.AC 任何 Scorecard）
+4. 本 TECH_DEBT 段（追加；**不**修改既有 TD-001 ~ TD-025 任何条目）
+
+**T051 设备矩阵实测**：
+- `flutter devices` 检测到 1 台 Android 真机：CDY AN90 / Android 10 (API 29) / HUAWEI EMUI
+- 3 台非 Android 设备：Windows desktop / Chrome / Edge web
+- **< 2 设备决策门** → 即使全部跑过也只能 `Blocked` 或 `Provisional evidence only, not approved`（任务 §6 明确）
+
+**T051 完成实验数 = 0**（Agent 不代写人工结果）：
+- 任务 §6 明确："不得由 Agent 代写人工真机结果"
+- 任务 §12 停止条件："无真机可用" / "用户无法提供人工真机执行结果" 必须停止并报告
+- Agent 不自动启动 spike（原因：spike 涉及 `RECORD_AUDIO` 权限申请 / temp m4a 文件写入 / 5 分钟录音触发电池优化 / 屏幕关闭风险 / m4a 完整性需用户人工确认"可正常播放"）
+- 用户未提供任何人工真机执行结果
+- T051 实跑 0 真机 × 0 时长档位
+
+**T051 决策 = `Blocked`**（与 T050 一致；任务 §6 + §8 + §10 决策矩阵严格遵守）：
+- 证据强度 = 0 完成实验 + 1 设备 < 2 设备决策门
+- **不**允许 `Approved for P1 implementation`
+- **不**允许 `Approved with Conditions`
+- **不**允许 `Pending`
+- **不**允许 `Provisional evidence only, not approved`（任务 §8 允许，但 0 实验 = `Blocked` 更明确）
+- **不**允许 `Blocker equivalent`
+
+**T051 用户人工执行命令（待用户回传）**：
+```bash
+# 5s 档
+flutter run -d CDY-AN90 tool/spike_op1_audio_capture.dart
+# 运行前修改 main() 中 _runSpike 调用点的 Duration 为 Duration(seconds: 5)
+
+# 30s 档
+# 修改 Duration 为 Duration(seconds: 30)
+
+# 5min 档
+# 修改 Duration 为 Duration(minutes: 5)
+# 前置条件：保持屏幕常亮 / 关闭电池优化 / 禁用 Doze
+```
+
+**回传要求**（用户人工完成 spike 后回传）：
+- 设备型号 + Android 版本 + 厂商 ROM
+- m4a 文件路径 + 文件大小
+- m4a 是否可正常停止 + 是否可被现有 `just_audio ^0.10.5` 播放（**用户人工确认**）
+- PCM chunk 数量 + 间隔统计 + 是否有长时间中断
+- start / stop 顺序
+- onStop / onCancel 回调归属（不串台）
+- 资源释放（dispose 后能否再次启动）
+- 权限：denied / granted / permanentDenied / 恢复表现
+- 日志文件路径（`e2e/spike_logs/op1_<device>_<timestamp>.log`）
+
+**T051 Reviewers Approved**（read-only；3/3 Approved / 0 Blocker / 0 Approved with Conditions）：
+- Audio Architecture Reviewer `t051-audio-architecture-reviewer`（subagent `afc23f4f8088ee82e`；r1 → final **Approved**；6 项 Findings 全部 Resolved：T051 任务命名 / 决策保持 Blocked / 无伪造数据 / 边界遵守 / 台账一致 / spike 工具未修改；全部**非** Blocker）
+- Flutter Data / Lifecycle Reviewer `t051-flutter-lifecycle-reviewer`（subagent `af3b457c9dd1a88e3`；r1 → final **Approved**；5 项 Findings 全部 Resolved：T051 deliverable 必须追加 / T050 baseline 已含 1 设备硬限制 / Agent 不自动执行 spike / 无伪造数据 / 边界遵守 = **非** Blocker）
+- Android QA Reviewer `t051-android-qa-reviewer`（subagent `aeca53912bad82f35`；r1 **Blocker**（T051 段缺失，4 项 Findings 全部 Open）→ v1 完成追加 4 doc 段 → r2 final **Approved**（**待复审确认**；4 项 Findings 全部 Resolved，全部**非** Blocker））
+
+**spike 工具边界硬遵守（任务 §6）**：
+- **不**修改 `tool/spike_op1_audio_capture.dart`（T050 交付保持）
+- **不**改变现有 App 运行路径
+- **不**修改现有录音服务（**不**调用 `RealAudioRecorderService` / `MicrophonePermissionService` / `AudioFileStorageService`）
+- **不**改变现有 m4a 录音保存与回放闭环
+- **不**引入新依赖
+- **不**新增 INTERNET 权限
+- **不**升级 Drift schema（schemaVersion 仍为 2）
+
+**T051 净增 0 项自动化测试 / 0 项生产代码改动 / 0 项依赖改动 / 0 项 schema 改动 / 0 项 Manifest 改动 / 0 项 Gradle 改动 / 0 项 `key.properties` 改动 / 0 项 keystore 改动 / 0 项 `lib/**` 改动 / 0 项 `test/**` 改动 / 0 项 `tool/**` 改动 / 0 项 Drift schema 改动 / 0 项 `app_database.dart` 改动 / 0 项 `app_database.g.dart` 改动**：
+- 测试基线 = 744（保持 744，未重跑）
+- spike 工具**未**修改
+- T051 仅追加 4 个 doc 段
+
+**T051 未 push / 未 Tag / 未 amend / rebase / reset --hard / 未声称 OP-1 已通过 / 未声称 A 方案已批准为 P1 正式方案 / 未进入 P2 互动闭环 / 未启动 T8 Tuner Real-Time / 未声称真机执行已通过 / 未声称国产 ROM 兼容 / 未读取敏感文件**。
+
+**下一阶段**（**待 GPT 首席架构师独立 Prompt 启动**）：
+- 首选"选项 X：真机补做 A 方案 spike"——用户在 CDY AN90 / Android 10 + 1 台中端 Android 13+ 上人工执行 `flutter run tool/spike_op1_audio_capture.dart`；5s/30s/5min 三档 × 2 设备 = 6 实验；如 6/6 PASS → 启动 `T049A_REDO_OP1_SPIKE` 产出 `Approved for P1 implementation` ADR；如部分 FAIL → 评估 C（事后解码）/ D（FFI）/ 暂缓
+- 二选：C（事后解码 — `just_audio ^0.10.5` 是否暴露纯解码 API 待 P1 spike 验证）/ D（FFI — Android `AudioRecord` JNI 直采；P3+ 备选）
+- 兜底：暂缓 OP-1 = 接受"P2 互动闭环仅会话结束反馈"或"P1 调音器走静态 GCEA 频率表降级路径"
